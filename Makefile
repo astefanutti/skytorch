@@ -54,7 +54,7 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate manifests.
 	$(CONTROLLER_GEN) "crd:generateEmbeddedObjectMeta=true" rbac:roleName=kpu-controller-manager webhook \
-		paths="./pkg/apis/kpu/v1alpha1/...;./pkg/controllers/...;./pkg/webhooks/...;./pkg/util/cert/..." \
+		paths="./cmd/...;./pkg/apis/kpu/v1alpha1/...;./pkg/controllers/...;./pkg/webhooks/...;./pkg/util/cert/..." \
 		output:crd:artifacts:config=config/base/crds \
 		output:rbac:artifacts:config=config/base/rbac \
 		output:webhook:artifacts:config=config/base/webhook

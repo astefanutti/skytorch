@@ -36,6 +36,8 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 }
 
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=create;get;list;update
+
 func main() {
 	var configFile string
 	var enableHTTP2 bool
