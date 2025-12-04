@@ -27,5 +27,28 @@ import (
 // Public to allow building arbitrary schemes.
 // All generated defaulters are covering - they call all nested defaulters.
 func RegisterDefaults(scheme *runtime.Scheme) error {
+	scheme.AddTypeDefaultingFunc(&Compute{}, func(obj interface{}) { SetObjectDefaults_Compute(obj.(*Compute)) })
+	scheme.AddTypeDefaultingFunc(&ComputeList{}, func(obj interface{}) { SetObjectDefaults_ComputeList(obj.(*ComputeList)) })
 	return nil
+}
+
+func SetObjectDefaults_Compute(in *Compute) {
+	for i := range in.Spec.Env {
+		a := &in.Spec.Env[i]
+		if a.ValueFrom != nil {
+			if a.ValueFrom.FileKeyRef != nil {
+				if a.ValueFrom.FileKeyRef.Optional == nil {
+					var ptrVar1 bool = false
+					a.ValueFrom.FileKeyRef.Optional = &ptrVar1
+				}
+			}
+		}
+	}
+}
+
+func SetObjectDefaults_ComputeList(in *ComputeList) {
+	for i := range in.Items {
+		a := &in.Items[i]
+		SetObjectDefaults_Compute(a)
+	}
 }

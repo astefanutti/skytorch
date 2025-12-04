@@ -18,7 +18,7 @@ limitations under the License.
 // +k8s:openapi-gen=true
 // +k8s:deepcopy-gen=package
 
-// Package v1alpha1 is the v1alpha1 version of the API.
-// +groupName=kpu.dev
+// Package v1alpha1 contains API Schema definitions for the compute.kpu.dev v1alpha1 API group
+// +groupName=compute.kpu.dev
 
 package v1alpha1
