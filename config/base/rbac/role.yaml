@@ -7,6 +7,15 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - events
+  verbs:
+  - create
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - get
@@ -22,3 +31,22 @@ rules:
   - list
   - update
   - watch
+- apiGroups:
+  - compute.kpu.dev
+  resources:
+  - compute
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.kpu.dev
+  resources:
+  - computes/finalizers
+  - computes/status
+  verbs:
+  - get
+  - patch
+  - update

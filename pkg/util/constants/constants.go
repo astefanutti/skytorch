@@ -14,22 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controllers
+package constants
 
-import (
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
+const (
+	// ComputeSuspendedMessage is status condition message for the
+	// {"type": "Suspended", "status": "True", "reason": "Suspended"} condition.
+	ComputeSuspendedMessage = "Compute is suspended"
 
-	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
+	// ComputeResumedMessage is status condition message for the
+	// {"type": "Suspended", "status": "True", "reason": "Resumed"} condition.
+	ComputeResumedMessage = "Compute is resumed"
 )
-
-func Setup(mgr ctrl.Manager, options controller.Options) (string, error) {
-	if err := NewComputeReconciler(
-		mgr.GetClient(),
-		mgr.GetEventRecorderFor("kpu-compute-controller"),
-	).SetupWithManager(mgr, options); err != nil {
-		return v1alpha1.ComputeKind, err
-	}
-
-	return "", nil
-}
