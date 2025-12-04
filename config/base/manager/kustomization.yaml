@@ -1,0 +1,16 @@
+resources:
+  - manager.yaml
+
+# Disable hash suffix for predictable ConfigMap names
+generatorOptions:
+  disableNameSuffixHash: true
+
+# ConfigMap generator for controller manager configuration
+configMapGenerator:
+  - name: kpu-operator-config
+    files:
+      - config.yaml
+
+# Patches to mount the config file
+patches:
+  - path: config_patch.yaml
