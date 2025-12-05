@@ -50,7 +50,7 @@ jobs:
           GOOS: linux
           GOARCH: amd64
         run: |
-          CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o cmd/manager-$GOARCH cmd/main.go
+          CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o cmd/operator/manager-$GOARCH cmd/operator/main.go
 
       - name: Build linux/arm64 operator binary
         env:
@@ -61,7 +61,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-          CC=$CC CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o cmd/manager-$GOARCH cmd/main.go
+          CC=$CC CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o cmd/operator/manager-$GOARCH cmd/operator/main.go
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -90,8 +90,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           platforms: linux/amd64,linux/arm64
-          context: ${{env.working-directory}}/cmd
-          file: ${{env.working-directory}}/cmd/Containerfile
+          context: ${{env.working-directory}}/cmd/operator
+          file: ${{env.working-directory}}/cmd/operator/Containerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}

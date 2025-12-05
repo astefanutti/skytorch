@@ -83,11 +83,11 @@ golangci-lint: golangci-lint-install golangci-lint-kal ## Run golangci-lint to v
 	golangci-lint run --timeout 5m --go 1.24 ./...
 	$(GOLANGCI_LINT_KAL) run -v --config $(PROJECT_DIR)/.golangci-kal.yml
 
-# Instructions to build artifacts.
+# Instructions to build components.
 
-.PHONY: build
-build: fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+.PHONY: build-operator
+build-operator: fmt vet ## Build operator binary.
+	go build -o $(LOCALBIN)/operator-manager cmd/operator/main.go
 
 # Instructions to run tests.
 
@@ -116,10 +116,6 @@ controller-gen: ## Download the controller-gen binary if required.
 .PHONY: kind
 kind: ## Download Kind binary if required.
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/kind@$(KIND_VERSION)
-
-.PHONY: helm
-helm: ## Download helm locally if required.
-	GOBIN=$(LOCALBIN) go install helm.sh/helm/v3/cmd/helm@$(HELM_VERSION)
 
 GOLANGCI_LINT=$(shell which golangci-lint)
 .PHONY: golangci-lint
