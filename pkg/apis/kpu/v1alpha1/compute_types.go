@@ -87,6 +87,7 @@ type ComputeList struct {
 }
 
 // ComputeSpec represents the specification of the Compute.
+// +kubebuilder:validation:MinProperties=1
 type ComputeSpec struct {
 	// labels to apply to the Compute resources.
 	// +optional

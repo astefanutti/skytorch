@@ -45,6 +45,7 @@ spec:
             type: object
           spec:
             description: spec of the Compute.
+            minProperties: 1
             properties:
               annotations:
                 additionalProperties:
