@@ -81,8 +81,7 @@ vet: ## Run go vet against the code.
 
 .PHONY: lint
 lint: golangci-lint golangci-lint-kal ## Run golangci-lint to verify Go files.
-	golangci-lint run --timeout 5m --go 1.24 ./...
-	$(GOLANGCI_LINT_KAL) run -v --config $(PROJECT_DIR)/.golangci-kal.yml
+	$(GOLANGCI_LINT_KAL) run -v --timeout 5m ./...
 
 # Instructions to build components.
 
@@ -120,8 +119,8 @@ kind: ## Download Kind binary if required.
 
 .PHONY: golangci-lint
 golangci-lint: ## Download golangci-lint locally if necessary.
-	@GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.5
+	@GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.1
 
 .PHONY: golangci-lint-kal
 golangci-lint-kal: ## Build golangci-lint-kal from custom configuration.
-	cd $(PROJECT_DIR)/hack/golangci-kal; $(GOLANGCI_LINT) custom; mv bin/golangci-lint-kube-api-linter $(LOCALBIN)/
+	cd $(PROJECT_DIR)/hack/golangci-kal; $(GOLANGCI_LINT) custom -v; mv bin/golangci-lint-kube-api-linter $(LOCALBIN)/
