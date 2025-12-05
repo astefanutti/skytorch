@@ -1,0 +1,70 @@
+name: check-and-test-operator
+
+on:
+  - push
+  - pull_request
+
+jobs:
+  generate:
+    name: Check
+    runs-on: ubuntu-latest
+    env:
+      working-directory: .
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{env.working-directory}}/go.mod
+
+      - name: Check Go modules
+        run: |
+          go mod tidy
+          git diff --exit-code || (echo 'Please run "go mod tidy" to sync Go modules' && exit 1);
+
+      - name: Check generated resources
+        run: |
+          make generate
+          git diff --exit-code || (echo 'Please run "make generate" to generate assets' && exit 1);
+
+      - name: Check go fmt
+        run: |
+          make fmt
+          git diff --exit-code || (echo 'Please run "make fmt" to verify gofmt' && exit 1);
+
+      - name: Check go vet
+        run: |
+          make vet
+          git diff --exit-code || (echo 'Please run "make vet" to verify govet' && exit 1);
+
+      - name: Check golangci lint
+        run: |
+          make lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      working-directory: .
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{env.working-directory}}/go.mod
+
+      - name: Run unit tests
+        run: |
+          make test
+
+#      - name: Run integration tests
+#        run: |
+#          make test-integration

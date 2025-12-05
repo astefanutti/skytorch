@@ -29,6 +29,7 @@ CONTAINER_RUNTIME ?=
 GINKGO ?= $(LOCALBIN)/ginkgo
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GOLANGCI_LINT_KAL ?= $(LOCALBIN)/golangci-lint-kube-api-linter
 
 ##@ General
@@ -78,8 +79,8 @@ fmt: ## Run go fmt against the code.
 vet: ## Run go vet against the code.
 	go vet ./...
 
-.PHONY: golangci-lint
-golangci-lint: golangci-lint-install golangci-lint-kal ## Run golangci-lint to verify Go files.
+.PHONY: lint
+lint: golangci-lint golangci-lint-kal ## Run golangci-lint to verify Go files.
 	golangci-lint run --timeout 5m --go 1.24 ./...
 	$(GOLANGCI_LINT_KAL) run -v --config $(PROJECT_DIR)/.golangci-kal.yml
 
@@ -117,14 +118,10 @@ controller-gen: ## Download the controller-gen binary if required.
 kind: ## Download Kind binary if required.
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/kind@$(KIND_VERSION)
 
-GOLANGCI_LINT=$(shell which golangci-lint)
 .PHONY: golangci-lint
-golangci-lint-install: ## Run golangci-lint to verify Go files.
-ifeq ($(GOLANGCI_LINT),)
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin v1.64.8
-	$(info golangci-lint has been installed)
-endif
+golangci-lint: ## Download golangci-lint locally if necessary.
+	@GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.5
 
 .PHONY: golangci-lint-kal
 golangci-lint-kal: ## Build golangci-lint-kal from custom configuration.
-	cd $(PROJECT_DIR)/hack; $(GOLANGCI_LINT) custom; mv bin/golangci-lint-kube-api-linter $(LOCALBIN)/
+	cd $(PROJECT_DIR)/hack/golangci-kal; $(GOLANGCI_LINT) custom; mv bin/golangci-lint-kube-api-linter $(LOCALBIN)/
