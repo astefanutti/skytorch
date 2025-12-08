@@ -305,16 +305,16 @@ _cleanup_coroutines = []
 
 
 async def serve(
+    host: str = "[::]",
     port: int = 50051,
-    max_workers: int = 10,
     chunk_size: int = DEFAULT_CHUNK_SIZE
 ) -> None:
     """
     Start the async gRPC server.
 
     Args:
+        host: Host to listen on
         port: Port to listen on
-        max_workers: Maximum number of worker threads
         chunk_size: Size of chunks for streaming tensors
     """
     server = grpc.aio.server()
@@ -322,7 +322,7 @@ async def serve(
     servicer = TensorServicer(chunk_size=chunk_size)
     service_pb2_grpc.add_ServiceServicer_to_server(servicer, server)
 
-    listen_addr = f'[::]:{port}'
+    listen_addr = f'{host}:{port}'
     server.add_insecure_port(listen_addr)
 
     logger.info(f"Starting server on {listen_addr}")
