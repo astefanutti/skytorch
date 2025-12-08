@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package kpu.torch;
+
+// Generic service for streaming PyTorch tensors between client and server
+service Service {
+  // Client-to-server streaming: receive tensors from client
+  rpc ReceiveTensors(stream TensorChunk) returns (TensorResponse);
+
+  // Server-to-client streaming: send tensors to client
+  rpc SendTensors(TensorRequest) returns (stream TensorChunk);
+
+  // Bidirectional streaming: send and receive tensors simultaneously
+  rpc StreamTensors(stream TensorChunk) returns (stream TensorChunk);
+}
+
+// Represents a chunk of serialized tensor data
+message TensorChunk {
+  // Unique identifier for the tensor (used to group chunks)
+  string tensor_id = 1;
+
+  // Chunk sequence number (for ordering)
+  uint32 chunk_number = 2;
+
+  // Binary data chunk
+  bytes data = 3;
+
+  // Total number of chunks for this tensor (set in first chunk)
+  uint32 total_chunks = 4;
+
+  // Indicates if this is the last chunk
+  bool is_last = 5;
+
+  // Optional metadata (shape, dtype, etc.) - included in first chunk
+  map<string, string> metadata = 6;
+}
+
+// Response after receiving tensors
+message TensorResponse {
+  bool success = 1;
+  string message = 2;
+  repeated string received_tensor_ids = 3;
+}
+
+// Request to send tensors
+message TensorRequest {
+  // Number of tensors to send (optional, server may ignore)
+  uint32 count = 1;
+
+  // Optional filters or parameters
+  map<string, string> parameters = 2;
+}
