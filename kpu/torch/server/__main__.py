@@ -59,7 +59,8 @@ logger.info(f"  Host: {args.host}")
 logger.info(f"  Chunk Size: {args.chunk_size} bytes ({args.chunk_size / 1024 / 1024:.2f} MB)")
 logger.info(f"  Log Level: {args.log_level}")
 
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 try:
     loop.run_until_complete(
         serve(
