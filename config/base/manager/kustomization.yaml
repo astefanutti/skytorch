@@ -11,6 +11,12 @@ configMapGenerator:
     files:
       - config.yaml
 
+# Secret generator for the webhook server
+secretGenerator:
+  - name: kpu-webhook-cert
+    options:
+      disableNameSuffixHash: true
+
 # Patches to mount the config file
 patches:
   - path: config_patch.yaml
