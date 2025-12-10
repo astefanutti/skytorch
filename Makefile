@@ -5,6 +5,8 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
+GO_CMD ?= go
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # This is a requirement for 'setup-envtest.sh' in the test target.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
@@ -17,13 +19,10 @@ LOCALBIN ?= $(PROJECT_DIR)/bin
 
 # Tool versions
 K8S_VERSION ?= 1.34.0
-GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
+GINKGO_VERSION ?= $(shell $(GO_CMD) list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
 ENVTEST_VERSION ?= release-0.22
 CONTROLLER_GEN_VERSION ?= v0.18.0
-KIND_VERSION ?= $(shell go list -m -f '{{.Version}}' sigs.k8s.io/kind)
-
-# Container runtime (docker or podman)
-CONTAINER_RUNTIME ?=
+KIND_VERSION ?= $(shell $(GO_CMD) list -m -f '{{.Version}}' sigs.k8s.io/kind)
 
 # Tool binaries
 GINKGO ?= $(LOCALBIN)/ginkgo
@@ -31,6 +30,13 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GOLANGCI_LINT_KAL ?= $(LOCALBIN)/golangci-lint-kube-api-linter
+
+# Container runtime (docker or podman)
+CONTAINER_RUNTIME ?= $(shell hack/container-runtime.sh)
+
+VERSION ?= v0.0.0-dev
+IMAGE_BASE ?= ghcr.io/astefanutti
+OPERATOR_IMG ?= ${IMAGE_BASE}/kpu-operator:${VERSION}
 
 ##@ General
 
@@ -67,17 +73,17 @@ generate: go-mod-download manifests ## Generate APIs.
 
 .PHONY: go-mod-download
 go-mod-download: ## Run go mod download to download modules.
-	go mod download
+	$(GO_CMD) mod download
 
 # Instructions for code formatting.
 
 .PHONY: fmt
 fmt: ## Run go fmt against the code.
-	go fmt ./...
+	$(GO_CMD) fmt ./...
 
 .PHONY: vet
 vet: ## Run go vet against the code.
-	go vet ./...
+	$(GO_CMD) vet ./...
 
 .PHONY: lint
 lint: golangci-lint golangci-lint-kal ## Run golangci-lint to verify Go files.
@@ -85,15 +91,19 @@ lint: golangci-lint golangci-lint-kal ## Run golangci-lint to verify Go files.
 
 # Instructions to build components.
 
-.PHONY: build-operator
-build-operator: fmt vet ## Build operator binary.
-	go build -o $(LOCALBIN)/operator-manager cmd/operator/main.go
+.PHONY: operator-binary
+operator-binary: fmt vet ## Build operator binary.
+	$(GO_CMD) build -o cmd/operator/manager-$(shell $(GO_CMD) env GOARCH) cmd/operator/main.go
+
+.PHONY: operator-image
+operator-image: operator-binary ## Build operator image.
+	$(CONTAINER_RUNTIME) build -f cmd/operator/Containerfile -t ${OPERATOR_IMG} cmd/operator
 
 # Instructions to run tests.
 
 .PHONY: test
 test: ## Run Go unit test.
-	go test $(shell go list ./... | grep -Ev '/(test|cmd|hack|pkg/apis|pkg/client|pkg/util/testing)') -coverprofile cover.out
+	$(GO_CMD) test $(shell $(GO_CMD) list ./... | grep -Ev '/(test|cmd|hack|pkg/apis|pkg/client|pkg/util/testing)') -coverprofile cover.out
 
 .PHONY: test-integration
 test-integration: ginkgo envtest ## Run Go integration test.
@@ -103,23 +113,23 @@ test-integration: ginkgo envtest ## Run Go integration test.
 
 .PHONY: ginkgo
 ginkgo: ## Download the ginkgo binary if required.
-	GOBIN=$(LOCALBIN) go install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
+	GOBIN=$(LOCALBIN) $(GO_CMD) install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
 
 .PHONY: envtest
 envtest: ## Download the setup-envtest binary if required.
-	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
+	GOBIN=$(LOCALBIN) $(GO_CMD) install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
 
 .PHONY: controller-gen
 controller-gen: ## Download the controller-gen binary if required.
-	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+	GOBIN=$(LOCALBIN) $(GO_CMD) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 .PHONY: kind
 kind: ## Download Kind binary if required.
-	GOBIN=$(LOCALBIN) go install sigs.k8s.io/kind@$(KIND_VERSION)
+	GOBIN=$(LOCALBIN) $(GO_CMD) install sigs.k8s.io/kind@$(KIND_VERSION)
 
 .PHONY: golangci-lint
 golangci-lint: ## Download golangci-lint locally if necessary.
-	@GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.1
+	@GOBIN=$(LOCALBIN) $(GO_CMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.1
 
 .PHONY: golangci-lint-kal
 golangci-lint-kal: ## Build golangci-lint-kal from custom configuration.
