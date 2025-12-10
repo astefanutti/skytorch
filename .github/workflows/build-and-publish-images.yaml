@@ -34,7 +34,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
 
       - name: Free disk space
         uses: ./.github/workflows/free-disk-space
@@ -113,7 +112,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
 
       - name: Free disk space
         uses: ./.github/workflows/free-disk-space
