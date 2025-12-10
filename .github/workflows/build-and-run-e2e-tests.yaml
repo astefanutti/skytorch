@@ -1,0 +1,86 @@
+name: build-and-run-e2e-tests
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+
+concurrency:
+  group: ${{ github.head_ref || github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-test:
+    name: Run E2E Tests
+    runs-on: ubuntu-latest
+    env:
+      working-directory: .
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{env.working-directory}}/go.mod
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.11
+
+      - name: Setup KinD cluster
+        id: kind
+        uses: helm/kind-action@v1.13.0
+        with:
+          cluster_name: kpu
+          version: v0.30.0
+          registry: true
+          registry_name: registry
+          registry_port: 5001
+          registry_enable_delete: true
+
+      - name: Print KinD node
+        run: |
+          kubectl describe nodes
+        shell: bash
+
+      - name: Build and push operator image
+        run: |
+          IMG=${{ steps.kind.outputs.LOCAL_REGISTRY }}/kpu-operator
+          make build-operator-image -e OPERATOR_IMG="${IMG}"
+          make push-operator-image -e OPERATOR_IMG="${IMG}"
+
+      - name: Deploy operator
+        id: deploy
+        run: |
+          IMG=${{ steps.kind.outputs.LOCAL_REGISTRY }}/kpu-operator
+          make deploy-operator -e OPERATOR_IMG="${IMG}" -e ENV="e2e"
+          kubectl wait --timeout=120s --for=condition=Available=true deployment -n kpu-system kpu-operator
+
+      - name: Print operator logs
+        if: always() && steps.deploy.outcome == 'success'
+        run: |
+          kubectl logs -n kpu-system --tail -1 -l app.kubernetes.io/name=operator | tee ${TEMP_DIR}/kpu-operator.log
+
+      - name: Export KinD logs
+        if: always() && steps.kind-install.outcome == 'success'
+        run: |
+          kind export logs ${TEMP_DIR} --name kpu

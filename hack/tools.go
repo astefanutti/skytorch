@@ -17,5 +17,8 @@ limitations under the License.
 package tools
 
 import (
+	_ "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
 	_ "k8s.io/code-generator"
+	_ "sigs.k8s.io/controller-tools/cmd/controller-gen"
+	_ "sigs.k8s.io/kustomize/kustomize/v5"
 )

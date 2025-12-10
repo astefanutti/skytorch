@@ -27,7 +27,7 @@ ROOT_PKG="github.com/astefanutti/kpu"
 cd "$CURRENT_DIR/.."
 
 # Get the code-generator binary.
-CODEGEN_PKG=$(go list -m -mod=readonly -f "{{.Dir}}" k8s.io/code-generator)
+CODEGEN_PKG=$(cd "${TOOLS_DIR}"; "${GO_CMD}" list -m -mod=readonly -f "{{.Dir}}" k8s.io/code-generator)
 source "${CODEGEN_PKG}/kube_codegen.sh"
 echo ">> Using ${CODEGEN_PKG}"
 
@@ -68,20 +68,18 @@ echo ">> Using ${OPENAPI_PKG}"
 
 echo "Generating OpenAPI specification"
 
-EXTRA_PACKAGES=(
-  k8s.io/apimachinery/pkg/apis/meta/v1
-  k8s.io/apimachinery/pkg/api/resource
-  k8s.io/apimachinery/pkg/runtime
-  k8s.io/apimachinery/pkg/util/intstr
-  k8s.io/api/core/v1
-  k8s.io/api/autoscaling/v2
-)
+#EXTRA_PACKAGES=(
+#  k8s.io/apimachinery/pkg/apis/meta/v1
+#  k8s.io/apimachinery/pkg/api/resource
+#  k8s.io/apimachinery/pkg/runtime
+#  k8s.io/apimachinery/pkg/util/intstr
+#  k8s.io/api/core/v1
+#  k8s.io/api/autoscaling/v2
+#)
 
-go run ${OPENAPI_PKG}/cmd/openapi-gen \
-  --go-header-file "${ROOT_DIR}/hack/boilerplate/boilerplate.go.txt" \
-  --output-pkg "${ROOT_PKG}/pkg/apis/kpu/v1alpha1" \
+kube::codegen::gen_openapi \
+  --boilerplate "${ROOT_DIR}/hack/boilerplate/boilerplate.go.txt" \
   --output-dir "${ROOT_DIR}/pkg/apis/kpu/v1alpha1" \
-  --output-file "zz_generated.openapi.go" \
-  --report-filename "${ROOT_DIR}/hack/violation_exception_v1alpha1.list" \
-  "${EXTRA_PACKAGES[@]}" \
+  --output-pkg "${ROOT_PKG}/pkg/apis/kpu/v1alpha1" \
+  --update-report \
   "${ROOT_DIR}/pkg/apis/kpu/v1alpha1"

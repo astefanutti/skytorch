@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: manager
-          image: ghcr.io/astefanutti/kpu/kpu-operator
+          image: ghcr.io/astefanutti/kpu-operator
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true

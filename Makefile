@@ -15,21 +15,24 @@ SHELL = /usr/bin/env bash -o pipefail
 
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
 # Location to install tool binaries
-LOCALBIN ?= $(PROJECT_DIR)/bin
+BIN_DIR ?= $(PROJECT_DIR)/bin
+TOOLS_DIR := $(PROJECT_DIR)/hack
 
 # Tool versions
-K8S_VERSION ?= 1.34.0
-GINKGO_VERSION ?= $(shell $(GO_CMD) list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
-ENVTEST_VERSION ?= release-0.22
 CONTROLLER_GEN_VERSION ?= v0.18.0
-KIND_VERSION ?= $(shell $(GO_CMD) list -m -f '{{.Version}}' sigs.k8s.io/kind)
+ENVTEST_VERSION ?= release-0.22
+GINKGO_VERSION ?= $(shell cd $(TOOLS_DIR); $(GO_CMD) list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
+GOLANGCI_LINT_VERSION ?= $(shell cd $(TOOLS_DIR); $(GO_CMD) list -m -f '{{.Version}}' github.com/golangci/golangci-lint/v2)
+K8S_VERSION ?= 1.34.0
+KUSTOMIZE_VERSION ?= $(shell cd $(TOOLS_DIR); $(GO_CMD) list -m -f '{{.Version}}' sigs.k8s.io/kustomize/kustomize/v5)
 
 # Tool binaries
-GINKGO ?= $(LOCALBIN)/ginkgo
-ENVTEST ?= $(LOCALBIN)/setup-envtest
-CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
-GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
-GOLANGCI_LINT_KAL ?= $(LOCALBIN)/golangci-lint-kube-api-linter
+CONTROLLER_GEN ?= $(BIN_DIR)/controller-gen
+ENVTEST ?= $(BIN_DIR)/setup-envtest
+GINKGO ?= $(BIN_DIR)/ginkgo
+GOLANGCI_LINT = $(BIN_DIR)/golangci-lint
+GOLANGCI_LINT_KAL ?= $(BIN_DIR)/golangci-lint-kube-api-linter
+KUSTOMIZE = $(BIN_DIR)/kustomize
 
 # Container runtime (docker or podman)
 CONTAINER_RUNTIME ?= $(shell hack/container-runtime.sh)
@@ -69,7 +72,7 @@ manifests: controller-gen ## Generate manifests.
 .PHONY: generate
 generate: go-mod-download manifests ## Generate APIs.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate/boilerplate.go.txt" paths="./pkg/apis/..."
-	hack/update-codegen.sh
+	TOOLS_DIR=${TOOLS_DIR} GO_CMD=${GO_CMD} hack/update-codegen.sh
 
 .PHONY: go-mod-download
 go-mod-download: ## Run go mod download to download modules.
@@ -91,13 +94,17 @@ lint: golangci-lint golangci-lint-kal ## Run golangci-lint to verify Go files.
 
 # Instructions to build components.
 
-.PHONY: operator-binary
-operator-binary: fmt vet ## Build operator binary.
+.PHONY: build-operator-binary
+build-operator-binary: fmt vet ## Build operator binary.
 	$(GO_CMD) build -o cmd/operator/manager-$(shell $(GO_CMD) env GOARCH) cmd/operator/main.go
 
-.PHONY: operator-image
-operator-image: operator-binary ## Build operator image.
+.PHONY: build-operator-image
+build-operator-image: build-operator-binary ## Build operator image.
 	$(CONTAINER_RUNTIME) build -f cmd/operator/Containerfile -t ${OPERATOR_IMG} cmd/operator
+
+.PHONY: push-operator-image
+push-operator-image: ## Push operator image.
+	$(CONTAINER_RUNTIME) push ${OPERATOR_IMG}
 
 # Instructions to run tests.
 
@@ -109,28 +116,33 @@ test: ## Run Go unit test.
 test-integration: ginkgo envtest ## Run Go integration test.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(K8S_VERSION) -p path)" $(GINKGO) -v ./test/integration/...
 
+.PHONY: deploy-operator
+deploy-operator: kustomize ## Deploy operator.
+	cd config/${ENV} && $(KUSTOMIZE) edit set image ghcr.io/astefanutti/kpu-operator=${OPERATOR_IMG}
+	$(KUSTOMIZE) build config/${ENV} | kubectl apply --server-side -f -
+
 # Instructions to download tools for development.
 
-.PHONY: ginkgo
-ginkgo: ## Download the ginkgo binary if required.
-	GOBIN=$(LOCALBIN) $(GO_CMD) install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
+.PHONY: controller-gen
+controller-gen: ## Download the controller-gen binary if necessary.
+	GOBIN=$(BIN_DIR) $(GO_CMD) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 .PHONY: envtest
-envtest: ## Download the setup-envtest binary if required.
-	GOBIN=$(LOCALBIN) $(GO_CMD) install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
+envtest: ## Download the setup-envtest binary if necessary.
+	GOBIN=$(BIN_DIR) $(GO_CMD) install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
 
-.PHONY: controller-gen
-controller-gen: ## Download the controller-gen binary if required.
-	GOBIN=$(LOCALBIN) $(GO_CMD) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
-
-.PHONY: kind
-kind: ## Download Kind binary if required.
-	GOBIN=$(LOCALBIN) $(GO_CMD) install sigs.k8s.io/kind@$(KIND_VERSION)
+.PHONY: ginkgo
+ginkgo: ## Download the ginkgo binary if necessary.
+	GOBIN=$(BIN_DIR) $(GO_CMD) install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
 
 .PHONY: golangci-lint
-golangci-lint: ## Download golangci-lint locally if necessary.
-	@GOBIN=$(LOCALBIN) $(GO_CMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.1
+golangci-lint: ## Download golangci-lint if necessary.
+	@GOBIN=$(BIN_DIR) $(GO_CMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 .PHONY: golangci-lint-kal
 golangci-lint-kal: ## Build golangci-lint-kal from custom configuration.
-	cd $(PROJECT_DIR)/hack/golangci-kal; $(GOLANGCI_LINT) custom -v; mv bin/golangci-lint-kube-api-linter $(LOCALBIN)/
+	cd $(PROJECT_DIR)/hack/golangci-kal; $(GOLANGCI_LINT) custom -v; mv bin/golangci-lint-kube-api-linter $(BIN_DIR)/
+
+.PHONY: kustomize
+kustomize: ## Download kustomize if necessary.
+	GOBIN=$(BIN_DIR) $(GO_CMD) install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
