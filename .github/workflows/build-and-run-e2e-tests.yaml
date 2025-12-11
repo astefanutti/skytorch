@@ -78,7 +78,10 @@ jobs:
       - name: Print operator logs
         if: always() && steps.deploy.outcome == 'success'
         run: |
-          kubectl logs -n kpu-system --tail -1 -l app.kubernetes.io/name=operator | tee ${RUNNER_TEMP}/kpu-operator.log
+          kubectl -n kpu-system logs --tail -1 -l app.kubernetes.io/name=operator -f | tee ${RUNNER_TEMP}/kpu-operator.log &
+          kubectl -n kpu-system scale deployment kpu-operator --replicas 0
+          kubectl -n kpu-system wait --for=delete pods -l app.kubernetes.io/name=operator --timeout=60s
+          wait
 
       - name: Export KinD logs
         if: always() && steps.kind.outcome == 'success'
