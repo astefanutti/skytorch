@@ -19,7 +19,7 @@ BIN_DIR ?= $(PROJECT_DIR)/bin
 TOOLS_DIR := $(PROJECT_DIR)/hack
 
 # Tool versions
-CONTROLLER_GEN_VERSION ?= v0.18.0
+CONTROLLER_GEN_VERSION ?= $(shell cd $(TOOLS_DIR); $(GO_CMD) list -m -f '{{.Version}}' sigs.k8s.io/controller-tools)
 ENVTEST_VERSION ?= release-0.22
 GINKGO_VERSION ?= $(shell cd $(TOOLS_DIR); $(GO_CMD) list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
 GOLANGCI_LINT_VERSION ?= $(shell cd $(TOOLS_DIR); $(GO_CMD) list -m -f '{{.Version}}' github.com/golangci/golangci-lint/v2)
@@ -70,13 +70,13 @@ manifests: controller-gen ## Generate manifests.
 		output:webhook:artifacts:config=config/base/webhook
 
 .PHONY: generate
-generate: go-mod-download manifests ## Generate APIs.
+generate: tools-download manifests ## Generate APIs.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate/boilerplate.go.txt" paths="./pkg/apis/..."
 	TOOLS_DIR=${TOOLS_DIR} GO_CMD=${GO_CMD} hack/update-codegen.sh
 
-.PHONY: go-mod-download
-go-mod-download: ## Run go mod download to download modules.
-	$(GO_CMD) mod download
+.PHONY: tools-download
+tools-download: ## Run go mod download for tools.
+	cd ${TOOLS_DIR} && $(GO_CMD) mod download
 
 # Instructions for code formatting.
 
