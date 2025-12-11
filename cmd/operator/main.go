@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	configapi "github.com/astefanutti/kpu/pkg/apis/config/v1alpha1"
+	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
 	"github.com/astefanutti/kpu/pkg/config"
 	"github.com/astefanutti/kpu/pkg/controllers"
 	"github.com/astefanutti/kpu/pkg/util/cert"
@@ -34,8 +35,10 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(v1alpha1.AddToScheme(scheme))
 }
 
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=create;get;list;update
 
 func main() {

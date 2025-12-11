@@ -34,7 +34,7 @@ rules:
 - apiGroups:
   - compute.kpu.dev
   resources:
-  - compute
+  - computes
   verbs:
   - get
   - list

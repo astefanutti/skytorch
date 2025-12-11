@@ -58,8 +58,7 @@ func NewComputeReconciler(client client.Client, recorder record.EventRecorder) *
 	}
 }
 
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch
-// +kubebuilder:rbac:groups=compute.kpu.dev,resources=compute,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes/finalizers,verbs=get;update;patch
 
