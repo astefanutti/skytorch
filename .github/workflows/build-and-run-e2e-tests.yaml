@@ -78,12 +78,12 @@ jobs:
       - name: Print operator logs
         if: always() && steps.deploy.outcome == 'success'
         run: |
-          kubectl logs -n kpu-system --tail -1 -l app.kubernetes.io/name=operator | tee ${TEMP_DIR}/kpu-operator.log
+          kubectl logs -n kpu-system --tail -1 -l app.kubernetes.io/name=operator | tee ${RUNNER_TEMP}/kpu-operator.log
 
       - name: Export KinD logs
-        if: always() && steps.kind-install.outcome == 'success'
+        if: always() && steps.kind.outcome == 'success'
         run: |
-          kind export logs ${TEMP_DIR} --name kpu
+          kind export logs ${RUNNER_TEMP} --name kpu
 
       - name: Upload KinD logs
         uses: actions/upload-artifact@v5
@@ -92,4 +92,4 @@ jobs:
           name: logs
           retention-days: 10
           path: |
-            ${{ env.TEMP_DIR }}/**/*.log
+            ${{ runner.temp }}/**/*.log
