@@ -99,7 +99,7 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	setupProbeEndpoints(mgr, certsReady)
+	setupProbeEndpoints(mgr, cfg, certsReady)
 
 	// Set up controllers using goroutines to start the manager quickly.
 	go setupControllers(mgr, cfg, certsReady)
@@ -128,29 +128,37 @@ func setupControllers(mgr ctrl.Manager, cfg configapi.Configuration, certsReady 
 	}
 }
 
-func setupProbeEndpoints(mgr ctrl.Manager, certsReady <-chan struct{}) {
+func setupProbeEndpoints(mgr ctrl.Manager, cfg configapi.Configuration, certsReady <-chan struct{}) {
 	defer setupLog.Info("Probe endpoints are configured on healthz and readyz")
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	// Wait for the webhook server to be listening before advertising the
-	// replica as ready. This allows users to wait with sending the first
-	// requests, requiring webhooks, until the deployment is available, so
-	// that the early requests are not rejected during startup.
-	// We wrap the call to GetWebhookServer in a closure to delay calling
-	// the function, otherwise a not fully-initialized webhook server (without
-	// ready certs) fails the start of the manager.
-	if err := mgr.AddReadyzCheck("readyz", func(req *http.Request) error {
-		select {
-		case <-certsReady:
-			return mgr.GetWebhookServer().StartedChecker()(req)
-		default:
-			return errors.New("certificates are not ready")
+
+	if config.IsCertManagementEnabled(&cfg) {
+		// Wait for the webhook server to be listening before advertising the
+		// replica as ready. This allows users to wait with sending the first
+		// requests, requiring webhooks, until the deployment is available, so
+		// that the early requests are not rejected during startup.
+		// We wrap the call to GetWebhookServer in a closure to delay calling
+		// the function, otherwise a not fully-initialized webhook server (without
+		// ready certs) fails the start of the manager.
+		if err := mgr.AddReadyzCheck("readyz", func(req *http.Request) error {
+			select {
+			case <-certsReady:
+				return mgr.GetWebhookServer().StartedChecker()(req)
+			default:
+				return errors.New("certificates are not ready")
+			}
+		}); err != nil {
+			setupLog.Error(err, "unable to set up ready check")
+			os.Exit(1)
 		}
-	}); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+	} else {
+		if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+			setupLog.Error(err, "unable to set up ready check")
+			os.Exit(1)
+		}
 	}
 }
