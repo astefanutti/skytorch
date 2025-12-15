@@ -31,13 +31,14 @@ CODEGEN_PKG=$(cd "${TOOLS_DIR}"; "${GO_CMD}" list -m -mod=readonly -f "{{.Dir}}"
 source "${CODEGEN_PKG}/kube_codegen.sh"
 echo ">> Using ${CODEGEN_PKG}"
 
-# Generating deepcopy and defaults.
 echo "Generating deepcopy and defaults"
+
 kube::codegen::gen_helpers \
   --boilerplate "${ROOT_DIR}/hack/boilerplate/boilerplate.go.txt" \
   "${ROOT_DIR}/pkg/apis"
 
-# Generate clients.
+echo "Generating clients"
+
 externals=(
   "k8s.io/api/core/v1.EnvVar:k8s.io/client-go/applyconfigurations/core/v1"
   "k8s.io/api/core/v1.EnvFromSource:k8s.io/client-go/applyconfigurations/core/v1"
@@ -52,7 +53,6 @@ for external in "${externals[@]:1}"; do
   apply_config_externals="${apply_config_externals},${external}"
 done
 
-echo "Generating clients"
 kube::codegen::gen_client \
   --boilerplate "${ROOT_DIR}/hack/boilerplate/boilerplate.go.txt" \
   --output-dir "${ROOT_DIR}/pkg/client" \
@@ -62,24 +62,30 @@ kube::codegen::gen_client \
   --applyconfig-externals "${apply_config_externals}" \
   "${ROOT_DIR}/pkg/apis"
 
+echo "Generating OpenAPI specification"
+
 # Get the kube-openapi binary to generate OpenAPI spec.
 OPENAPI_PKG=$(go list -m -mod=readonly -f "{{.Dir}}" k8s.io/kube-openapi)
 echo ">> Using ${OPENAPI_PKG}"
 
-echo "Generating OpenAPI specification"
+extra_packages=(
+  "k8s.io/apimachinery/pkg/apis/meta/v1"
+  "k8s.io/apimachinery/pkg/api/resource"
+  "k8s.io/apimachinery/pkg/util/intstr"
+  "k8s.io/api/core/v1"
+)
 
-#EXTRA_PACKAGES=(
-#  k8s.io/apimachinery/pkg/apis/meta/v1
-#  k8s.io/apimachinery/pkg/api/resource
-#  k8s.io/apimachinery/pkg/runtime
-#  k8s.io/apimachinery/pkg/util/intstr
-#  k8s.io/api/core/v1
-#  k8s.io/api/autoscaling/v2
-#)
+gen_openapi_extra_pkgs="--extra-pkgs ${extra_packages[0]}"
+for extra_pkg in "${extra_packages[@]:1}"; do
+  gen_openapi_extra_pkgs="${gen_openapi_extra_pkgs} --extra-pkgs ${extra_pkg}"
+done
+
+echo "gen_openapi_extra" ${gen_openapi_extra_pkgs}
 
 kube::codegen::gen_openapi \
   --boilerplate "${ROOT_DIR}/hack/boilerplate/boilerplate.go.txt" \
   --output-dir "${ROOT_DIR}/pkg/apis/kpu/v1alpha1" \
   --output-pkg "${ROOT_PKG}/pkg/apis/kpu/v1alpha1" \
+  ${gen_openapi_extra_pkgs} \
   --update-report \
   "${ROOT_DIR}/pkg/apis/kpu/v1alpha1"
