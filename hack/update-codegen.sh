@@ -89,3 +89,6 @@ kube::codegen::gen_openapi \
   ${gen_openapi_extra_pkgs} \
   --update-report \
   "${ROOT_DIR}/pkg/apis/kpu/v1alpha1"
+
+echo "Generate OpenAPI Swagger"
+go run hack/swagger/main.go > hack/swagger/swagger.json

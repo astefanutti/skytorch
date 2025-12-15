@@ -73,6 +73,7 @@ manifests: controller-gen ## Generate manifests.
 generate: tools-download manifests ## Generate APIs.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate/boilerplate.go.txt" paths="./pkg/apis/..."
 	TOOLS_DIR=${TOOLS_DIR} GO_CMD=${GO_CMD} hack/update-codegen.sh
+	CONTAINER_RUNTIME=$(CONTAINER_RUNTIME) VERSION=$(VERSION) hack/gen-python-api.sh
 
 .PHONY: tools-download
 tools-download: ## Run go mod download for tools.
