@@ -1,0 +1,12 @@
+---
+kind: GatewayClass
+apiVersion: gateway.networking.k8s.io/v1
+metadata:
+  name: contour
+spec:
+  controllerName: projectcontour.io/gateway-controller
+  parametersRef:
+    group: projectcontour.io
+    kind: ContourDeployment
+    namespace: kpu-system
+    name: contour-config

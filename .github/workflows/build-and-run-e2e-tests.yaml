@@ -52,6 +52,7 @@ jobs:
         with:
           cluster_name: kpu
           version: v0.30.0
+          config: test/kind.yaml
           registry: true
           registry_name: registry
           registry_port: 5001
@@ -60,27 +61,40 @@ jobs:
       - name: Print KinD node
         run: |
           kubectl describe nodes
-        shell: bash
+
+      - name: Install Gateway API CRDs
+        run: |
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/experimental-install.yaml
+          kubectl wait --for=condition=Established --timeout=60s crd/gatewayclasses.gateway.networking.k8s.io
+          kubectl wait --for=condition=Established --timeout=60s crd/gateways.gateway.networking.k8s.io
+          kubectl wait --for=condition=Established --timeout=60s crd/grpcroutes.gateway.networking.k8s.io
+
+      - name: Install Contour
+        run: |
+          kubectl apply --server-side -k config/contour
+          kubectl wait --for=condition=Established --timeout=60s crd/contourdeployments.projectcontour.io
+          kubectl wait --for=condition=Available=true --timeout=60s deployment -n projectcontour contour-gateway-provisioner
 
       - name: Build and push operator image
         run: |
-          IMG=${{ steps.kind.outputs.LOCAL_REGISTRY }}/kpu-operator
-          make build-operator-image -e OPERATOR_IMG="${IMG}"
-          make push-operator-image -e OPERATOR_IMG="${IMG}"
+          IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
+          make build-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
+          make push-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
 
       - name: Deploy operator
         id: deploy
         run: |
-          IMG=${{ steps.kind.outputs.LOCAL_REGISTRY }}/kpu-operator
-          make deploy-operator -e OPERATOR_IMG="${IMG}" -e ENV="e2e"
-          kubectl wait --timeout=120s --for=condition=Available=true deployment -n kpu-system kpu-operator
+          IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
+          make deploy-operator -e IMAGE_BASE="${IMAGE_BASE}" -e ENV="e2e"
+          kubectl wait --for=condition=Available=true --timeout=60s deployment -n kpu-system kpu-operator
+          kubectl wait --for=condition=Programmed --timeout=60s gateway -n kpu-system kpu-gateway
 
       - name: Print operator logs
         if: always() && steps.deploy.outcome == 'success'
         run: |
-          kubectl -n kpu-system logs --tail -1 -l app.kubernetes.io/name=operator -f | tee ${RUNNER_TEMP}/kpu-operator.log &
-          kubectl -n kpu-system scale deployment kpu-operator --replicas 0
-          kubectl -n kpu-system wait --for=delete pods -l app.kubernetes.io/name=operator --timeout=60s
+          kubectl logs --tail -1 -n kpu-system -l app.kubernetes.io/name=operator -f | tee ${RUNNER_TEMP}/kpu-operator.log &
+          kubectl scale deployment -n kpu-system kpu-operator --replicas 0
+          kubectl wait --for=delete pods --timeout=60s -n kpu-system -l app.kubernetes.io/name=operator
           wait
 
       - name: Export KinD logs

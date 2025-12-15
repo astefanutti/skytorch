@@ -5,6 +5,9 @@ namespace: kpu-system
 
 resources:
 - namespace.yaml
+- contour.yaml
+- gatewayclass.yaml
+- gateway.yaml
 - ../base/crds
 - ../base/manager
 - ../base/rbac
