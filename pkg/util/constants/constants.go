@@ -24,4 +24,7 @@ const (
 	// ComputeResumedMessage is status condition message for the
 	// {"type": "Suspended", "status": "True", "reason": "Resumed"} condition.
 	ComputeResumedMessage = "Compute is resumed"
+
+	// ComputeIdHeader is the header used to route to the Compute gRPC endpoint
+	ComputeIdHeader = "compute-id"
 )

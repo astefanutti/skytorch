@@ -15,6 +15,7 @@ import (
 	ctrlpkg "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	configapi "github.com/astefanutti/kpu/pkg/apis/config/v1alpha1"
 	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
@@ -36,6 +37,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(v1alpha1.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1.AddToScheme(scheme))
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;watch;update;patch

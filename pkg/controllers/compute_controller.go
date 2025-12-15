@@ -19,8 +19,11 @@ package controllers
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/go-logr/logr"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,9 +39,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
 	"github.com/astefanutti/kpu/pkg/util/constants"
+)
+
+const (
+	fieldManager = "kpu-compute-controller"
 )
 
 type ComputeReconciler struct {
@@ -58,6 +66,9 @@ func NewComputeReconciler(client client.Client, recorder record.EventRecorder) *
 	}
 }
 
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=grpcroutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes/finalizers,verbs=get;update;patch
@@ -73,6 +84,26 @@ func (r *ComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	prevCompute := compute.DeepCopy()
 	var err error
+
+	if compute.DeletionTimestamp == nil {
+		// Reconcile Service
+		if serviceErr := r.reconcileService(ctx, &compute); serviceErr != nil {
+			log.Error(serviceErr, "Failed to reconcile Service")
+			err = errors.Join(err, serviceErr)
+		}
+
+		// Reconcile GRPCRoute
+		if grpcRouteErr := r.reconcileGRPCRoute(ctx, &compute); grpcRouteErr != nil {
+			log.Error(grpcRouteErr, "Failed to reconcile GRPCRoute")
+			err = errors.Join(err, grpcRouteErr)
+		}
+
+		// Reconcile StatefulSet
+		if statefulSetErr := r.reconcileStatefulSet(ctx, &compute); statefulSetErr != nil {
+			log.Error(statefulSetErr, "Failed to reconcile StatefulSet")
+			err = errors.Join(err, statefulSetErr)
+		}
+	}
 
 	setSuspendedCondition(&compute)
 
@@ -111,6 +142,45 @@ func setSuspendedCondition(compute *v1alpha1.Compute) {
 	meta.SetStatusCondition(&compute.Status.Conditions, newCond)
 }
 
+func (r *ComputeReconciler) reconcileStatefulSet(ctx context.Context, compute *v1alpha1.Compute) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	statefulSet := statefulSetApplyConfiguration(compute)
+
+	if err := r.client.Apply(ctx, statefulSet, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+		return fmt.Errorf("failed to apply StatefulSet: %w", err)
+	}
+
+	log.V(2).Info("StatefulSet reconciled", "statefulset", klog.KRef(compute.Namespace, compute.Name))
+	return nil
+}
+
+func (r *ComputeReconciler) reconcileService(ctx context.Context, compute *v1alpha1.Compute) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	serviceApply := serviceApplyConfiguration(compute)
+
+	if err := r.client.Apply(ctx, serviceApply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+		return fmt.Errorf("failed to apply Service: %w", err)
+	}
+
+	log.V(2).Info("Service reconciled", "service", klog.KRef(compute.Namespace, compute.Name))
+	return nil
+}
+
+func (r *ComputeReconciler) reconcileGRPCRoute(ctx context.Context, compute *v1alpha1.Compute) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	grpcRoute := grpcRouteApplyConfiguration(compute)
+
+	if err := r.client.Apply(ctx, grpcRoute, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+		return fmt.Errorf("failed to apply GRPCRoute: %w", err)
+	}
+
+	log.V(2).Info("GRPCRoute reconciled", "grpcroute", klog.KRef(compute.Namespace, compute.Name))
+	return nil
+}
+
 func setComputeStatus(ctx context.Context, compute *v1alpha1.Compute) error {
 	return nil
 }
@@ -144,6 +214,36 @@ func (r *ComputeReconciler) SetupWithManager(mgr ctrl.Manager, options controlle
 			&v1alpha1.Compute{},
 			&handler.TypedEnqueueRequestForObject[*v1alpha1.Compute]{},
 			r,
+		)).
+		WatchesRawSource(source.TypedKind(
+			mgr.GetCache(),
+			&appsv1.StatefulSet{},
+			handler.TypedEnqueueRequestForOwner[*appsv1.StatefulSet](
+				mgr.GetScheme(),
+				mgr.GetRESTMapper(),
+				&v1alpha1.Compute{},
+				handler.OnlyControllerOwner(),
+			),
+		)).
+		WatchesRawSource(source.TypedKind(
+			mgr.GetCache(),
+			&corev1.Service{},
+			handler.TypedEnqueueRequestForOwner[*corev1.Service](
+				mgr.GetScheme(),
+				mgr.GetRESTMapper(),
+				&v1alpha1.Compute{},
+				handler.OnlyControllerOwner(),
+			),
+		)).
+		WatchesRawSource(source.TypedKind(
+			mgr.GetCache(),
+			&gatewayv1.GRPCRoute{},
+			handler.TypedEnqueueRequestForOwner[*gatewayv1.GRPCRoute](
+				mgr.GetScheme(),
+				mgr.GetRESTMapper(),
+				&v1alpha1.Compute{},
+				handler.OnlyControllerOwner(),
+			),
 		))
 	return b.Complete(r)
 }
