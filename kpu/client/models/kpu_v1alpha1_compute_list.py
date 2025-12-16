@@ -19,8 +19,8 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_apimachinery_pkg_apis_meta_v1_list_meta import IoK8sApimachineryPkgApisMetaV1ListMeta
-from client.models.kpu_v1alpha1_compute import KpuV1alpha1Compute
+from kpu.client.models.io_k8s_apimachinery_pkg_apis_meta_v1_list_meta import IoK8sApimachineryPkgApisMetaV1ListMeta
+from kpu.client.models.kpu_v1alpha1_compute import KpuV1alpha1Compute
 from typing import Optional, Set
 from typing_extensions import Self
 

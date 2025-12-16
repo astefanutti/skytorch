@@ -19,9 +19,9 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_container_state_running import IoK8sApiCoreV1ContainerStateRunning
-from client.models.io_k8s_api_core_v1_container_state_terminated import IoK8sApiCoreV1ContainerStateTerminated
-from client.models.io_k8s_api_core_v1_container_state_waiting import IoK8sApiCoreV1ContainerStateWaiting
+from kpu.client.models.io_k8s_api_core_v1_container_state_running import IoK8sApiCoreV1ContainerStateRunning
+from kpu.client.models.io_k8s_api_core_v1_container_state_terminated import IoK8sApiCoreV1ContainerStateTerminated
+from kpu.client.models.io_k8s_api_core_v1_container_state_waiting import IoK8sApiCoreV1ContainerStateWaiting
 from typing import Optional, Set
 from typing_extensions import Self
 

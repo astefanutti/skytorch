@@ -19,7 +19,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_apimachinery_pkg_util_intstr_int_or_string import IoK8sApimachineryPkgUtilIntstrIntOrString
+from kpu.client.models.io_k8s_apimachinery_pkg_util_intstr_int_or_string import IoK8sApimachineryPkgUtilIntstrIntOrString
 from typing import Optional, Set
 from typing_extensions import Self
 

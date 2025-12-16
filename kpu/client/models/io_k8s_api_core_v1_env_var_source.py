@@ -19,11 +19,11 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_config_map_key_selector import IoK8sApiCoreV1ConfigMapKeySelector
-from client.models.io_k8s_api_core_v1_file_key_selector import IoK8sApiCoreV1FileKeySelector
-from client.models.io_k8s_api_core_v1_object_field_selector import IoK8sApiCoreV1ObjectFieldSelector
-from client.models.io_k8s_api_core_v1_resource_field_selector import IoK8sApiCoreV1ResourceFieldSelector
-from client.models.io_k8s_api_core_v1_secret_key_selector import IoK8sApiCoreV1SecretKeySelector
+from kpu.client.models.io_k8s_api_core_v1_config_map_key_selector import IoK8sApiCoreV1ConfigMapKeySelector
+from kpu.client.models.io_k8s_api_core_v1_file_key_selector import IoK8sApiCoreV1FileKeySelector
+from kpu.client.models.io_k8s_api_core_v1_object_field_selector import IoK8sApiCoreV1ObjectFieldSelector
+from kpu.client.models.io_k8s_api_core_v1_resource_field_selector import IoK8sApiCoreV1ResourceFieldSelector
+from kpu.client.models.io_k8s_api_core_v1_secret_key_selector import IoK8sApiCoreV1SecretKeySelector
 from typing import Optional, Set
 from typing_extensions import Self
 

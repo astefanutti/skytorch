@@ -19,12 +19,12 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_container_state import IoK8sApiCoreV1ContainerState
-from client.models.io_k8s_api_core_v1_container_user import IoK8sApiCoreV1ContainerUser
-from client.models.io_k8s_api_core_v1_resource_requirements import IoK8sApiCoreV1ResourceRequirements
-from client.models.io_k8s_api_core_v1_resource_status import IoK8sApiCoreV1ResourceStatus
-from client.models.io_k8s_api_core_v1_volume_mount_status import IoK8sApiCoreV1VolumeMountStatus
-from client.models.io_k8s_apimachinery_pkg_api_resource_quantity import IoK8sApimachineryPkgApiResourceQuantity
+from kpu.client.models.io_k8s_api_core_v1_container_state import IoK8sApiCoreV1ContainerState
+from kpu.client.models.io_k8s_api_core_v1_container_user import IoK8sApiCoreV1ContainerUser
+from kpu.client.models.io_k8s_api_core_v1_resource_requirements import IoK8sApiCoreV1ResourceRequirements
+from kpu.client.models.io_k8s_api_core_v1_resource_status import IoK8sApiCoreV1ResourceStatus
+from kpu.client.models.io_k8s_api_core_v1_volume_mount_status import IoK8sApiCoreV1VolumeMountStatus
+from kpu.client.models.io_k8s_apimachinery_pkg_api_resource_quantity import IoK8sApimachineryPkgApiResourceQuantity
 from typing import Optional, Set
 from typing_extensions import Self
 

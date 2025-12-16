@@ -19,7 +19,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from typing import Any, ClassVar, Dict, List
-from client.models.io_k8s_api_core_v1_container_extended_resource_request import IoK8sApiCoreV1ContainerExtendedResourceRequest
+from kpu.client.models.io_k8s_api_core_v1_container_extended_resource_request import IoK8sApiCoreV1ContainerExtendedResourceRequest
 from typing import Optional, Set
 from typing_extensions import Self
 

@@ -19,8 +19,8 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_node_selector import IoK8sApiCoreV1NodeSelector
-from client.models.io_k8s_api_core_v1_preferred_scheduling_term import IoK8sApiCoreV1PreferredSchedulingTerm
+from kpu.client.models.io_k8s_api_core_v1_node_selector import IoK8sApiCoreV1NodeSelector
+from kpu.client.models.io_k8s_api_core_v1_preferred_scheduling_term import IoK8sApiCoreV1PreferredSchedulingTerm
 from typing import Optional, Set
 from typing_extensions import Self
 

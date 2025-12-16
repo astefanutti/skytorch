@@ -19,7 +19,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from typing import Any, ClassVar, Dict, List
-from client.models.io_k8s_api_core_v1_node_selector_term import IoK8sApiCoreV1NodeSelectorTerm
+from kpu.client.models.io_k8s_api_core_v1_node_selector_term import IoK8sApiCoreV1NodeSelectorTerm
 from typing import Optional, Set
 from typing_extensions import Self
 

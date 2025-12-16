@@ -19,10 +19,10 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_exec_action import IoK8sApiCoreV1ExecAction
-from client.models.io_k8s_api_core_v1_grpc_action import IoK8sApiCoreV1GRPCAction
-from client.models.io_k8s_api_core_v1_http_get_action import IoK8sApiCoreV1HTTPGetAction
-from client.models.io_k8s_api_core_v1_tcp_socket_action import IoK8sApiCoreV1TCPSocketAction
+from kpu.client.models.io_k8s_api_core_v1_exec_action import IoK8sApiCoreV1ExecAction
+from kpu.client.models.io_k8s_api_core_v1_grpc_action import IoK8sApiCoreV1GRPCAction
+from kpu.client.models.io_k8s_api_core_v1_http_get_action import IoK8sApiCoreV1HTTPGetAction
+from kpu.client.models.io_k8s_api_core_v1_tcp_socket_action import IoK8sApiCoreV1TCPSocketAction
 from typing import Optional, Set
 from typing_extensions import Self
 

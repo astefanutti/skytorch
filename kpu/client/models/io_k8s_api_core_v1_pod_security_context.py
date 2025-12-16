@@ -19,11 +19,11 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_app_armor_profile import IoK8sApiCoreV1AppArmorProfile
-from client.models.io_k8s_api_core_v1_se_linux_options import IoK8sApiCoreV1SELinuxOptions
-from client.models.io_k8s_api_core_v1_seccomp_profile import IoK8sApiCoreV1SeccompProfile
-from client.models.io_k8s_api_core_v1_sysctl import IoK8sApiCoreV1Sysctl
-from client.models.io_k8s_api_core_v1_windows_security_context_options import IoK8sApiCoreV1WindowsSecurityContextOptions
+from kpu.client.models.io_k8s_api_core_v1_app_armor_profile import IoK8sApiCoreV1AppArmorProfile
+from kpu.client.models.io_k8s_api_core_v1_se_linux_options import IoK8sApiCoreV1SELinuxOptions
+from kpu.client.models.io_k8s_api_core_v1_seccomp_profile import IoK8sApiCoreV1SeccompProfile
+from kpu.client.models.io_k8s_api_core_v1_sysctl import IoK8sApiCoreV1Sysctl
+from kpu.client.models.io_k8s_api_core_v1_windows_security_context_options import IoK8sApiCoreV1WindowsSecurityContextOptions
 from typing import Optional, Set
 from typing_extensions import Self
 

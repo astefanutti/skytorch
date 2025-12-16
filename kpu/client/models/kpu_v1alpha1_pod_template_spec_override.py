@@ -19,12 +19,12 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_affinity import IoK8sApiCoreV1Affinity
-from client.models.io_k8s_api_core_v1_local_object_reference import IoK8sApiCoreV1LocalObjectReference
-from client.models.io_k8s_api_core_v1_pod_scheduling_gate import IoK8sApiCoreV1PodSchedulingGate
-from client.models.io_k8s_api_core_v1_toleration import IoK8sApiCoreV1Toleration
-from client.models.io_k8s_api_core_v1_volume import IoK8sApiCoreV1Volume
-from client.models.kpu_v1alpha1_container_override import KpuV1alpha1ContainerOverride
+from kpu.client.models.io_k8s_api_core_v1_affinity import IoK8sApiCoreV1Affinity
+from kpu.client.models.io_k8s_api_core_v1_local_object_reference import IoK8sApiCoreV1LocalObjectReference
+from kpu.client.models.io_k8s_api_core_v1_pod_scheduling_gate import IoK8sApiCoreV1PodSchedulingGate
+from kpu.client.models.io_k8s_api_core_v1_toleration import IoK8sApiCoreV1Toleration
+from kpu.client.models.io_k8s_api_core_v1_volume import IoK8sApiCoreV1Volume
+from kpu.client.models.kpu_v1alpha1_container_override import KpuV1alpha1ContainerOverride
 from typing import Optional, Set
 from typing_extensions import Self
 

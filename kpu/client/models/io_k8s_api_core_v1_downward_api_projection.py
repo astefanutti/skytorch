@@ -19,7 +19,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_downward_api_volume_file import IoK8sApiCoreV1DownwardAPIVolumeFile
+from kpu.client.models.io_k8s_api_core_v1_downward_api_volume_file import IoK8sApiCoreV1DownwardAPIVolumeFile
 from typing import Optional, Set
 from typing_extensions import Self
 

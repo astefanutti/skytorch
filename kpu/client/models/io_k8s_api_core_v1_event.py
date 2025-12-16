@@ -20,10 +20,10 @@ import json
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_event_series import IoK8sApiCoreV1EventSeries
-from client.models.io_k8s_api_core_v1_event_source import IoK8sApiCoreV1EventSource
-from client.models.io_k8s_api_core_v1_object_reference import IoK8sApiCoreV1ObjectReference
-from client.models.io_k8s_apimachinery_pkg_apis_meta_v1_object_meta import IoK8sApimachineryPkgApisMetaV1ObjectMeta
+from kpu.client.models.io_k8s_api_core_v1_event_series import IoK8sApiCoreV1EventSeries
+from kpu.client.models.io_k8s_api_core_v1_event_source import IoK8sApiCoreV1EventSource
+from kpu.client.models.io_k8s_api_core_v1_object_reference import IoK8sApiCoreV1ObjectReference
+from kpu.client.models.io_k8s_apimachinery_pkg_apis_meta_v1_object_meta import IoK8sApimachineryPkgApisMetaV1ObjectMeta
 from typing import Optional, Set
 from typing_extensions import Self
 

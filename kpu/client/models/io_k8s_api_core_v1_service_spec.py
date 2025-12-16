@@ -19,8 +19,8 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_service_port import IoK8sApiCoreV1ServicePort
-from client.models.io_k8s_api_core_v1_session_affinity_config import IoK8sApiCoreV1SessionAffinityConfig
+from kpu.client.models.io_k8s_api_core_v1_service_port import IoK8sApiCoreV1ServicePort
+from kpu.client.models.io_k8s_api_core_v1_session_affinity_config import IoK8sApiCoreV1SessionAffinityConfig
 from typing import Optional, Set
 from typing_extensions import Self
 

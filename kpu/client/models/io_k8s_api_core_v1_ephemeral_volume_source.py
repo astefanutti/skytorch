@@ -19,7 +19,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_persistent_volume_claim_template import IoK8sApiCoreV1PersistentVolumeClaimTemplate
+from kpu.client.models.io_k8s_api_core_v1_persistent_volume_claim_template import IoK8sApiCoreV1PersistentVolumeClaimTemplate
 from typing import Optional, Set
 from typing_extensions import Self
 

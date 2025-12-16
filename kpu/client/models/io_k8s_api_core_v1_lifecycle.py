@@ -19,7 +19,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_lifecycle_handler import IoK8sApiCoreV1LifecycleHandler
+from kpu.client.models.io_k8s_api_core_v1_lifecycle_handler import IoK8sApiCoreV1LifecycleHandler
 from typing import Optional, Set
 from typing_extensions import Self
 

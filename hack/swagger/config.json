@@ -1,4 +1,5 @@
 {
-  "packageName": "client",
+  "packageName": "kpu.client",
+  "generateSourceCodeOnly": true,
   "typeMappings": {}
 }

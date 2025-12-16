@@ -20,12 +20,12 @@ import json
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_container_status import IoK8sApiCoreV1ContainerStatus
-from client.models.io_k8s_api_core_v1_host_ip import IoK8sApiCoreV1HostIP
-from client.models.io_k8s_api_core_v1_pod_condition import IoK8sApiCoreV1PodCondition
-from client.models.io_k8s_api_core_v1_pod_extended_resource_claim_status import IoK8sApiCoreV1PodExtendedResourceClaimStatus
-from client.models.io_k8s_api_core_v1_pod_ip import IoK8sApiCoreV1PodIP
-from client.models.io_k8s_api_core_v1_pod_resource_claim_status import IoK8sApiCoreV1PodResourceClaimStatus
+from kpu.client.models.io_k8s_api_core_v1_container_status import IoK8sApiCoreV1ContainerStatus
+from kpu.client.models.io_k8s_api_core_v1_host_ip import IoK8sApiCoreV1HostIP
+from kpu.client.models.io_k8s_api_core_v1_pod_condition import IoK8sApiCoreV1PodCondition
+from kpu.client.models.io_k8s_api_core_v1_pod_extended_resource_claim_status import IoK8sApiCoreV1PodExtendedResourceClaimStatus
+from kpu.client.models.io_k8s_api_core_v1_pod_ip import IoK8sApiCoreV1PodIP
+from kpu.client.models.io_k8s_api_core_v1_pod_resource_claim_status import IoK8sApiCoreV1PodResourceClaimStatus
 from typing import Optional, Set
 from typing_extensions import Self
 

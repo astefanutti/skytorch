@@ -19,8 +19,8 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_object_field_selector import IoK8sApiCoreV1ObjectFieldSelector
-from client.models.io_k8s_api_core_v1_resource_field_selector import IoK8sApiCoreV1ResourceFieldSelector
+from kpu.client.models.io_k8s_api_core_v1_object_field_selector import IoK8sApiCoreV1ObjectFieldSelector
+from kpu.client.models.io_k8s_api_core_v1_resource_field_selector import IoK8sApiCoreV1ResourceFieldSelector
 from typing import Optional, Set
 from typing_extensions import Self
 

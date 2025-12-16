@@ -19,9 +19,9 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_node_affinity import IoK8sApiCoreV1NodeAffinity
-from client.models.io_k8s_api_core_v1_pod_affinity import IoK8sApiCoreV1PodAffinity
-from client.models.io_k8s_api_core_v1_pod_anti_affinity import IoK8sApiCoreV1PodAntiAffinity
+from kpu.client.models.io_k8s_api_core_v1_node_affinity import IoK8sApiCoreV1NodeAffinity
+from kpu.client.models.io_k8s_api_core_v1_pod_affinity import IoK8sApiCoreV1PodAffinity
+from kpu.client.models.io_k8s_api_core_v1_pod_anti_affinity import IoK8sApiCoreV1PodAntiAffinity
 from typing import Optional, Set
 from typing_extensions import Self
 

@@ -19,8 +19,8 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
-from client.models.io_k8s_api_core_v1_volume_mount import IoK8sApiCoreV1VolumeMount
+from kpu.client.models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
+from kpu.client.models.io_k8s_api_core_v1_volume_mount import IoK8sApiCoreV1VolumeMount
 from typing import Optional, Set
 from typing_extensions import Self
 

@@ -19,7 +19,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from client.models.io_k8s_api_core_v1_node_swap_status import IoK8sApiCoreV1NodeSwapStatus
+from kpu.client.models.io_k8s_api_core_v1_node_swap_status import IoK8sApiCoreV1NodeSwapStatus
 from typing import Optional, Set
 from typing_extensions import Self
 
