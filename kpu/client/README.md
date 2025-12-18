@@ -101,6 +101,33 @@ This uses Kubernetes server-side apply, so it will:
 - Update the resource if it already exists
 - Preserve fields managed by other controllers
 
+### Watching Events
+
+You can monitor Kubernetes Events for your Compute resource by providing an event callback:
+
+```python
+from kpu.client import Compute, log_event
+
+# Option 1: Use the default logging callback
+compute = Compute(
+    name="my-compute",
+    image="localhost:5001/kpu-torch-server:latest",
+    on_events=log_event  # Automatically logs all events
+)
+
+# Option 2: Provide a custom callback
+def my_event_handler(event):
+    print(f"Event: {event.reason} - {event.message}")
+
+compute = Compute(
+    name="my-compute",
+    image="localhost:5001/kpu-torch-server:latest",
+    on_events=my_event_handler
+)
+```
+
+The event callback receives a `V1Event` object from the Kubernetes API for each event related to the Compute resource.
+
 ### Waiting for Ready
 
 ```python
@@ -310,6 +337,7 @@ from kubeconfig context or in-cluster service account.
 - `suspend` (bool): Whether to create in suspended state (default: False)
 - `host` (str, optional): Override gRPC host
 - `port` (int): gRPC port (default: 50051)
+- `on_events` (Callable[[V1Event], None], optional): Callback function to receive Events for this Compute resource
 
 **Methods:**
 - `ready(timeout=300)`: Wait for Compute to be ready using watch
@@ -323,6 +351,32 @@ from kubeconfig context or in-cluster service account.
 
 **Properties:**
 - `resource` (KpuV1alpha1Compute): Underlying Kubernetes resource
+
+### `log_event(event)`
+
+Default event callback that logs Compute events.
+
+This callback can be passed to the Compute constructor's `on_events` parameter
+to automatically log all events related to the Compute resource.
+
+**Parameters:**
+- `event` (V1Event): Kubernetes Event object
+
+**Example:**
+```python
+from kpu.client import Compute, log_event
+
+compute = Compute(
+    name="my-compute",
+    image="localhost:5001/kpu-torch-server:latest",
+    on_events=log_event  # Logs all events
+)
+```
+
+The function logs events with different log levels based on event type:
+- Normal events: INFO level
+- Warning events: WARNING level
+- Error events: ERROR level
 
 ## Requirements
 

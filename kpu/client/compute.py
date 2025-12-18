@@ -8,7 +8,7 @@ in Kubernetes and connecting to them via gRPC.
 import asyncio
 import logging
 from os.path import exists, expanduser
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Callable
 
 try:
     import torch
@@ -22,7 +22,8 @@ try:
     from kubernetes import client as k8s_client
     from kubernetes import config as k8s_config
     from kubernetes import dynamic
-    from kubernetes.client import ApiException, Configuration
+    from kubernetes import watch as k8s_watch
+    from kubernetes.client import ApiException, Configuration, CoreV1Event
     from kubernetes.config import KUBE_CONFIG_DEFAULT_LOCATION
 except ImportError as e:
     raise ImportError(
@@ -232,6 +233,7 @@ class Compute:
         suspend: bool = False,
         host: Optional[str] = None,
         port: int = 50051,
+        on_events: Optional[Callable[[CoreV1Event], None]] = None,
     ):
         """
         Initialize and create/update a Compute resource using server-side apply.
@@ -250,6 +252,7 @@ class Compute:
             suspend: Whether to create the Compute in suspended state
             host: Override the gRPC host (default: use service DNS)
             port: gRPC port (default: 50051)
+            on_events: Optional callback to receive Events for this Compute resource
         """
         self.name = name
         self.namespace = _default_namespace
@@ -262,6 +265,7 @@ class Compute:
         self._suspend = suspend
         self._host_override = host
         self._port = port
+        self._on_events = on_events
 
         # Initialize Kubernetes client if needed
         if _compute_api is None:
@@ -270,9 +274,14 @@ class Compute:
         # State tracking
         self._compute_resource: Optional[KpuV1alpha1Compute] = None
         self._grpc_client: Optional[TensorClient] = None
+        self._event_watch_task: Optional[asyncio.Task] = None
 
         # Apply the Compute resource using server-side apply
         self._apply_compute()
+
+        # Start event watching if callback is provided
+        if self._on_events is not None:
+            self._event_watch_task = asyncio.create_task(self._watch_events())
 
     async def ready(
             self,
@@ -419,7 +428,16 @@ class Compute:
         Args:
             grace_period_seconds: Grace period for deletion
         """
-        # Cleanup gRPC client first
+        # Cancel event watch task if running
+        if self._event_watch_task is not None:
+            self._event_watch_task.cancel()
+            try:
+                await self._event_watch_task
+            except asyncio.CancelledError:
+                pass
+            self._event_watch_task = None
+
+        # Cleanup gRPC client
         await self._cleanup_grpc_client()
 
         logger.info(f"Deleting Compute {self.namespace}/{self.name}")
@@ -503,6 +521,42 @@ class Compute:
         except ApiException as e:
             logger.error(f"Failed to apply Compute: {e}")
             raise
+
+    async def _watch_events(self):
+        """Watch for Events related to this Compute resource and call the callback."""
+        logger.debug(f"Starting event watch for Compute {self.namespace}/{self.name}")
+
+        # Create CoreV1Api for watching events
+        core_api = k8s_client.CoreV1Api()
+
+        def _watch_events_sync():
+            """Synchronous event watching (runs in executor)."""
+            w = k8s_watch.Watch()
+            try:
+                # Watch events related to this Compute resource
+                for event in w.stream(
+                        core_api.list_namespaced_event,
+                        namespace=self.namespace,
+                        field_selector=f"involvedObject.name={self.name},involvedObject.kind=Compute",
+                ):
+                    if event["type"] in ["ADDED", "MODIFIED"]:
+                        event_obj = event["object"]
+                        # Call the callback with the event
+                        if self._on_events is not None:
+                            self._on_events(event_obj)
+
+            except asyncio.CancelledError:
+                logger.debug(f"Event watch cancelled for Compute {self.namespace}/{self.name}")
+                w.stop()
+            except Exception as e:
+                logger.error(f"Error watching events for Compute {self.namespace}/{self.name}: {e}")
+                w.stop()
+            finally:
+                w.stop()
+
+        # Run the watch in an executor
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _watch_events_sync)
 
     def _is_ready(self) -> bool:
         """Check if the Compute is ready based on conditions."""

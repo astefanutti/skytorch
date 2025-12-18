@@ -9,7 +9,7 @@ import asyncio
 import logging
 import torch
 
-from kpu.client import Compute
+from kpu.client import Compute, log_event
 
 
 async def main():
@@ -45,6 +45,7 @@ async def main():
         env={
             "LOG_LEVEL": "INFO",
         },
+        on_events=log_event,
     ) as compute:
         print(f"Compute is ready: {compute.is_ready()}")
 
