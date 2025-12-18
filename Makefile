@@ -37,6 +37,7 @@ KUSTOMIZE = $(BIN_DIR)/kustomize
 # Container runtime (docker or podman)
 CONTAINER_RUNTIME ?= $(shell hack/container-runtime.sh)
 
+ARCH ?= $(shell $(GO_CMD) env GOARCH)
 VERSION ?= v0.0.0-dev
 IMAGE_BASE ?= ghcr.io/astefanutti
 OPERATOR_IMG ?= ${IMAGE_BASE}/kpu-operator:${VERSION}
@@ -97,11 +98,11 @@ lint: golangci-lint golangci-lint-kal ## Run golangci-lint to verify Go files.
 
 .PHONY: build-operator-binary
 build-operator-binary: fmt vet ## Build operator binary.
-	$(GO_CMD) build -o cmd/operator/manager-$(shell $(GO_CMD) env GOARCH) cmd/operator/main.go
+	GOOS=linux GOARCH=$(ARCH) $(GO_CMD) build -o cmd/operator/manager-$(ARCH) cmd/operator/main.go
 
 .PHONY: build-operator-image
 build-operator-image: build-operator-binary ## Build operator image.
-	$(CONTAINER_RUNTIME) build -f cmd/operator/Containerfile -t ${OPERATOR_IMG} cmd/operator
+	$(CONTAINER_RUNTIME) build --platform linux/$(ARCH) -f cmd/operator/Containerfile -t ${OPERATOR_IMG} cmd/operator
 
 .PHONY: push-operator-image
 push-operator-image: ## Push operator image.
