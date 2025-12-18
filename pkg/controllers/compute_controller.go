@@ -105,10 +105,11 @@ func (r *ComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	setSuspendedCondition(&compute)
+	r.setSuspendedCondition(&compute)
 
-	if statusErr := setComputeStatus(ctx, &compute); statusErr != nil {
-		err = errors.Join(err, statusErr)
+	if readyErr := r.setReadyCondition(ctx, &compute); readyErr != nil {
+		log.Error(readyErr, "Failed to set Ready condition")
+		err = errors.Join(err, readyErr)
 	}
 
 	if !equality.Semantic.DeepEqual(&compute.Status, prevCompute.Status) {
@@ -116,30 +117,8 @@ func (r *ComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// for sub-resources. See: https://github.com/kubernetes-sigs/controller-runtime/issues/3183
 		return ctrl.Result{}, errors.Join(err, r.client.Status().Patch(ctx, &compute, client.MergeFrom(prevCompute)))
 	}
-	return ctrl.Result{}, err
-}
 
-func setSuspendedCondition(compute *v1alpha1.Compute) {
-	var newCond metav1.Condition
-	switch {
-	case ptr.Deref(compute.Spec.Suspend, false):
-		newCond = metav1.Condition{
-			Type:    v1alpha1.ComputeSuspended,
-			Status:  metav1.ConditionTrue,
-			Message: constants.ComputeSuspendedMessage,
-			Reason:  v1alpha1.ComputeSuspendedReason,
-		}
-	case meta.IsStatusConditionTrue(compute.Status.Conditions, v1alpha1.ComputeSuspended):
-		newCond = metav1.Condition{
-			Type:    v1alpha1.ComputeSuspended,
-			Status:  metav1.ConditionFalse,
-			Message: constants.ComputeResumedMessage,
-			Reason:  v1alpha1.ComputeResumedReason,
-		}
-	default:
-		return
-	}
-	meta.SetStatusCondition(&compute.Status.Conditions, newCond)
+	return ctrl.Result{}, err
 }
 
 func (r *ComputeReconciler) reconcileStatefulSet(ctx context.Context, compute *v1alpha1.Compute) error {
@@ -181,7 +160,67 @@ func (r *ComputeReconciler) reconcileGRPCRoute(ctx context.Context, compute *v1a
 	return nil
 }
 
-func setComputeStatus(ctx context.Context, compute *v1alpha1.Compute) error {
+func (r *ComputeReconciler) setSuspendedCondition(compute *v1alpha1.Compute) {
+	var newCond metav1.Condition
+	switch {
+	case ptr.Deref(compute.Spec.Suspend, false):
+		newCond = metav1.Condition{
+			Type:    v1alpha1.ComputeSuspended,
+			Status:  metav1.ConditionTrue,
+			Message: constants.ComputeSuspendedMessage,
+			Reason:  v1alpha1.ComputeSuspendedReason,
+		}
+	case meta.IsStatusConditionTrue(compute.Status.Conditions, v1alpha1.ComputeSuspended):
+		newCond = metav1.Condition{
+			Type:    v1alpha1.ComputeSuspended,
+			Status:  metav1.ConditionFalse,
+			Message: constants.ComputeResumedMessage,
+			Reason:  v1alpha1.ComputeResumedReason,
+		}
+	default:
+		return
+	}
+	meta.SetStatusCondition(&compute.Status.Conditions, newCond)
+}
+
+func (r *ComputeReconciler) setReadyCondition(ctx context.Context, compute *v1alpha1.Compute) error {
+	// Get the StatefulSet to read its current status
+	var statefulSet appsv1.StatefulSet
+	if err := r.client.Get(ctx, client.ObjectKeyFromObject(compute), &statefulSet); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			// StatefulSet not found, set Ready to False
+			meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+				Type:    v1alpha1.ComputeReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  "StatefulSetNotAvailable",
+				Message: "StatefulSet is not available",
+			})
+			return nil
+		}
+		return fmt.Errorf("failed to get StatefulSet: %w", err)
+	}
+
+	// Check if StatefulSet is ready
+	replicas := ptr.Deref(statefulSet.Spec.Replicas, 0)
+	readyReplicas := statefulSet.Status.ReadyReplicas
+
+	if readyReplicas == replicas && replicas > 0 {
+		// StatefulSet is ready
+		meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+			Type:    v1alpha1.ComputeReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  "StatefulSetReady",
+			Message: fmt.Sprintf("All %d replicas are ready", replicas),
+		})
+	} else {
+		// StatefulSet is not ready
+		meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+			Type:    v1alpha1.ComputeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "StatefulSetNotReady",
+			Message: fmt.Sprintf("StatefulSet has %d/%d ready replicas", readyReplicas, replicas),
+		})
+	}
 	return nil
 }
 
