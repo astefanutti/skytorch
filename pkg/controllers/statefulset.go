@@ -93,6 +93,20 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 					corev1.ResourceCPU:    resource.MustParse("1"),
 					corev1.ResourceMemory: resource.MustParse("2Gi"),
 				}),
+		).
+		WithReadinessProbe(
+			corev1apply.Probe().
+				WithGRPC(
+					corev1apply.GRPCAction().
+						WithPort(50051).
+						// TODO: Make it dependent of the server compute type
+						WithService("kpu.torch.Service"),
+				).
+				WithInitialDelaySeconds(2).
+				WithPeriodSeconds(2).
+				WithTimeoutSeconds(5).
+				WithSuccessThreshold(1).
+				WithFailureThreshold(3),
 		)
 
 	// Add command if specified
