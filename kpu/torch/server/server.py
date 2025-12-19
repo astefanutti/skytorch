@@ -15,6 +15,8 @@ except ImportError as e:
 try:
     from kpu.torch.server import service_pb2
     from kpu.torch.server import service_pb2_grpc
+    from kpu.torch.server import health_pb2
+    from kpu.torch.server import health_pb2_grpc
 except ImportError:
     raise ImportError(
         "Generated gRPC code not found. Run ./generate_proto.sh first.\n"
@@ -26,6 +28,7 @@ from kpu.torch.server.serialization import (
     TensorAssembler,
     DEFAULT_CHUNK_SIZE
 )
+from kpu.torch.server.health import HealthServicer
 
 
 logger = logging.getLogger(__name__)
@@ -319,8 +322,24 @@ async def serve(
     """
     server = grpc.aio.server()
 
+    # Add tensor service
     servicer = TensorServicer(chunk_size=chunk_size)
     service_pb2_grpc.add_ServiceServicer_to_server(servicer, server)
+
+    # Add health service
+    health_servicer = HealthServicer()
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+
+    # Set health status
+    health_servicer.set_service_status(
+        "kpu.torch.Service",
+        health_pb2.HealthCheckResponse.SERVING
+    )
+    # Set overall server health
+    health_servicer.set_service_status(
+        "",
+        health_pb2.HealthCheckResponse.SERVING
+    )
 
     listen_addr = f'{host}:{port}'
     server.add_insecure_port(listen_addr)

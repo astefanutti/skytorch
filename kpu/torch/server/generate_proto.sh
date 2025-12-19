@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Generate Python gRPC code from proto file
+# Generate Python gRPC code from proto files
 # Run this script after installing grpcio-tools: pip install grpcio-tools
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,11 +8,27 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
-python -m grpc_tools.protoc \
+# Use .venv Python if available, otherwise fall back to system python/python3
+if [ -f ".venv/bin/python" ]; then
+    PYTHON=".venv/bin/python"
+elif command -v python3 &> /dev/null; then
+    PYTHON="python3"
+else
+    PYTHON="python"
+fi
+
+$PYTHON -m grpc_tools.protoc \
     -I. \
     --python_out=. \
     --pyi_out=. \
     --grpc_python_out=. \
     kpu/torch/server/service.proto
+
+$PYTHON -m grpc_tools.protoc \
+    -I. \
+    --python_out=. \
+    --pyi_out=. \
+    --grpc_python_out=. \
+    kpu/torch/server/health.proto
 
 echo "Generated gRPC code successfully"
