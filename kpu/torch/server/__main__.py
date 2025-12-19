@@ -6,8 +6,11 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 
-from kpu.torch.server.server import serve, _cleanup_coroutines
+import grpc
+
+from kpu.torch.server.server import serve, graceful_shutdown
 from kpu.torch.server.serialization import DEFAULT_CHUNK_SIZE
 
 
@@ -61,16 +64,20 @@ logger.info(f"  Log Level: {args.log_level}")
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
+server = grpc.aio.server()
+
+for sig in (signal.SIGINT, signal.SIGTERM):
+    loop.add_signal_handler(sig, lambda: asyncio.ensure_future(graceful_shutdown(server, grace=5.0)))
+
 try:
     loop.run_until_complete(
         serve(
+            server,
             host=args.host,
             port=args.port,
             chunk_size=args.chunk_size
         )
     )
-except KeyboardInterrupt:
-    pass
 finally:
-    loop.run_until_complete(*_cleanup_coroutines)
+    loop.run_until_complete(server.wait_for_termination())
     loop.close()

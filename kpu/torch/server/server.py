@@ -1,9 +1,8 @@
 """
 Async gRPC server implementation for streaming PyTorch tensors.
 """
-
 import logging
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 try:
     import grpc
@@ -303,11 +302,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         return tensor
 
 
-# Coroutines to be invoked when the event loop is shutting down.
-_cleanup_coroutines = []
-
-
 async def serve(
+    server: grpc.aio.Server,
+    *,
     host: str = "[::]",
     port: int = 50051,
     chunk_size: int = DEFAULT_CHUNK_SIZE
@@ -316,11 +313,11 @@ async def serve(
     Start the async gRPC server.
 
     Args:
+        server: Server to start
         host: Host to listen on
         port: Port to listen on
         chunk_size: Size of chunks for streaming tensors
     """
-    server = grpc.aio.server()
 
     # Add tensor service
     servicer = TensorServicer(chunk_size=chunk_size)
@@ -350,13 +347,13 @@ async def serve(
     logger.info(f"Server listening on port {port}")
     logger.info(f"Chunk size: {chunk_size} bytes")
 
-    async def server_graceful_shutdown():
-        logging.info("Graceful shutdown...")
-        # Shuts down the server with 0 seconds of grace period. During the
-        # grace period, the server won't accept new connections and allow
-        # existing RPCs to continue within the grace period.
-        await server.stop(5.0)
-        logging.info("Graceful shutdown complete")
-
-    _cleanup_coroutines.append(server_graceful_shutdown())
     await server.wait_for_termination()
+
+
+async def graceful_shutdown(server: grpc.aio.Server, grace: Optional[float]) -> None:
+    logging.info("Graceful shutdown...")
+    # Shuts down the server. During the grace period,
+    # the server won't accept new connections and allow
+    # existing RPCs to continue within the grace period.
+    await server.stop(grace=grace)
+    logging.info("Graceful shutdown complete")
