@@ -19,11 +19,9 @@ except ImportError as e:
     )
 
 try:
-    from kubernetes import client as k8s_client
     from kubernetes import config as k8s_config
     from kubernetes import dynamic
-    from kubernetes import watch as k8s_watch
-    from kubernetes.client import ApiException, Configuration, CoreV1Event
+    from kubernetes.client import ApiClient, ApiException, Configuration, CoreV1Event, CoreV1Api
     from kubernetes.config import KUBE_CONFIG_DEFAULT_LOCATION
 except ImportError as e:
     raise ImportError(
@@ -37,8 +35,11 @@ from kpu.client.models.io_k8s_apimachinery_pkg_apis_meta_v1_object_meta import (
     IoK8sApimachineryPkgApisMetaV1ObjectMeta
 )
 from kpu.client.models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
-from kpu.torch.client.example_client import TensorClient
+from kpu.torch.client import TensorClient
 
+from kpu.client.aio import Watch
+
+import kpu.client.aio as aio
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ _default_namespace: str = "default"
 
 def init(
     *,
-    client_config: Optional[k8s_client.Configuration] = None,
+    client_config: Optional[Configuration] = None,
     namespace: Optional[str] = None,
 ):
     """
@@ -106,7 +107,7 @@ def init(
     if client_config is not None:
         # Use provided configuration
         Configuration.set_default(client_config)
-        api_client = k8s_client.ApiClient()
+        api_client = ApiClient()
         dynamic_client = dynamic.DynamicClient(api_client)
         _compute_api = dynamic_client.resources.get(
             api_version="compute.kpu.dev/v1alpha1",
@@ -157,7 +158,7 @@ def init(
 
     # Initialize API clients if configuration was loaded successfully
     if Configuration._default:
-        api_client = k8s_client.ApiClient()
+        api_client = ApiClient()
         dynamic_client = dynamic.DynamicClient(api_client)
         _compute_api = dynamic_client.resources.get(
             api_version="compute.kpu.dev/v1alpha1",
@@ -276,16 +277,16 @@ class Compute:
         self._grpc_client: Optional[TensorClient] = None
         self._event_watch_task: Optional[asyncio.Task] = None
 
-        # Apply the Compute resource using server-side apply
-        self._apply_compute()
-
         # Start event watching if callback is provided
         if self._on_events is not None:
             self._event_watch_task = asyncio.create_task(self._watch_events())
 
+        # Apply the Compute resource using server-side apply
+        self._apply_compute()
+
     async def ready(
             self,
-            timeout: float = 300,
+            timeout: int = 60,
     ) -> "Compute":
         """
         Wait for the Compute to become ready using watch.
@@ -304,54 +305,43 @@ class Compute:
             f"(timeout: {timeout}s)"
         )
 
-        # Run the watch in an executor since it's synchronous
-        loop = asyncio.get_event_loop()
+        async with aio.ApiClient() as api_client, aio.DynamicClient(api_client) as dynamic_client:
+            compute_api = await dynamic_client.resources.get(
+                api_version="compute.kpu.dev/v1alpha1",
+                kind="Compute"
+            )
+            async for event in compute_api.watch(
+                    namespace=self.namespace,
+                    field_selector=f"metadata.name={self.name}",
+                    timeout=int(timeout),
+            ):
+                event_type = event["type"]
+                obj = event["object"]
 
-        def _watch_for_ready():
-            """Watch for the Compute to become ready (runs in executor)."""
-            try:
-                # Watch events for this specific Compute resource
-                for event in _compute_api.watch(
-                        namespace=self.namespace,
-                        field_selector=f"metadata.name={self.name}",
-                        timeout=int(timeout),
-                ):
-                    event_type = event["type"]
-                    obj = event["object"]
+                # Update our cached resource
+                self._compute_resource = KpuV1alpha1Compute.from_dict(obj.to_dict())
 
-                    # Update our cached resource
-                    self._compute_resource = KpuV1alpha1Compute.from_dict(obj.to_dict())
+                # Log current status
+                if self._compute_resource.status and self._compute_resource.status.conditions:
+                    conditions = self._compute_resource.status.conditions
+                    status_msg = ", ".join(
+                        f"{c.type}={c.status}" for c in conditions
+                    )
+                    logger.debug(
+                        f"Compute {self.namespace}/{self.name} event={event_type} "
+                        f"status: {status_msg}"
+                    )
 
-                    # Log current status
-                    if self._compute_resource.status and self._compute_resource.status.conditions:
-                        conditions = self._compute_resource.status.conditions
-                        status_msg = ", ".join(
-                            f"{c.type}={c.status}" for c in conditions
-                        )
-                        logger.debug(
-                            f"Compute {self.namespace}/{self.name} event={event_type} "
-                            f"status: {status_msg}"
-                        )
+                # Check if ready
+                if self._is_ready():
+                    logger.info(f"Compute {self.namespace}/{self.name} is ready")
+                    break
 
-                    # Check if ready
-                    if self._is_ready():
-                        logger.info(f"Compute {self.namespace}/{self.name} is ready")
-                        return True
-
-                # If we get here, the watch timed out
-                return False
-
-            except Exception as e:
-                logger.error(f"Error watching Compute: {e}")
-                raise
-
-        # Run the watch in a thread executor
-        is_ready = await loop.run_in_executor(None, _watch_for_ready)
-
-        if not is_ready:
-            raise TimeoutError(
-                f"Compute {self.namespace}/{self.name} did not become ready "
-                f"within {timeout} seconds"
+            # The watch timed out
+            if not self.is_ready():
+                raise TimeoutError(
+                    f"Compute {self.namespace}/{self.name} did not become ready "
+                    f"within {timeout} seconds"
             )
 
         # Initialize gRPC client when ready
@@ -431,11 +421,7 @@ class Compute:
         # Cancel event watch task if running
         if self._event_watch_task is not None:
             self._event_watch_task.cancel()
-            try:
-                await self._event_watch_task
-            except asyncio.CancelledError:
-                pass
-            self._event_watch_task = None
+            await self._event_watch_task
 
         # Cleanup gRPC client
         await self._cleanup_grpc_client()
@@ -526,37 +512,19 @@ class Compute:
         """Watch for Events related to this Compute resource and call the callback."""
         logger.debug(f"Starting event watch for Compute {self.namespace}/{self.name}")
 
-        # Create CoreV1Api for watching events
-        core_api = k8s_client.CoreV1Api()
-
-        def _watch_events_sync():
-            """Synchronous event watching (runs in executor)."""
-            w = k8s_watch.Watch()
-            try:
-                # Watch events related to this Compute resource
-                for event in w.stream(
-                        core_api.list_namespaced_event,
-                        namespace=self.namespace,
-                        field_selector=f"involvedObject.name={self.name},involvedObject.kind=Compute",
-                ):
-                    if event["type"] in ["ADDED", "MODIFIED"]:
-                        event_obj = event["object"]
-                        # Call the callback with the event
-                        if self._on_events is not None:
-                            self._on_events(event_obj)
-
-            except asyncio.CancelledError:
-                logger.debug(f"Event watch cancelled for Compute {self.namespace}/{self.name}")
-                w.stop()
-            except Exception as e:
-                logger.error(f"Error watching events for Compute {self.namespace}/{self.name}: {e}")
-                w.stop()
-            finally:
-                w.stop()
-
-        # Run the watch in an executor
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _watch_events_sync)
+        async with aio.ApiClient() as api_client:
+            core_api = CoreV1Api(api_client)
+            async with Watch(api_client).\
+                    stream(core_api.list_namespaced_event,
+                           namespace=self.namespace,
+                           field_selector=f"involvedObject.name={self.name},involvedObject.kind=Compute",
+                           ) as stream:
+                try:
+                    async for event in stream:
+                        if event["type"] in ["ADDED", "MODIFIED"]:
+                            self._on_events(event["object"])
+                except asyncio.CancelledError:
+                    pass
 
     def _is_ready(self) -> bool:
         """Check if the Compute is ready based on conditions."""
