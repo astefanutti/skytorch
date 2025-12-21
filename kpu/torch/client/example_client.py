@@ -7,6 +7,8 @@ This demonstrates how to use the async streaming methods to send and receive ten
 import asyncio
 import logging
 
+from typing import Optional
+
 try:
     import grpc
     import torch
@@ -26,6 +28,7 @@ from kpu.torch.server.serialization import (
     TensorAssembler
 )
 
+from grpc.aio._typing import MetadataType
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,7 @@ class TensorClient:
     Async gRPC client for streaming PyTorch tensors.
     """
 
-    def __init__(self, host: str = 'localhost', port: int = 50051):
+    def __init__(self, host: str = 'localhost', port: int = 50051, metadata: Optional[MetadataType] = None):
         """
         Initialize the client.
 
@@ -44,6 +47,7 @@ class TensorClient:
             port: Server port
         """
         self.address = f'{host}:{port}'
+        self.metadata = metadata
         self.channel = None
         self.stub = None
 
@@ -87,7 +91,7 @@ class TensorClient:
 
                     yield chunk
 
-        response = await self.stub.ReceiveTensors(tensor_generator())
+        response = await self.stub.ReceiveTensors(tensor_generator(), metadata=self.metadata)
         return response
 
     async def receive_tensors(
@@ -112,7 +116,7 @@ class TensorClient:
         assembler = TensorAssembler()
         tensors = []
 
-        async for chunk in self.stub.SendTensors(request):
+        async for chunk in self.stub.SendTensors(request, metadata=self.metadata):
             logger.debug(
                 f"Received chunk {chunk.chunk_number}/{chunk.total_chunks} "
                 f"for tensor {chunk.tensor_id}"
@@ -170,7 +174,7 @@ class TensorClient:
         assembler = TensorAssembler()
         processed_tensors = []
 
-        async for chunk in self.stub.StreamTensors(tensor_generator()):
+        async for chunk in self.stub.StreamTensors(tensor_generator(), metadata=self.metadata):
             logger.debug(
                 f"Received processed chunk {chunk.chunk_number}/{chunk.total_chunks} "
                 f"for tensor {chunk.tensor_id}"

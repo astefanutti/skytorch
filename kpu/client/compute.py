@@ -564,7 +564,8 @@ class Compute:
             f"at {host}:{self._port}"
         )
 
-        self._grpc_client = TensorClient(host=host, port=self._port)
+        self._grpc_client = TensorClient(host=host, port=self._port,
+                                         metadata=[("compute-id", f"{self.namespace}/{self.name}")])
         # Enter the async context manager
         await self._grpc_client.__aenter__()
 
