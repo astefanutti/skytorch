@@ -518,6 +518,8 @@ class Compute:
                     stream(core_api.list_namespaced_event,
                            namespace=self.namespace,
                            field_selector=f"involvedObject.name={self.name},involvedObject.kind=Compute",
+                           send_initial_events=False,
+                           resource_version_match="NotOlderThan",
                            ) as stream:
                 try:
                     async for event in stream:
