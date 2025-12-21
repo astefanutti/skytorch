@@ -7,6 +7,8 @@ and use it to stream PyTorch tensors.
 
 import asyncio
 import logging
+import sys
+
 import torch
 
 from kpu.client import Compute, log_event
@@ -15,6 +17,7 @@ from kpu.client import Compute, log_event
 async def main():
     """Example usage of the Compute API."""
     logging.basicConfig(
+        stream=sys.stdout,
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
@@ -35,17 +38,18 @@ async def main():
     tensor1 = torch.randn(100, 100)
     tensor2 = torch.randn(50, 50)
 
-    # Example 1: Using context manager (recommended)
+    # Example 1: Using context manager
     # The Compute resource is created/updated when instantiated,
     # then we wait for it to be ready, use it, and delete it on exit
     # Namespace is auto-detected from kubeconfig context or service account
     async with Compute(
         name="test-sdk",
-        image="ghcr.io/astefanutti/kpu-torch-server@sha256:6ae85f768ce84fb7002e5e0e1536a585ad8e99442dab34763f73d664923140ab",
+        image="ghcr.io/astefanutti/kpu-torch-server@sha256:ef169e0f3e903feef41443340d1eecbf2ff6b92a58e62a90ace7505758e90724",
         env={
             "LOG_LEVEL": "INFO",
         },
         on_events=log_event,
+        host="localhost",
     ) as compute:
         print(f"Compute is ready: {compute.is_ready()}")
 
@@ -78,10 +82,11 @@ async def main():
     compute = Compute(
         name="my-compute-2",
         image="localhost:5001/kpu-torch-server:latest",
+        on_events=log_event,
     )
 
     # Wait for it to be ready
-    await compute.ready(timeout=300)
+    await compute.ready(timeout=60)
 
     # Use it
     tensors = await compute.receive_tensors(count=1)
@@ -104,8 +109,7 @@ async def main():
     compute_external = Compute(
         name="my-compute-3",
         image="localhost:5001/kpu-torch-server:latest",
-        host="localhost",  # Override to use port-forwarding
-        port=50051,
+        host="localhost",
     )
 
     async with compute_external:
