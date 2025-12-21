@@ -44,8 +44,7 @@ import kpu.client.aio as aio
 logger = logging.getLogger(__name__)
 
 
-# Global Kubernetes API client and namespace
-_compute_api: Optional[dynamic.resource.Resource] = None
+# Global Kubernetes API namespace
 _default_namespace: str = "default"
 
 
@@ -91,9 +90,9 @@ def init(
         >>> # Or let it auto-detect (default kubeconfig -> in-cluster)
         >>> # No need to call init() at all, it will happen lazily
     """
-    global _compute_api, _default_namespace
+    global _default_namespace
 
-    if _compute_api is not None:
+    if Configuration._default is not None:
         raise RuntimeError(
             "Kubernetes client is already initialized. "
             "The init() function can only be called once before creating any Compute instances."
@@ -107,13 +106,8 @@ def init(
     if client_config is not None:
         # Use provided configuration
         Configuration.set_default(client_config)
-        api_client = ApiClient()
-        dynamic_client = dynamic.DynamicClient(api_client)
-        _compute_api = dynamic_client.resources.get(
-            api_version="compute.kpu.dev/v1alpha1",
-            kind="Compute"
-        )
         logger.debug("Kubernetes client initialized with provided configuration")
+        return
 
     # Auto-detect: try default kubeconfig first, then fall back to in-cluster
     if exists(expanduser(KUBE_CONFIG_DEFAULT_LOCATION)):
@@ -130,6 +124,7 @@ def init(
 
         k8s_config.load_kube_config()
         logger.debug("Kubernetes client initialized with default kubeconfig")
+        return
     else:
         logger.debug("Default kubeconfig not found, trying in-cluster config")
         try:
@@ -155,23 +150,14 @@ def init(
                     logger.debug(f"Using namespace '{_default_namespace}' from service account")
 
             logger.debug("Kubernetes client initialized with in-cluster config")
+            return
 
-    # Initialize API clients if configuration was loaded successfully
-    if Configuration._default:
-        api_client = ApiClient()
-        dynamic_client = dynamic.DynamicClient(api_client)
-        _compute_api = dynamic_client.resources.get(
-            api_version="compute.kpu.dev/v1alpha1",
-            kind="Compute"
-        )
-
-    # Final check to ensure initialization was successful
-    if _compute_api is None:
-        raise k8s_config.ConfigException(
-            "Could not configure Kubernetes client. "
-            f"Neither default kubeconfig ({KUBE_CONFIG_DEFAULT_LOCATION}) "
-            "nor in-cluster config could be loaded."
-        )
+    # Initialization failed
+    raise k8s_config.ConfigException(
+        "Could not configure Kubernetes client. "
+        f"Neither default kubeconfig ({KUBE_CONFIG_DEFAULT_LOCATION}) "
+        "nor in-cluster config could be loaded."
+    )
 
 
 class Compute:
@@ -269,8 +255,16 @@ class Compute:
         self._on_events = on_events
 
         # Initialize Kubernetes client if needed
-        if _compute_api is None:
+        if Configuration._default is None:
             init()
+
+        # Kubernetes client APIs
+        self._api_client = ApiClient()
+        self._dynamic_client = dynamic.DynamicClient(self._api_client)
+        self._compute_api = self._dynamic_client.resources.get(
+            api_version="compute.kpu.dev/v1alpha1",
+            kind="Compute"
+        )
 
         # State tracking
         self._compute_resource: Optional[KpuV1alpha1Compute] = None
@@ -310,39 +304,41 @@ class Compute:
                 api_version="compute.kpu.dev/v1alpha1",
                 kind="Compute"
             )
-            async for event in compute_api.watch(
-                    namespace=self.namespace,
-                    field_selector=f"metadata.name={self.name}",
-                    timeout=int(timeout),
-            ):
-                event_type = event["type"]
-                obj = event["object"]
+            async with Watch(api_client) as watcher:
+                async for event in compute_api.watch(
+                        namespace=self.namespace,
+                        field_selector=f"metadata.name={self.name}",
+                        timeout=timeout,
+                        watcher=watcher,
+                ):
+                    event_type = event["type"]
+                    obj = event["object"]
 
-                # Update our cached resource
-                self._compute_resource = KpuV1alpha1Compute.from_dict(obj.to_dict())
+                    # Update our cached resource
+                    self._compute_resource = KpuV1alpha1Compute.from_dict(obj.to_dict())
 
-                # Log current status
-                if self._compute_resource.status and self._compute_resource.status.conditions:
-                    conditions = self._compute_resource.status.conditions
-                    status_msg = ", ".join(
-                        f"{c.type}={c.status}" for c in conditions
-                    )
-                    logger.debug(
-                        f"Compute {self.namespace}/{self.name} event={event_type} "
-                        f"status: {status_msg}"
-                    )
+                    # Log current status
+                    if self._compute_resource.status and self._compute_resource.status.conditions:
+                        conditions = self._compute_resource.status.conditions
+                        status_msg = ", ".join(
+                            f"{c.type}={c.status}" for c in conditions
+                        )
+                        logger.debug(
+                            f"Compute {self.namespace}/{self.name} event={event_type} "
+                            f"status: {status_msg}"
+                        )
 
-                # Check if ready
-                if self._is_ready():
-                    logger.info(f"Compute {self.namespace}/{self.name} is ready")
-                    break
+                    # Check if ready
+                    if self._is_ready():
+                        logger.info(f"Compute {self.namespace}/{self.name} is ready")
+                        break
 
-            # The watch timed out
-            if not self.is_ready():
-                raise TimeoutError(
-                    f"Compute {self.namespace}/{self.name} did not become ready "
-                    f"within {timeout} seconds"
-            )
+                # The watch timed out
+                if not self.is_ready():
+                    raise TimeoutError(
+                        f"Compute {self.namespace}/{self.name} did not become ready "
+                        f"within {timeout} seconds"
+                )
 
         # Initialize gRPC client when ready
         await self._init_grpc_client()
@@ -357,7 +353,7 @@ class Compute:
         """
         try:
             # Fetch the current resource from Kubernetes
-            result = _compute_api.get(
+            result = self._compute_api.get(
                 name=self.name,
                 namespace=self.namespace,
             )
@@ -429,7 +425,7 @@ class Compute:
         logger.info(f"Deleting Compute {self.namespace}/{self.name}")
 
         try:
-            _compute_api.delete(
+            self._compute_api.delete(
                 name=self.name,
                 namespace=self.namespace,
                 body={
@@ -490,7 +486,7 @@ class Compute:
         body = compute.to_dict()
 
         try:
-            result = _compute_api.server_side_apply(
+            result = self._compute_api.server_side_apply(
                 body=body,
                 name=self.name,
                 namespace=self.namespace,
