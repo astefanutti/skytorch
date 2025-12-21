@@ -1,6 +1,7 @@
 
-from kpu.client.compute import Compute, init
-from kpu.client.event import log_event
+from .init import init
+from .compute import Compute
+from .event import log_event
 
 __all__ = [
     "Compute",
