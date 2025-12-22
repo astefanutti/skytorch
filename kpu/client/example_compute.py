@@ -11,7 +11,7 @@ import sys
 
 import torch
 
-from kpu.client import Compute, log_event
+from kpu.client import Compute, Cluster, log_event
 
 
 async def main():
@@ -51,7 +51,7 @@ async def main():
         on_events=log_event,
         host="localhost",
     ) as compute:
-        print(f"Compute is ready: {compute.is_ready()}")
+        print(f"Compute {compute.name} is ready")
 
         # Send tensors to the server
         print("Sending tensors to server...")
@@ -78,7 +78,37 @@ async def main():
 
     # Compute is automatically deleted when exiting the context manager
 
-    # Example 2: Manual lifecycle management
+    # Example 2: Managing a cluster of Compute resources in parallel
+    # The Cluster class orchestrates multiple Compute instances,
+    # waiting for all of them to be ready in parallel and cleaning up all resources on exit
+    async with Cluster(
+            Compute(
+                name="test-1",
+                image="ghcr.io/astefanutti/kpu-torch-server@sha256:ef169e0f3e903feef41443340d1eecbf2ff6b92a58e62a90ace7505758e90724",
+                on_events=log_event,
+                host="localhost",
+            ),
+            Compute(
+                name="test-2",
+                image="ghcr.io/astefanutti/kpu-torch-server@sha256:ef169e0f3e903feef41443340d1eecbf2ff6b92a58e62a90ace7505758e90724",
+                on_events=log_event,
+                host="localhost",
+            )
+    ) as (compute1, compute2):
+        print(f"Compute {compute1.name} and {compute2.name} are ready")
+
+        # Send tensors to the servers in parallel
+        print("Sending tensors to servers...")
+        response1, response2 = await asyncio.gather(
+            compute1.send_tensors(tensor1),
+            compute2.send_tensors(tensor2),
+        )
+        print(f"Server {compute1.name} response: {response1.message}")
+        print(f"Server {compute2.name} response: {response2.message}")
+
+    # All computes in the cluster are automatically deleted when exiting the context manager
+
+    # Example 3: Manual lifecycle management
     compute = Compute(
         name="my-compute-2",
         image="localhost:5001/kpu-torch-server:latest",
@@ -86,7 +116,7 @@ async def main():
     )
 
     # Wait for it to be ready
-    await compute.ready(timeout=60)
+    await compute.ready(timeout=10)
 
     # Use it
     tensors = await compute.receive_tensors(count=1)
@@ -103,9 +133,7 @@ async def main():
     # Clean up manually
     await compute.delete()
 
-    # Example 3: Connecting to an existing Compute from outside the cluster
-    # If you're running outside the cluster, override the host
-    # To use a specific namespace: from kpu.client import init; init(namespace="my-namespace")
+    # Example 4: Connecting to an existing Compute from outside the cluster
     compute_external = Compute(
         name="my-compute-3",
         image="localhost:5001/kpu-torch-server:latest",

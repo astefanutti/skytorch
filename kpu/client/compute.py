@@ -7,7 +7,7 @@ in Kubernetes and connecting to them via gRPC.
 
 import asyncio
 import logging
-from typing import Optional, Dict, List, Callable
+from typing import Callable, Dict, List, Optional, Self
 
 try:
     import torch
@@ -27,18 +27,18 @@ except ImportError as e:
         "Install with: pip install kubernetes"
     )
 
-from .init import init, default_namespace
-from .models.kpu_v1alpha1_compute import KpuV1alpha1Compute
-from .models.kpu_v1alpha1_compute_spec import KpuV1alpha1ComputeSpec
-from .models.io_k8s_apimachinery_pkg_apis_meta_v1_object_meta import (
+from kpu.client.aio import Watch
+from kpu.client.context import compute_ctx
+from kpu.client.init import init, default_namespace
+from kpu.client.models.kpu_v1alpha1_compute import KpuV1alpha1Compute
+from kpu.client.models.kpu_v1alpha1_compute_spec import KpuV1alpha1ComputeSpec
+from kpu.client.models.io_k8s_apimachinery_pkg_apis_meta_v1_object_meta import (
     IoK8sApimachineryPkgApisMetaV1ObjectMeta
 )
-from .models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
-from ..torch.client import TensorClient
+from kpu.client.models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
+from kpu.torch.client import TensorClient
 
-from .aio import Watch
-
-import aio as aio
+import kpu.client.aio as aio
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,7 @@ class Compute:
         self._host_override = host
         self._port = port
         self._on_events = on_events
+        self._token = None
 
         # Initialize Kubernetes client if needed
         if Configuration._default is None:
@@ -164,7 +165,7 @@ class Compute:
     async def ready(
             self,
             timeout: int = 60,
-    ) -> "Compute":
+    ) -> Self:
         """
         Wait for the Compute to become ready using watch.
 
@@ -255,7 +256,7 @@ class Compute:
                 logger.error(f"Failed to get Compute status: {e}")
                 raise
 
-    async def suspend(self) -> "Compute":
+    async def suspend(self) -> Self:
         """
         Suspend the Compute (scale to zero).
 
@@ -273,7 +274,7 @@ class Compute:
 
         return self
 
-    async def resume(self) -> "Compute":
+    async def resume(self) -> Self:
         """
         Resume a suspended Compute.
 
@@ -526,10 +527,13 @@ class Compute:
             )
         return await self._grpc_client.stream_tensors(*tensors)
 
-    async def __aenter__(self) -> "Compute":
+    async def __aenter__(self) -> Self:
         """
         Async context manager entry: wait for ready.
         """
+        if not compute_ctx.get(None):
+            self._token = compute_ctx.set(self)
+
         await self.ready()
         return self
 
@@ -538,3 +542,6 @@ class Compute:
         Async context manager exit: delete the Compute.
         """
         await self.delete()
+
+        if self._token is not None:
+            compute_ctx.reset(self._token)

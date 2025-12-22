@@ -1,4 +1,4 @@
-# KPU Compute Python Client
+# KPU Python Client
 
 High-level Python API for creating and managing KPU Compute resources in Kubernetes with integrated gRPC tensor streaming.
 
@@ -40,6 +40,37 @@ async def main():
         # Receive tensors
         tensors = await compute.receive_tensors(count=1)
         print(f"Received: {tensors[0].shape}")
+
+asyncio.run(main())
+```
+
+### Managing Compute Cluster
+
+Use the `Cluster` class to manage multiple Compute resources in parallel:
+
+```python
+import asyncio
+import torch
+from kpu.client import Compute, Cluster
+
+async def main():
+    # Create a cluster of Compute resources
+    async with Cluster(
+        Compute(name="compute-1", image="localhost:5001/kpu-torch-server:latest"),
+        Compute(name="compute-2", image="localhost:5001/kpu-torch-server:latest"),
+        Compute(name="compute-3", image="localhost:5001/kpu-torch-server:latest"),
+    ) as (compute1, compute2, compute3):
+        # All computes are ready in parallel
+
+        # Send tensors to all computes in parallel
+        tensor = torch.randn(100, 100)
+        responses = await asyncio.gather(
+            compute1.send_tensors(tensor),
+            compute2.send_tensors(tensor),
+            compute3.send_tensors(tensor),
+        )
+
+    # All computes are automatically deleted when exiting the context
 
 asyncio.run(main())
 ```
@@ -351,6 +382,60 @@ from kubeconfig context or in-cluster service account.
 
 **Properties:**
 - `resource` (KpuV1alpha1Compute): Underlying Kubernetes resource
+
+### `Cluster(*computes)`
+
+Manage multiple Compute resources in parallel.
+
+The Cluster class provides an async context manager that manages the lifecycle
+of multiple Compute instances simultaneously, waiting for all of them to be
+ready in parallel and cleaning up all resources on exit.
+
+**Parameters:**
+- `*computes` (Compute): Variable number of Compute instances to manage
+
+**Methods:**
+- `ready(timeout=None)`: Wait for all Compute instances to become ready in parallel
+- `is_ready()`: Check if all Compute instances are ready
+- `delete()`: Delete all Compute resources in parallel
+
+**Special Methods:**
+- `__iter__()`: Iterate over the managed Compute instances
+- `__len__()`: Get the number of managed Compute instances
+- `__getitem__(index)`: Access a Compute instance by index
+
+**Example:**
+```python
+from kpu.client import Compute, Cluster
+
+async with Cluster(
+    Compute(name="compute-1", image="my-image:latest"),
+    Compute(name="compute-2", image="my-image:latest"),
+) as (compute1, compute2):
+    # All computes are ready in parallel
+    response1, response2 = await asyncio.gather(
+        compute1.send_tensors(tensor),
+        compute2.send_tensors(tensor),
+    )
+
+# All computes are deleted in parallel
+```
+
+**Error Handling:**
+
+If multiple Compute instances fail during context exit, the errors are grouped
+together in an `ExceptionGroup` for comprehensive error reporting:
+
+```python
+try:
+    async with Cluster(...) as cluster:
+        # Use cluster
+        pass
+except ExceptionGroup as eg:
+    # Handle multiple failures
+    for exc in eg.exceptions:
+        print(f"Error: {exc}")
+```
 
 ### `log_event(event)`
 
