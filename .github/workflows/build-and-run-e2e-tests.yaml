@@ -75,19 +75,39 @@ jobs:
           kubectl wait --for=condition=Established --timeout=60s crd/contourdeployments.projectcontour.io
           kubectl wait --for=condition=Available=true --timeout=60s deployment -n projectcontour contour-gateway-provisioner
 
-      - name: Build and push operator image
+      - name: Build and push KPU operator image
         run: |
           IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
           make build-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
           make push-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
 
-      - name: Deploy operator
+      - name: Build and push KPU PyTorch server image
+        run: |
+          IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
+          IMAGE_TAG="${IMAGE_BASE}/kpu-torch-server:test"
+          docker build -f cmd/server/torch/Containerfile -t "${IMAGE_TAG}" .
+          docker push "${IMAGE_TAG}"
+
+      - name: Deploy KPU operator
         id: deploy
         run: |
           IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
           make deploy-operator -e IMAGE_BASE="${IMAGE_BASE}" -e ENV="e2e"
           kubectl wait --for=condition=Available=true --timeout=60s deployment -n kpu-system kpu-operator
           kubectl wait --for=condition=Programmed --timeout=60s gateway -n kpu-system kpu-gateway
+
+      - name: Install test dependencies
+        run: |
+          pip install -e ".[test,torch]"
+
+      - name: Run E2E tests
+        run: |
+          IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
+          IMAGE_TAG="${IMAGE_BASE}/kpu-torch-server:test"
+          IMAGE_SHA=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_TAG}" | cut -d'@' -f2)
+          TEST_IMAGE="${IMAGE_TAG}@${IMAGE_SHA}"
+          echo "Using test image: ${TEST_IMAGE}"
+          KPU_TEST_IMAGE="${TEST_IMAGE}" pytest test/ -v -m e2e
 
       - name: Print operator logs
         if: always() && steps.deploy.outcome == 'success'

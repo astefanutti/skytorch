@@ -162,6 +162,26 @@ class Compute:
         # Apply the Compute resource using server-side apply
         self._apply_compute()
 
+    @property
+    def resource(self) -> Optional[KpuV1alpha1Compute]:
+        """
+        Get the current Compute resource.
+
+        Returns the Kubernetes Compute resource object that represents the current
+        state of this Compute, including metadata, spec, and status.
+
+        Returns:
+            The Compute resource object, or None if not yet fetched from Kubernetes
+
+        Example:
+            >>> compute = Compute(name="my-compute", image="my-image:latest")
+            >>> resource = compute.resource
+            >>> if resource and resource.status:
+            ...     for condition in resource.status.conditions:
+            ...         print(f"{condition.type}={condition.status}")
+        """
+        return self._compute_resource
+
     async def ready(
             self,
             timeout: int = 60,
