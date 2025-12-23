@@ -84,12 +84,11 @@ jobs:
           make build-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
           make push-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
 
-      - name: Build and push KPU PyTorch server image
+      - name: Build and load KPU PyTorch server image
         run: |
-          IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
-          IMAGE_TAG="${IMAGE_BASE}/kpu-torch-server:test"
+          IMAGE_TAG="kpu-torch-server:test"
           docker build -f cmd/server/torch/Containerfile -t "${IMAGE_TAG}" .
-          docker push "${IMAGE_TAG}"
+          kind load docker-image "${IMAGE_TAG}" --name kpu
 
       - name: Deploy KPU operator
         id: deploy
@@ -105,10 +104,7 @@ jobs:
 
       - name: Run E2E tests
         run: |
-          IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
-          IMAGE_TAG="${IMAGE_BASE}/kpu-torch-server:test"
-          IMAGE_SHA=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_TAG}" | cut -d'@' -f2)
-          TEST_IMAGE="${IMAGE_TAG}@${IMAGE_SHA}"
+          TEST_IMAGE="kpu-torch-server:test"
           echo "Using test image: ${TEST_IMAGE}"
           KPU_TEST_IMAGE="${TEST_IMAGE}" pytest test/ -v -m e2e
 
