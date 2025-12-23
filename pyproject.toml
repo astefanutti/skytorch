@@ -26,8 +26,10 @@ classifiers = [
 
 dependencies = [
     "grpcio>=1.60.0",
-    "kubernetes",
-    "protobuf",
+    "kubernetes>=33.0.0",
+    "protobuf>=6.31.0",
+    "aiohttp>=3.9.0,<4.0.0",
+    "pydantic>=2.10.0",
 ]
 
 dynamic = ["version", "readme"]
