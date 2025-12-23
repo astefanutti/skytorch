@@ -36,6 +36,9 @@ jobs:
           ref: ${{ github.event.inputs.ref || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
+      - name: Free disk space
+        uses: ./.github/workflows/free-disk-space
+
       - name: Setup Go
         uses: actions/setup-go@v6
         with:

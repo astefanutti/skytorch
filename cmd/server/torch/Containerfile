@@ -7,8 +7,8 @@ WORKDIR /app
 
 RUN python3 -m venv .venv
 
-ENV VIRTUAL_ENV /app/.venv
-ENV PATH $VIRTUAL_ENV/bin:$PATH
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH=$VIRTUAL_ENV/bin:$PATH
 
 # Install external dependencies
 RUN pip install --no-cache-dir "torch==2.9.1+cu128" --index-url https://download.pytorch.org/whl/cu128
@@ -21,7 +21,7 @@ COPY --chown=1000:root kpu/ kpu/
 RUN pip install --no-cache-dir "."
 
 # Set Python path to include the app directory
-ENV PYTHONPATH /app:$PYTHONPATH
+ENV PYTHONPATH=/app
 
 # Server configuration via environment variables
 ENV KPU_PORT=50051
