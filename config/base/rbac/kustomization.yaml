@@ -2,3 +2,4 @@ resources:
   - role.yaml
   - role_binding.yaml
   - service_account.yaml
+  - compute_roles.yaml

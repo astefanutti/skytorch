@@ -1,0 +1,84 @@
+---
+# ClusterRole that aggregates to the "view" role
+# Allows read-only access to Compute resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kpu-compute-view
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+- apiGroups:
+  - compute.kpu.dev
+  resources:
+  - computes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - compute.kpu.dev
+  resources:
+  - computes/status
+  verbs:
+  - get
+---
+# ClusterRole that aggregates to the "edit" role
+# Allows creating and editing Compute resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kpu-compute-edit
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+rules:
+- apiGroups:
+  - compute.kpu.dev
+  resources:
+  - computes
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.kpu.dev
+  resources:
+  - computes/status
+  verbs:
+  - get
+---
+# ClusterRole that aggregates to the "admin" role
+# Allows full access to Compute resources including status updates
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kpu-compute-admin
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+rules:
+- apiGroups:
+  - compute.kpu.dev
+  resources:
+  - computes
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - compute.kpu.dev
+  resources:
+  - computes/status
+  verbs:
+  - get
+  - patch
+  - update
