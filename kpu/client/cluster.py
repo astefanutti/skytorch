@@ -18,7 +18,7 @@ class Cluster:
     Cluster of Compute resources managed in parallel.
 
     This class provides an async context manager that orchestrates multiple
-    Compute instances, allowing you to manage a cluster of compute resources
+    Compute instances, allowing you to manage a cluster of Compute resources
     simultaneously with parallel operations.
 
     Example:
@@ -82,7 +82,7 @@ class Cluster:
 
         self._token = compute_ctx.set(self)
 
-        # Enter all compute contexts in parallel
+        # Enter all Compute contexts in parallel
         await asyncio.gather(
             *[compute.__aenter__() for compute in self._computes]
         )
@@ -107,7 +107,7 @@ class Cluster:
         """
         logger.debug(f"Exiting context for {len(self._computes)} compute resources")
 
-        # Exit all compute contexts in parallel
+        # Exit all Compute contexts in parallel
         results = await asyncio.gather(
             *[compute.__aexit__(exc_type, exc_val, exc_tb) for compute in self._computes],
             return_exceptions=True
@@ -131,7 +131,7 @@ class Cluster:
         Check if all managed Compute instances are ready.
 
         Returns:
-            True if all computes are ready, False otherwise
+            True if all Computes are ready, False otherwise
         """
         return all(compute.is_ready() for compute in self._computes)
 

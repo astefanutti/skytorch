@@ -301,16 +301,6 @@ The gRPC client is automatically initialized when the Compute becomes ready:
 - **In-cluster**: Uses Kubernetes service DNS: `{name}.{namespace}.svc.cluster.local`
 - **External**: Override with `host` parameter for port-forwarding or external access
 
-## Examples
-
-See [`example_compute.py`](./example_compute.py) for comprehensive examples including:
-
-- Context manager usage
-- Manual lifecycle management
-- Suspend/resume
-- External access
-- Error handling
-
 ## API Reference
 
 ### `init(client_config=None, namespace=None)`
