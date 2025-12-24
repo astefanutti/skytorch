@@ -10,15 +10,13 @@ try:
 except ImportError as e:
     raise ImportError(f"Required dependency not found: {e}. Install with: pip install grpcio torch")
 
-# These imports will work after running generate_proto.sh
+# These imports will work after running hack/gen-grpc-proto.sh
 try:
     from kpu.torch.server import service_pb2
     from kpu.torch.server import service_pb2_grpc
-    from kpu.torch.server import health_pb2
-    from kpu.torch.server import health_pb2_grpc
 except ImportError:
     raise ImportError(
-        "Generated gRPC code not found. Run ./generate_proto.sh first.\n"
+        "Generated gRPC code not found. Run hack/gen-grpc-proto.sh first.\n"
         "Make sure to install grpcio-tools: pip install grpcio-tools"
     )
 
@@ -27,7 +25,9 @@ from kpu.torch.server.serialization import (
     TensorAssembler,
     DEFAULT_CHUNK_SIZE
 )
-from kpu.torch.server.health import HealthServicer
+from kpu.server.health import HealthServicer
+from kpu.server.health import health_pb2
+from kpu.server.health import health_pb2_grpc
 
 
 logger = logging.getLogger(__name__)

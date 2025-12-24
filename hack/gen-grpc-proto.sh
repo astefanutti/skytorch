@@ -3,8 +3,10 @@
 # Generate Python gRPC code from proto files
 # Run this script after installing grpcio-tools: pip install grpcio-tools
 
+set -e
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
@@ -17,6 +19,7 @@ else
     PYTHON="python"
 fi
 
+echo "Generating gRPC code for PyTorch tensor service..."
 $PYTHON -m grpc_tools.protoc \
     -I. \
     --python_out=. \
@@ -24,11 +27,12 @@ $PYTHON -m grpc_tools.protoc \
     --grpc_python_out=. \
     kpu/torch/server/service.proto
 
+echo "Generating gRPC code for Health service..."
 $PYTHON -m grpc_tools.protoc \
     -I. \
     --python_out=. \
     --pyi_out=. \
     --grpc_python_out=. \
-    kpu/torch/server/health.proto
+    kpu/server/health/health.proto
 
 echo "Generated gRPC code successfully"

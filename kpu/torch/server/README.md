@@ -13,47 +13,57 @@ This implementation follows PyTorch best practices for tensor serialization and 
 - **Efficient Serialization**: Stream-based tensor serialization using `torch.save()`/`torch.load()`
 - **Chunked Transfer**: Large tensors are automatically split into configurable chunks
 - **Metadata Support**: Include tensor metadata (shape, dtype, device) with each transfer
+- **Health Checking**: Implements gRPC Health Checking Protocol for service monitoring
 
 ## Quick Start
 
 ### Starting the Server
 
-```python
-from kpu.torch.server import serve
-import asyncio
+Run the server using the command-line interface:
 
+```bash
 # Start server on default port (50051)
-asyncio.run(serve())
+python -m kpu.torch.server
 
-# Or customize port and chunk size
-asyncio.run(serve(port=8080, chunk_size=512*1024))
+# Customize port, host, and chunk size
+python -m kpu.torch.server --port 8080 --host localhost --chunk-size 524288
+
+# Set log level
+python -m kpu.torch.server --log-level DEBUG
 ```
 
-Or run directly:
-```bash
-python -m kpu.torch.server
+Or programmatically:
+
+```python
+import asyncio
+import grpc
+from kpu.torch.server import serve
+
+async def main():
+    server = grpc.aio.server()
+    await serve(server, host="[::]", port=50051, chunk_size=1024*1024)
+
+asyncio.run(main())
 ```
 
 ### Using the Client
 
-See `example_client.py` for complete examples:
-
 ```python
-from kpu.torch.client.example_client import TensorClient
-import torch
 import asyncio
+import torch
+from kpu.torch.client.service import TensorClient
 
 
 async def main():
     tensor = torch.randn(100, 100)
 
-    async with TensorClient() as client:
+    async with TensorClient(host='localhost', port=50051) as client:
         # Send tensors to server
         response = await client.send_tensors(tensor)
         print(f"Server received: {response.message}")
 
         # Receive tensors from server
-        tensors = await client.receive_tensors(count=2)
+        tensors = await client.receive_tensors(count=2, parameters={'shape': '50,50'})
         print(f"Received {len(tensors)} tensors")
 
         # Bidirectional streaming
@@ -108,6 +118,16 @@ The proto file defines:
 - `TensorChunk`: Message for streaming tensor data in chunks
 - `TensorRequest`/`TensorResponse`: Request and response messages
 
+### Health Service
+
+The server includes a [gRPC Health Checking service](../../server/health/README.md) that implements the standard health checking protocol. The health service is automatically configured to report:
+- Overall server health (empty service name)
+- Tensor service health (`kpu.torch.Service`)
+
+This allows clients and orchestration systems (like Kubernetes) to monitor the server's health using tools like [grpc-health-probe](https://github.com/grpc-ecosystem/grpc-health-probe).
+
+For complete documentation on the health service, see [`kpu/server/health/README.md`](../../server/health/README.md).
+
 ## Customization
 
 ### Custom Tensor Processing
@@ -138,12 +158,29 @@ class MyTensorServicer(TensorServicer):
 
 ### Adjust Chunk Size
 
-```python
-# Server
-asyncio.run(serve(chunk_size=2*1024*1024))  # 2MB chunks
+**Command-line:**
+```bash
+# 2MB chunks
+python -m kpu.torch.server --chunk-size 2097152
+```
 
-# Serialization
+**Programmatic:**
+```python
+import asyncio
+import grpc
+from kpu.torch.server import serve
+
+async def main():
+    server = grpc.aio.server()
+    await serve(server, chunk_size=2*1024*1024)  # 2MB chunks
+
+asyncio.run(main())
+```
+
+**Serialization:**
+```python
 from kpu.torch.server import serialize_tensor_to_chunks
+
 for chunk in serialize_tensor_to_chunks(tensor, chunk_size=512*1024):
     # Process 512KB chunks
     pass
@@ -187,29 +224,27 @@ Metadata fields (included in first chunk):
 
 ## Development
 
-### Running Tests
+### Testing the Server
 
 ```bash
-# Start the server in one terminal
+# Start the server
 python -m kpu.torch.server
 
-# Run the example client in another terminal
-python -m kpu.torch.client.example_client
+# In another terminal, create a simple client script to test
+# (See the client example in "Using the Client" section above)
 ```
+
+For comprehensive end-to-end testing, see the test suite in the `test/` directory at the project root.
 
 ### Regenerating gRPC Code
 
-After modifying `service.proto`:
+After modifying `service.proto` or `kpu/server/health/health.proto`:
 
 ```bash
-./generate_proto.sh
+./hack/gen-grpc-proto.sh
 ```
 
 This generates:
-- `service_pb2.py`: Protocol buffer messages
-- `service_pb2_grpc.py`: gRPC service stubs
-- `service_pb2.pyi`: Type hints
-
-## License
-
-This is part of the KPU project.
+- `service_pb2.py`: Protocol buffer messages for tensor service
+- `service_pb2_grpc.py`: gRPC service stubs for tensor service
+- `service_pb2.pyi`: Type hints for tensor service

@@ -20,7 +20,7 @@ try:
     from kpu.torch.server import service_pb2_grpc
 except ImportError:
     raise ImportError(
-        "Generated gRPC code not found. Run ./generate_proto.sh first."
+        "Generated gRPC code not found. Run hack/gen-grpc-proto.sh first."
     )
 
 from kpu.torch.server.serialization import (

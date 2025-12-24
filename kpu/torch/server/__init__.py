@@ -17,12 +17,10 @@ try:
         TensorServicer,
         serve
     )
-    from kpu.torch.server.health import HealthServicer
 except ImportError:
     # Generated gRPC code not available yet
     TensorServicer = None
     serve = None
-    HealthServicer = None
 
 
 __all__ = [
@@ -31,6 +29,5 @@ __all__ = [
     'deserialize_tensor_from_bytes',
     'DEFAULT_CHUNK_SIZE',
     'TensorServicer',
-    'HealthServicer',
     'serve'
 ]

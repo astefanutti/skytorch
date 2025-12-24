@@ -15,11 +15,11 @@ except ImportError as e:
     raise ImportError(f"Required dependency not found: {e}. Install with: pip install grpcio")
 
 try:
-    from kpu.torch.server import health_pb2
-    from kpu.torch.server import health_pb2_grpc
+    from kpu.server.health import health_pb2
+    from kpu.server.health import health_pb2_grpc
 except ImportError:
     raise ImportError(
-        "Generated gRPC code not found. Run ./generate_proto.sh first.\n"
+        "Generated gRPC code not found. Run hack/gen-grpc-proto.sh first.\n"
         "Make sure to install grpcio-tools: pip install grpcio-tools"
     )
 
