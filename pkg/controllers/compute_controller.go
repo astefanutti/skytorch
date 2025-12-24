@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
@@ -115,9 +116,13 @@ func (r *ComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !equality.Semantic.DeepEqual(&compute.Status, prevCompute.Status) {
 		// TODO(astefanutti): Consider using SSA once controller-runtime client has SSA support
 		// for sub-resources. See: https://github.com/kubernetes-sigs/controller-runtime/issues/3183
-		return ctrl.Result{}, errors.Join(err, client.IgnoreNotFound(
-			r.client.Status().Patch(ctx, &compute, client.MergeFrom(prevCompute))),
-		)
+		if statusErr := r.client.Status().Patch(ctx, &compute, client.MergeFrom(prevCompute)); apierrors.IsNotFound(statusErr) {
+			// Requeue to make sure it goes over a full reconcile cycle
+			return ctrl.Result{RequeueAfter: 0}, err
+		} else if statusErr != nil {
+			log.Error(statusErr, "Failed to patch status")
+			err = errors.Join(err, statusErr)
+		}
 	}
 
 	return ctrl.Result{}, err
