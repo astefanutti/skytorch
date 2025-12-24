@@ -115,7 +115,9 @@ func (r *ComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !equality.Semantic.DeepEqual(&compute.Status, prevCompute.Status) {
 		// TODO(astefanutti): Consider using SSA once controller-runtime client has SSA support
 		// for sub-resources. See: https://github.com/kubernetes-sigs/controller-runtime/issues/3183
-		return ctrl.Result{}, errors.Join(err, r.client.Status().Patch(ctx, &compute, client.MergeFrom(prevCompute)))
+		return ctrl.Result{}, errors.Join(err, client.IgnoreNotFound(
+			r.client.Status().Patch(ctx, &compute, client.MergeFrom(prevCompute))),
+		)
 	}
 
 	return ctrl.Result{}, err
