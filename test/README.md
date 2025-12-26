@@ -93,7 +93,8 @@ pytest test/ -v -m "e2e and not slow"
 Tests use fixtures for configuration, defined in `test/conftest.py`:
 
 - **test_image**: Container image for Compute resources (default: `ghcr.io/astefanutti/kpu-torch-server`)
-- **test_host**: Host for gRPC connections (default: `localhost`, expecting port-forwarding or local access)
+
+The gRPC endpoint is automatically discovered from the Compute resource status (Gateway addresses).
 
 #### Option 1: Environment Variables
 
@@ -101,14 +102,13 @@ Set environment variables before running tests:
 
 ```bash
 export KPU_TEST_IMAGE="your-custom-image:tag"
-export KPU_TEST_HOST="your-custom-host"
 pytest test/ -v -m e2e
 ```
 
 Or inline:
 
 ```bash
-KPU_TEST_IMAGE="your-custom-image:tag" KPU_TEST_HOST="your-custom-host" pytest test/ -v -m e2e
+KPU_TEST_IMAGE="your-custom-image:tag" pytest test/ -v -m e2e
 ```
 
 #### Option 2: Edit Fixtures
@@ -120,23 +120,9 @@ For persistent local configuration, edit the fixtures in `test/conftest.py`:
 def test_image():
     """Get the test image for Compute resources."""
     return os.getenv("KPU_TEST_IMAGE", "your-custom-image:tag")
-
-@pytest.fixture(scope="session")
-def test_host():
-    """Get the test host for gRPC connections."""
-    return os.getenv("KPU_TEST_HOST", "your-custom-host")
 ```
 
 **Namespace Configuration**: Tests will auto-detect the namespace from your kubeconfig context or use "default".
-
-### Port Forwarding for External Access
-
-If running tests from outside the cluster, you may need port forwarding:
-
-```bash
-# Forward Compute service ports (do this for each compute being tested)
-kubectl port-forward svc/test-compute-name 50051:50051
-```
 
 Or configure the cluster's Gateway/Ingress for external access.
 
@@ -216,7 +202,7 @@ Tests use `async with` context managers for automatic cleanup, ensuring resource
 To add new E2E tests:
 
 1. Create test functions with `@pytest.mark.e2e` and `@pytest.mark.asyncio`
-2. Use fixtures for configuration (test_image, test_host) and common setup (test_tensors, etc.)
+2. Use fixtures for configuration (test_image) and common setup (test_tensors, etc.)
 3. Follow naming convention: `test_<feature>_<scenario>`
 4. Include docstrings describing what is covered
 5. Ensure proper cleanup (use context managers or manual delete)
@@ -226,7 +212,7 @@ Example:
 ```python
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_new_feature(test_image, test_host):
+async def test_new_feature(test_image):
     """
     Test description.
 
@@ -234,7 +220,7 @@ async def test_new_feature(test_image, test_host):
     - Feature 1
     - Feature 2
     """
-    async with Compute(name="test-new", image=test_image, host=test_host) as compute:
+    async with Compute(name="test-new", image=test_image) as compute:
         # Test code here
         assert compute.is_ready()
 ```

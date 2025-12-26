@@ -63,7 +63,6 @@ class Compute:
     - Auto-detects namespace from context or can be explicitly set
 
     Example:
-        >>> # Create a Compute resource (auto-configures Kubernetes client and namespace)
         >>> compute = Compute(
         ...     name="my-compute",
         ...     image="localhost:5001/kpu-torch-server:latest"
@@ -74,10 +73,6 @@ class Compute:
         ...     tensors = await compute.receive_tensors(count=1)
         ...     await compute.send_tensors(tensor1, tensor2)
         >>>
-        >>> # Or override the namespace globally
-        >>> from kpu.client import init
-        >>> init(namespace="my-namespace")
-        >>> compute = Compute(name="my-compute", image="...")
     """
 
     # API configuration
@@ -101,8 +96,6 @@ class Compute:
         labels: Optional[Dict[str, str]] = None,
         annotations: Optional[Dict[str, str]] = None,
         suspend: bool = False,
-        host: Optional[str] = None,
-        port: int = 50051,
         on_events: Optional[Callable[[CoreV1Event], None]] = None,
     ):
         """
@@ -120,8 +113,6 @@ class Compute:
             labels: Labels to apply to the Compute resources
             annotations: Annotations to apply to the Compute resources
             suspend: Whether to create the Compute in suspended state
-            host: Override the gRPC host (default: use service DNS)
-            port: gRPC port (default: 50051)
             on_events: Optional callback to receive Events for this Compute resource
         """
         self.name = name
@@ -132,8 +123,6 @@ class Compute:
         self._labels = labels
         self._annotations = annotations
         self._suspend = suspend
-        self._host_override = host
-        self._port = port
         self._on_events = on_events
         self._token = None
 
@@ -457,19 +446,37 @@ class Compute:
             # Already initialized
             return
 
-        # Use provided host or construct from service
-        if self._host_override is None:
-            host = f"{self.name}.{self.namespace}.svc.cluster.local"
+        # Extract host from Compute resource addresses
+        host = "localhost"  # Default to localhost
+        port = 50051  # Default gRPC port
+
+        if (self._compute_resource and
+            self._compute_resource.status and
+            self._compute_resource.status.addresses and
+            len(self._compute_resource.status.addresses) > 0):
+            # Use the first address from the Gateway
+            address = self._compute_resource.status.addresses[0]
+            host = address.value
+            logger.debug(
+                f"Using address from Compute status: {host} "
+                f"(type: {address.type})"
+            )
         else:
-            host = self._host_override
+            logger.info(
+                f"No addresses found in Compute {self.namespace}/{self.name} status, "
+                f"defaulting to localhost"
+            )
 
         logger.info(
             f"Initializing gRPC connection to Compute {self.namespace}/{self.name} "
-            f"at {host}:{self._port}"
+            f"at {host}:{port}"
         )
 
-        self._grpc_client = TensorClient(host=host, port=self._port,
-                                         metadata=[("compute-id", f"{self.namespace}/{self.name}")])
+        self._grpc_client = TensorClient(
+            host=host,
+            port=port,
+            metadata=[("compute-id", f"{self.namespace}/{self.name}")]
+        )
         # Enter the async context manager
         await self._grpc_client.__aenter__()
 

@@ -21,7 +21,7 @@ def test_tensors():
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cluster_managed(test_image, test_host, test_tensors):
+async def test_cluster_managed(test_image, test_tensors):
     """
     Test managing cluster of Compute resources in parallel.
 
@@ -39,13 +39,11 @@ async def test_cluster_managed(test_image, test_host, test_tensors):
         Compute(
             name="test-cluster-1",
             image=test_image,
-            host=test_host,
             on_events=log_event,
         ),
         Compute(
             name="test-cluster-2",
             image=test_image,
-            host=test_host,
             on_events=log_event,
         )
     ) as (compute1, compute2):
@@ -71,7 +69,7 @@ async def test_cluster_managed(test_image, test_host, test_tensors):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cluster_manual(test_image, test_host):
+async def test_cluster_manual(test_image):
     """
     Test managing a Cluster of Compute resources manually.
 
@@ -80,8 +78,8 @@ async def test_cluster_manual(test_image, test_host):
     - Deletes all computes in parallel
     """
     cluster = Cluster(
-        Compute(name="test-delete-1", image=test_image, host=test_host),
-        Compute(name="test-delete-2", image=test_image, host=test_host),
+        Compute(name="test-delete-1", image=test_image),
+        Compute(name="test-delete-2", image=test_image),
     )
 
     # Wait for ready
@@ -96,7 +94,7 @@ async def test_cluster_manual(test_image, test_host):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cluster_parallel_receive(test_image, test_host, test_tensors):
+async def test_cluster_parallel_receive(test_image, test_tensors):
     """
     Test receiving tensors from multiple Computes in parallel.
 
@@ -105,8 +103,8 @@ async def test_cluster_parallel_receive(test_image, test_host, test_tensors):
     - Gathering results from multiple Computes
     """
     async with Cluster(
-        Compute(name="test-recv-1", image=test_image, host=test_host),
-        Compute(name="test-recv-2", image=test_image, host=test_host),
+        Compute(name="test-recv-1", image=test_image),
+        Compute(name="test-recv-2", image=test_image),
     ) as (compute1, compute2):
         # Receive from both in parallel
         tensors1, tensors2 = await asyncio.gather(
@@ -123,7 +121,7 @@ async def test_cluster_parallel_receive(test_image, test_host, test_tensors):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cluster_parallel_streaming(test_image, test_host, test_tensors):
+async def test_cluster_parallel_streaming(test_image, test_tensors):
     """
     Test bidirectional streaming across multiple Computes.
 
@@ -135,8 +133,8 @@ async def test_cluster_parallel_streaming(test_image, test_host, test_tensors):
     tensor2 = test_tensors['tensor2']
 
     async with Cluster(
-        Compute(name="test-stream-1", image=test_image, host=test_host),
-        Compute(name="test-stream-2", image=test_image, host=test_host),
+        Compute(name="test-stream-1", image=test_image),
+        Compute(name="test-stream-2", image=test_image),
     ) as (compute1, compute2):
         # Stream to both in parallel
         processed1, processed2 = await asyncio.gather(
@@ -151,7 +149,7 @@ async def test_cluster_parallel_streaming(test_image, test_host, test_tensors):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cluster_events(test_image, test_host):
+async def test_cluster_events(test_image):
     """
     Test watching for Cluster events emitted by all Computes.
 
@@ -173,13 +171,11 @@ async def test_cluster_events(test_image, test_host):
             name="test-events-1",
             image=test_image,
             on_events=handler1,
-            host=test_host,
         ),
         Compute(
             name="test-events-2",
             image=test_image,
             on_events=handler2,
-            host=test_host,
         ),
     ) as (compute1, compute2):
         assert compute1.is_ready()
@@ -193,7 +189,7 @@ async def test_cluster_events(test_image, test_host):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cluster_error_handling(test_image, test_host):
+async def test_cluster_error_handling(test_image):
     """
     Test error handling when cluster operations fail.
 
@@ -205,7 +201,7 @@ async def test_cluster_error_handling(test_image, test_host):
     # to test error handling
     # For now, just verify normal cleanup works
     async with Cluster(
-        Compute(name="test-error-1", image=test_image, host=test_host),
-        Compute(name="test-error-2", image=test_image, host=test_host),
+        Compute(name="test-error-1", image=test_image),
+        Compute(name="test-error-2", image=test_image),
     ) as cluster:
         assert len(cluster) == 2

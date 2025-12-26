@@ -17,12 +17,6 @@ def test_image():
     )
 
 
-@pytest.fixture(scope="session")
-def test_host():
-    """Get the test host for gRPC connections."""
-    return os.getenv("KPU_TEST_HOST", "localhost")
-
-
 # Configure pytest-asyncio
 @pytest.fixture(scope="session")
 def event_loop():

@@ -23,7 +23,7 @@ def reset_client():
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_init_auto(test_image, test_host):
+async def test_init_auto(test_image):
     """
     Test automatic client configuration.
 
@@ -36,7 +36,6 @@ async def test_init_auto(test_image, test_host):
     async with Compute(
         name="test-init-auto",
         image=test_image,
-        host=test_host,
     ) as compute:
         # Verify compute was created
         assert compute.is_ready()
@@ -45,7 +44,7 @@ async def test_init_auto(test_image, test_host):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_init_custom_namespace(test_image, test_host):
+async def test_init_custom_namespace(test_image):
     """
     Test init() with custom namespace.
 
@@ -59,7 +58,6 @@ async def test_init_custom_namespace(test_image, test_host):
     async with Compute(
         name="test-init-namespace",
         image=test_image,
-        host=test_host,
     ) as compute:
         assert compute.namespace == "default"
         assert compute.is_ready()
@@ -67,7 +65,7 @@ async def test_init_custom_namespace(test_image, test_host):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_init_custom_config(test_image, test_host):
+async def test_init_custom_config(test_image):
     """
     Test init() with custom Kubernetes client configuration.
 
@@ -90,7 +88,6 @@ async def test_init_custom_config(test_image, test_host):
     async with Compute(
         name="test-init-config",
         image=test_image,
-        host=test_host,
     ) as compute:
         assert compute.is_ready()
         assert compute.namespace == "default"
@@ -98,7 +95,7 @@ async def test_init_custom_config(test_image, test_host):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_init_kubeconfig_namespace(test_image, test_host):
+async def test_init_kubeconfig_namespace(test_image):
     """
     Test namespace detection from kubeconfig context.
 
@@ -111,7 +108,6 @@ async def test_init_kubeconfig_namespace(test_image, test_host):
     async with Compute(
         name="test-init-kubeconfig-namespace",
         image=test_image,
-        host=test_host,
     ) as compute:
         # Namespace should be detected
         assert compute.namespace is not None

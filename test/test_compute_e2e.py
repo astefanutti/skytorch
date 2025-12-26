@@ -21,7 +21,7 @@ def test_tensors():
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_compute_managed(test_image, test_host, test_tensors):
+async def test_compute_managed(test_image, test_tensors):
     """
     Test managing a Compute with a context manager.
 
@@ -39,7 +39,6 @@ async def test_compute_managed(test_image, test_host, test_tensors):
     async with Compute(
         name="test-managed",
         image=test_image,
-        host=test_host,
         on_events=log_event,
     ) as compute:
         # Verify compute is ready
@@ -75,7 +74,7 @@ async def test_compute_managed(test_image, test_host, test_tensors):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_compute_manual(test_image, test_host, test_tensors):
+async def test_compute_manual(test_image, test_tensors):
     """
     Test managing a Compute manually.
 
@@ -90,7 +89,6 @@ async def test_compute_manual(test_image, test_host, test_tensors):
     compute = Compute(
         name="test-manual",
         image=test_image,
-        host=test_host,
     )
 
     try:
@@ -112,7 +110,7 @@ async def test_compute_manual(test_image, test_host, test_tensors):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_compute_events(test_image, test_host):
+async def test_compute_events(test_image):
     """
     Test watching for a Compute events.
 
@@ -132,7 +130,6 @@ async def test_compute_events(test_image, test_host):
     async with Compute(
         name="test-events",
         image=test_image,
-        host=test_host,
         on_events=custom_event_handler,
     ) as compute:
         assert compute.is_ready()
@@ -145,7 +142,7 @@ async def test_compute_events(test_image, test_host):
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_compute_resource(test_image, test_host):
+async def test_compute_resource(test_image):
     """
     Test accessing a Compute resource.
 
@@ -157,7 +154,6 @@ async def test_compute_resource(test_image, test_host):
     async with Compute(
         name="test-resource",
         image=test_image,
-        host=test_host,
     ) as compute:
         resource = compute.resource
 
