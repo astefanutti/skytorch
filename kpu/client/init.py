@@ -13,8 +13,30 @@ from kubernetes.config import (
 logger = logging.getLogger(__name__)
 
 
-# Global Kubernetes API namespace
-default_namespace = "default"
+# Default Kubernetes namespace
+_default_namespace = "default"
+
+
+def default_namespace() -> str:
+    """
+    Get the default namespace.
+
+    Returns the namespace that will be used for Compute resources. This value
+    is set either explicitly via init(namespace=...) or auto-detected from
+    kubeconfig context or service account.
+
+    If init() has not been called yet, this function will automatically call it
+    to trigger namespace auto-detection. The namespace is auto-detected by reading
+    from kubeconfig context or the service account namespace file.
+
+    Returns:
+        The default namespace (auto-detected or explicitly set via init())
+    """
+    # Auto-initialize if not already done
+    if Configuration._default is None:
+        init()
+
+    return _default_namespace
 
 
 def init(

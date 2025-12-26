@@ -125,7 +125,6 @@ class Compute:
             on_events: Optional callback to receive Events for this Compute resource
         """
         self.name = name
-        self.namespace = default_namespace
         self._image = image
         self._command = command
         self._args = args
@@ -141,6 +140,9 @@ class Compute:
         # Initialize Kubernetes client if needed
         if Configuration._default is None:
             init()
+
+        # Global namespace is defaulted in init()
+        self.namespace = default_namespace()
 
         # Kubernetes client APIs
         self._api_client = ApiClient()
