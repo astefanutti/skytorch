@@ -23,6 +23,11 @@ spec:
       containers:
         - name: manager
           image: ghcr.io/astefanutti/kpu-operator
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true

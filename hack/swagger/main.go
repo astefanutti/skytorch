@@ -23,7 +23,7 @@ import (
 
 	"k8s.io/klog/v2"
 	"k8s.io/kube-openapi/pkg/common"
-	builderutil "k8s.io/kube-openapi/pkg/openapiconv"
+	"k8s.io/kube-openapi/pkg/openapiconv"
 	"k8s.io/kube-openapi/pkg/validation/spec"
 
 	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
@@ -70,12 +70,13 @@ func main() {
 			},
 		},
 	}
-	swaggerOpenAPIV3 := builderutil.ConvertV2ToV3(&swagger)
+	swaggerOpenAPIV3 := openapiconv.ConvertV2ToV3(&swagger)
 
 	jsonBytes, err := json.MarshalIndent(swaggerOpenAPIV3, "", "  ")
 	if err != nil {
 		klog.Fatal(err.Error())
 	}
+	// fmt.Println(strings.ReplaceAll(string(jsonBytes), "#/components/schemas/io.k8s", "./kubernetes.json#/definitions/io.k8s"))
 	fmt.Println(string(jsonBytes))
 }
 

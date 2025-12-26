@@ -23,7 +23,8 @@ import (
 // ComputeStatusApplyConfiguration represents a declarative configuration of the ComputeStatus type for use
 // with apply.
 type ComputeStatusApplyConfiguration struct {
-	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	Conditions []v1.ConditionApplyConfiguration   `json:"conditions,omitempty"`
+	Addresses  []ComputeAddressApplyConfiguration `json:"addresses,omitempty"`
 }
 
 // ComputeStatusApplyConfiguration constructs a declarative configuration of the ComputeStatus type for use with
@@ -41,6 +42,19 @@ func (b *ComputeStatusApplyConfiguration) WithConditions(values ...*v1.Condition
 			panic("nil value passed to WithConditions")
 		}
 		b.Conditions = append(b.Conditions, *values[i])
+	}
+	return b
+}
+
+// WithAddresses adds the given value to the Addresses field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Addresses field.
+func (b *ComputeStatusApplyConfiguration) WithAddresses(values ...*ComputeAddressApplyConfiguration) *ComputeStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithAddresses")
+		}
+		b.Addresses = append(b.Addresses, *values[i])
 	}
 	return b
 }

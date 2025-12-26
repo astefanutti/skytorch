@@ -51,25 +51,29 @@ const (
 )
 
 type ComputeReconciler struct {
-	log      logr.Logger
-	client   client.Client
-	recorder record.EventRecorder
+	log               logr.Logger
+	client            client.Client
+	recorder          record.EventRecorder
+	operatorNamespace string
 }
 
 var _ reconcile.Reconciler = (*ComputeReconciler)(nil)
 var _ predicate.TypedPredicate[*v1alpha1.Compute] = (*ComputeReconciler)(nil)
 
-func NewComputeReconciler(client client.Client, recorder record.EventRecorder) *ComputeReconciler {
+func NewComputeReconciler(client client.Client, recorder record.EventRecorder, operatorNamespace string) *ComputeReconciler {
 	return &ComputeReconciler{
-		log:      ctrl.Log.WithName("kpu-compute-controller"),
-		client:   client,
-		recorder: recorder,
+		log:               ctrl.Log.WithName("kpu-compute-controller"),
+		client:            client,
+		recorder:          recorder,
+		operatorNamespace: operatorNamespace,
 	}
 }
 
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=grpcroutes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get
 // +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes/finalizers,verbs=get;update;patch
@@ -94,7 +98,7 @@ func (r *ComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 
 		// Reconcile GRPCRoute
-		if grpcRouteErr := r.reconcileGRPCRoute(ctx, &compute); grpcRouteErr != nil {
+		if grpcRouteErr := r.reconcileGRPCRoute(ctx, &compute, r.operatorNamespace); grpcRouteErr != nil {
 			log.Error(grpcRouteErr, "Failed to reconcile GRPCRoute")
 			err = errors.Join(err, grpcRouteErr)
 		}
@@ -154,10 +158,10 @@ func (r *ComputeReconciler) reconcileService(ctx context.Context, compute *v1alp
 	return nil
 }
 
-func (r *ComputeReconciler) reconcileGRPCRoute(ctx context.Context, compute *v1alpha1.Compute) error {
+func (r *ComputeReconciler) reconcileGRPCRoute(ctx context.Context, compute *v1alpha1.Compute, operatorNamespace string) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	grpcRoute := grpcRouteApplyConfiguration(compute)
+	grpcRoute := grpcRouteApplyConfiguration(compute, operatorNamespace)
 
 	if err := r.client.Apply(ctx, grpcRoute, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
 		return fmt.Errorf("failed to apply GRPCRoute: %w", err)
@@ -191,7 +195,7 @@ func (r *ComputeReconciler) setSuspendedCondition(compute *v1alpha1.Compute) {
 }
 
 func (r *ComputeReconciler) setReadyCondition(ctx context.Context, compute *v1alpha1.Compute) error {
-	// Get the StatefulSet to read its current status
+	// Check StatefulSet status
 	var statefulSet appsv1.StatefulSet
 	if err := r.client.Get(ctx, client.ObjectKeyFromObject(compute), &statefulSet); err != nil {
 		if client.IgnoreNotFound(err) == nil {
@@ -207,27 +211,150 @@ func (r *ComputeReconciler) setReadyCondition(ctx context.Context, compute *v1al
 		return fmt.Errorf("failed to get StatefulSet: %w", err)
 	}
 
-	// Check if StatefulSet is ready
 	replicas := ptr.Deref(statefulSet.Spec.Replicas, 0)
 	readyReplicas := statefulSet.Status.ReadyReplicas
+	statefulSetReady := readyReplicas == replicas && replicas > 0
 
-	if readyReplicas == replicas && replicas > 0 {
-		// StatefulSet is ready
-		meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
-			Type:    v1alpha1.ComputeReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  "StatefulSetReady",
-			Message: fmt.Sprintf("All %d replicas are ready", replicas),
-		})
-	} else {
-		// StatefulSet is not ready
+	if !statefulSetReady {
 		meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
 			Type:    v1alpha1.ComputeReady,
 			Status:  metav1.ConditionFalse,
 			Reason:  "StatefulSetNotReady",
 			Message: fmt.Sprintf("StatefulSet has %d/%d ready replicas", readyReplicas, replicas),
 		})
+		return nil
 	}
+
+	// Check GRPCRoute status
+	var grpcRoute gatewayv1.GRPCRoute
+	if err := r.client.Get(ctx, client.ObjectKeyFromObject(compute), &grpcRoute); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+				Type:    v1alpha1.ComputeReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  "GRPCRouteNotAvailable",
+				Message: "GRPCRoute is not available",
+			})
+			return nil
+		}
+		return fmt.Errorf("failed to get GRPCRoute: %w", err)
+	}
+
+	// Find the first Gateway parent ref that's in the operator namespace
+	var gatewayParentRef *gatewayv1.ParentReference
+	for i := range grpcRoute.Spec.ParentRefs {
+		ref := &grpcRoute.Spec.ParentRefs[i]
+		if ref.Kind != nil && *ref.Kind == "Gateway" {
+			// Check if the Gateway is in the operator namespace
+			refNamespace := r.operatorNamespace
+			if ref.Namespace != nil {
+				refNamespace = string(*ref.Namespace)
+			}
+			if refNamespace == r.operatorNamespace {
+				gatewayParentRef = ref
+				break
+			}
+		}
+	}
+
+	if gatewayParentRef == nil {
+		meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+			Type:    v1alpha1.ComputeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "GatewayNotReferenced",
+			Message: fmt.Sprintf("GRPCRoute does not reference any Gateway"),
+		})
+		return nil
+	}
+
+	// Get the Gateway
+	gatewayKey := client.ObjectKey{
+		Namespace: r.operatorNamespace,
+		Name:      string(gatewayParentRef.Name),
+	}
+	var gateway gatewayv1.Gateway
+	if err := r.client.Get(ctx, gatewayKey, &gateway); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+				Type:    v1alpha1.ComputeReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  "GatewayNotAvailable",
+				Message: fmt.Sprintf("Gateway %s is not available", gatewayKey.Name),
+			})
+			return nil
+		}
+		return fmt.Errorf("failed to get Gateway: %w", err)
+	}
+
+	log := ctrl.LoggerFrom(ctx)
+	log.V(4).Info("Found Gateway from GRPCRoute parent ref", "gateway", gatewayKey)
+
+	// Check if Gateway is Programmed
+	gatewayProgrammed := false
+	for _, cond := range gateway.Status.Conditions {
+		if cond.Type == string(gatewayv1.GatewayConditionProgrammed) && cond.Status == metav1.ConditionTrue {
+			gatewayProgrammed = true
+			break
+		}
+	}
+
+	if !gatewayProgrammed {
+		meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+			Type:    v1alpha1.ComputeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "GatewayNotProgrammed",
+			Message: fmt.Sprintf("Gateway %s is not programmed", gateway.Name),
+		})
+		return nil
+	}
+
+	// Check if GRPCRoute is accepted by the Gateway
+	grpcRouteAccepted := false
+	for _, parent := range grpcRoute.Status.Parents {
+		if parent.ParentRef.Kind != nil && *parent.ParentRef.Kind == "Gateway" &&
+			parent.ParentRef.Name == gatewayParentRef.Name {
+			// Check for Accepted condition
+			for _, cond := range parent.Conditions {
+				if cond.Type == string(gatewayv1.RouteConditionAccepted) && cond.Status == metav1.ConditionTrue {
+					grpcRouteAccepted = true
+					break
+				}
+			}
+			break
+		}
+	}
+
+	if !grpcRouteAccepted {
+		meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+			Type:    v1alpha1.ComputeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "GRPCRouteNotAccepted",
+			Message: fmt.Sprintf("GRPCRoute is not accepted by Gateway %s", gateway.Name),
+		})
+		return nil
+	}
+
+	// Extract addresses from Gateway status
+	addresses := make([]v1alpha1.ComputeAddress, 0, len(gateway.Status.Addresses))
+	for _, addr := range gateway.Status.Addresses {
+		addrType := "Hostname"
+		if addr.Type != nil {
+			addrType = string(*addr.Type)
+		}
+		addresses = append(addresses, v1alpha1.ComputeAddress{
+			Type:  addrType,
+			Value: addr.Value,
+		})
+	}
+	compute.Status.Addresses = addresses
+
+	// All checks passed - set Ready to True
+	meta.SetStatusCondition(&compute.Status.Conditions, metav1.Condition{
+		Type:    v1alpha1.ComputeReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllComponentsReady",
+		Message: fmt.Sprintf("Pods (%d/%d replicas), GRPCRoute, and Gateway are ready", readyReplicas, replicas),
+	})
 	return nil
 }
 
@@ -290,6 +417,26 @@ func (r *ComputeReconciler) SetupWithManager(mgr ctrl.Manager, options controlle
 				&v1alpha1.Compute{},
 				handler.OnlyControllerOwner(),
 			),
+		)).
+		WatchesRawSource(source.TypedKind(
+			mgr.GetCache(),
+			&gatewayv1.Gateway{},
+			handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, gateway *gatewayv1.Gateway) []reconcile.Request {
+				// Reconcile all Computes when the Gateway changes
+				var computes v1alpha1.ComputeList
+				if err := mgr.GetClient().List(ctx, &computes); err != nil {
+					ctrl.LoggerFrom(ctx).Error(err, "Failed to list Computes for Gateway watch")
+					return nil
+				}
+
+				requests := make([]reconcile.Request, 0, len(computes.Items))
+				for _, compute := range computes.Items {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: client.ObjectKeyFromObject(&compute),
+					})
+				}
+				return requests
+			}),
 		))
 	return b.Complete(r)
 }

@@ -32,6 +32,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	// Group=compute.kpu.dev, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithKind("Compute"):
 		return &kpuv1alpha1.ComputeApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ComputeAddress"):
+		return &kpuv1alpha1.ComputeAddressApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComputeSpec"):
 		return &kpuv1alpha1.ComputeSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComputeStatus"):

@@ -244,6 +244,35 @@ spec:
             description: status of the Compute.
             minProperties: 1
             properties:
+              addresses:
+                description: |-
+                  addresses lists the network addresses where the Compute can be accessed.
+                  These are derived from the Gateway status that routes traffic to this Compute.
+                items:
+                  description: ComputeAddress describes a network address that can
+                    be used to access the Compute.
+                  properties:
+                    type:
+                      default: Hostname
+                      description: type of the address.
+                      enum:
+                      - IPAddress
+                      - Hostname
+                      type: string
+                    value:
+                      description: |-
+                        value of the address. The validity of the values will depend on the type.
+
+                        Examples: `1.2.3.4`, `128::1`, `my-hostname.example.com`.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                  required:
+                  - value
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: atomic
               conditions:
                 description: conditions of the Compute.
                 items:

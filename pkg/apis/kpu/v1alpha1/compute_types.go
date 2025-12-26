@@ -204,6 +204,33 @@ type ComputeStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// addresses lists the network addresses where the Compute can be accessed.
+	// These are derived from the Gateway status that routes traffic to this Compute.
+	//
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=16
+	Addresses []ComputeAddress `json:"addresses,omitempty"`
+}
+
+// ComputeAddress describes a network address that can be used to access the Compute.
+type ComputeAddress struct {
+	// type of the address.
+	//
+	// +optional
+	// +kubebuilder:validation:Enum=IPAddress;Hostname
+	// +kubebuilder:default=Hostname
+	Type string `json:"type,omitempty"`
+
+	// value of the address. The validity of the values will depend on the type.
+	//
+	// Examples: `1.2.3.4`, `128::1`, `my-hostname.example.com`.
+	//
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Value string `json:"value,omitempty"`
 }
 
 func init() {

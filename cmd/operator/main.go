@@ -5,6 +5,7 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"strings"
 
 	zaplog "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -12,6 +13,8 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlpkg "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -76,6 +79,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Get the operator namespace to scope the Gateway watch
+	operatorNamespace, err := getOperatorNamespace()
+	if err != nil {
+		setupLog.Error(err, "Unable to determine operator namespace")
+		os.Exit(1)
+	}
+	setupLog.Info("Detected operator namespace", "namespace", operatorNamespace)
+
+	// Configure cache to only watch Gateway resources in the operator namespace
+	if options.Cache.ByObject == nil {
+		options.Cache.ByObject = make(map[client.Object]cache.ByObject)
+	}
+	options.Cache.ByObject[&gatewayv1.Gateway{}] = cache.ByObject{
+		Namespaces: map[string]cache.Config{
+			operatorNamespace: {},
+		},
+	}
+
 	setupLog.Info("Creating manager")
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), options)
 	if err != nil {
@@ -104,7 +125,7 @@ func main() {
 	setupProbeEndpoints(mgr, cfg, certsReady)
 
 	// Set up controllers using goroutines to start the manager quickly.
-	go setupControllers(mgr, cfg, certsReady)
+	go setupControllers(mgr, cfg, certsReady, operatorNamespace)
 
 	setupLog.Info("Starting manager")
 	if err = mgr.Start(ctx); err != nil {
@@ -113,12 +134,12 @@ func main() {
 	}
 }
 
-func setupControllers(mgr ctrl.Manager, cfg configapi.Configuration, certsReady <-chan struct{}) {
+func setupControllers(mgr ctrl.Manager, cfg configapi.Configuration, certsReady <-chan struct{}, operatorNamespace string) {
 	setupLog.Info("Waiting for certificate generation to complete")
 	<-certsReady
 	setupLog.Info("Certs ready")
 
-	if failedCtrlName, err := controllers.Setup(mgr, ctrlpkg.Options{}); err != nil {
+	if failedCtrlName, err := controllers.Setup(mgr, ctrlpkg.Options{}, operatorNamespace); err != nil {
 		setupLog.Error(err, "Could not create controller", "controller", failedCtrlName)
 		os.Exit(1)
 	}
@@ -163,4 +184,22 @@ func setupProbeEndpoints(mgr ctrl.Manager, cfg configapi.Configuration, certsRea
 			os.Exit(1)
 		}
 	}
+}
+
+// getOperatorNamespace returns the namespace where the operator is running.
+// This way assumes you've set the NAMESPACE environment variable either manually, when running
+// the operator standalone, or using the downward API, when running the operator in-cluster.
+func getOperatorNamespace() (string, error) {
+	if ns := os.Getenv("NAMESPACE"); ns != "" {
+		return ns, nil
+	}
+
+	// Fall back to the namespace associated with the service account token, if available
+	if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		if ns := strings.TrimSpace(string(data)); len(ns) > 0 {
+			return ns, nil
+		}
+	}
+
+	return "", errors.New("unable to determine operator namespace")
 }

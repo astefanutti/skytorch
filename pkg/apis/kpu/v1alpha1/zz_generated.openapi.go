@@ -31,6 +31,7 @@ import (
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
 		"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1.Compute":                 schema_pkg_apis_kpu_v1alpha1_Compute(ref),
+		"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1.ComputeAddress":          schema_pkg_apis_kpu_v1alpha1_ComputeAddress(ref),
 		"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1.ComputeList":             schema_pkg_apis_kpu_v1alpha1_ComputeList(ref),
 		"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1.ComputeSpec":             schema_pkg_apis_kpu_v1alpha1_ComputeSpec(ref),
 		"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1.ComputeStatus":           schema_pkg_apis_kpu_v1alpha1_ComputeStatus(ref),
@@ -381,6 +382,34 @@ func schema_pkg_apis_kpu_v1alpha1_Compute(ref common.ReferenceCallback) common.O
 	}
 }
 
+func schema_pkg_apis_kpu_v1alpha1_ComputeAddress(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ComputeAddress describes a network address that can be used to access the Compute.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "type of the address.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "value of the address. The validity of the values will depend on the type.\n\nExamples: `1.2.3.4`, `128::1`, `my-hostname.example.com`.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"value"},
+			},
+		},
+	}
+}
+
 func schema_pkg_apis_kpu_v1alpha1_ComputeList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -584,11 +613,30 @@ func schema_pkg_apis_kpu_v1alpha1_ComputeStatus(ref common.ReferenceCallback) co
 							},
 						},
 					},
+					"addresses": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "addresses lists the network addresses where the Compute can be accessed. These are derived from the Gateway status that routes traffic to this Compute.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1.ComputeAddress"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1.ComputeAddress", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 

@@ -25,7 +25,7 @@ import (
 	"github.com/astefanutti/kpu/pkg/util/constants"
 )
 
-func grpcRouteApplyConfiguration(compute *v1alpha1.Compute) *gatewayv1apply.GRPCRouteApplyConfiguration {
+func grpcRouteApplyConfiguration(compute *v1alpha1.Compute, operatorNamespace string) *gatewayv1apply.GRPCRouteApplyConfiguration {
 	labels := map[string]string{
 		"app.kubernetes.io/name":       "kpu-torch-server",
 		"app.kubernetes.io/instance":   compute.Name,
@@ -61,7 +61,7 @@ func grpcRouteApplyConfiguration(compute *v1alpha1.Compute) *gatewayv1apply.GRPC
 			gatewayv1apply.GRPCRouteSpec().
 				WithParentRefs(gatewayv1apply.ParentReference().
 					WithKind("Gateway").
-					WithNamespace("kpu-system").
+					WithNamespace(gatewayv1.Namespace(operatorNamespace)).
 					WithName("kpu-gateway"),
 				).
 				WithRules(

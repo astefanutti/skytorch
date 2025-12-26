@@ -17,20 +17,18 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from kpu.client.models.io_k8s_apimachinery_pkg_apis_meta_v1_condition import IoK8sApimachineryPkgApisMetaV1Condition
-from kpu.client.models.kpu_v1alpha1_compute_address import KpuV1alpha1ComputeAddress
 from typing import Optional, Set
 from typing_extensions import Self
 
-class KpuV1alpha1ComputeStatus(BaseModel):
+class KpuV1alpha1ComputeAddress(BaseModel):
     """
-    ComputeStatus represents the current status of the Compute.
+    ComputeAddress describes a network address that can be used to access the Compute.
     """ # noqa: E501
-    addresses: Optional[List[KpuV1alpha1ComputeAddress]] = Field(default=None, description="addresses lists the network addresses where the Compute can be accessed. These are derived from the Gateway status that routes traffic to this Compute.")
-    conditions: Optional[List[IoK8sApimachineryPkgApisMetaV1Condition]] = Field(default=None, description="conditions of the Compute.")
-    __properties: ClassVar[List[str]] = ["addresses", "conditions"]
+    type: Optional[StrictStr] = Field(default=None, description="type of the address.")
+    value: StrictStr = Field(description="value of the address. The validity of the values will depend on the type.  Examples: `1.2.3.4`, `128::1`, `my-hostname.example.com`.")
+    __properties: ClassVar[List[str]] = ["type", "value"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -50,7 +48,7 @@ class KpuV1alpha1ComputeStatus(BaseModel):
 
     @classmethod
     def from_json(cls, json_str: str) -> Optional[Self]:
-        """Create an instance of KpuV1alpha1ComputeStatus from a JSON string"""
+        """Create an instance of KpuV1alpha1ComputeAddress from a JSON string"""
         return cls.from_dict(json.loads(json_str))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -71,25 +69,11 @@ class KpuV1alpha1ComputeStatus(BaseModel):
             exclude=excluded_fields,
             exclude_none=True,
         )
-        # override the default output from pydantic by calling `to_dict()` of each item in addresses (list)
-        _items = []
-        if self.addresses:
-            for _item_addresses in self.addresses:
-                if _item_addresses:
-                    _items.append(_item_addresses.to_dict())
-            _dict['addresses'] = _items
-        # override the default output from pydantic by calling `to_dict()` of each item in conditions (list)
-        _items = []
-        if self.conditions:
-            for _item_conditions in self.conditions:
-                if _item_conditions:
-                    _items.append(_item_conditions.to_dict())
-            _dict['conditions'] = _items
         return _dict
 
     @classmethod
     def from_dict(cls, obj: Optional[Dict[str, Any]]) -> Optional[Self]:
-        """Create an instance of KpuV1alpha1ComputeStatus from a dict"""
+        """Create an instance of KpuV1alpha1ComputeAddress from a dict"""
         if obj is None:
             return None
 
@@ -97,8 +81,8 @@ class KpuV1alpha1ComputeStatus(BaseModel):
             return cls.model_validate(obj)
 
         _obj = cls.model_validate({
-            "addresses": [KpuV1alpha1ComputeAddress.from_dict(_item) for _item in obj["addresses"]] if obj.get("addresses") is not None else None,
-            "conditions": [IoK8sApimachineryPkgApisMetaV1Condition.from_dict(_item) for _item in obj["conditions"]] if obj.get("conditions") is not None else None
+            "type": obj.get("type"),
+            "value": obj.get("value")
         })
         return _obj
 

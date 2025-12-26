@@ -23,10 +23,11 @@ import (
 	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
 )
 
-func Setup(mgr ctrl.Manager, options controller.Options) (string, error) {
+func Setup(mgr ctrl.Manager, options controller.Options, operatorNamespace string) (string, error) {
 	if err := NewComputeReconciler(
 		mgr.GetClient(),
 		mgr.GetEventRecorderFor("kpu-compute-controller"),
+		operatorNamespace,
 	).SetupWithManager(mgr, options); err != nil {
 		return v1alpha1.ComputeKind, err
 	}

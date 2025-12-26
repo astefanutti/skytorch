@@ -11656,6 +11656,23 @@
           }
         }
       },
+      "kpu.v1alpha1.ComputeAddress": {
+        "description": "ComputeAddress describes a network address that can be used to access the Compute.",
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "type": {
+            "description": "type of the address.",
+            "type": "string"
+          },
+          "value": {
+            "description": "value of the address. The validity of the values will depend on the type.\n\nExamples: `1.2.3.4`, `128::1`, `my-hostname.example.com`.",
+            "type": "string"
+          }
+        }
+      },
       "kpu.v1alpha1.ComputeList": {
         "description": "ComputeList is a collection of computes.",
         "type": "object",
@@ -11762,6 +11779,19 @@
         "description": "ComputeStatus represents the current status of the Compute.",
         "type": "object",
         "properties": {
+          "addresses": {
+            "description": "addresses lists the network addresses where the Compute can be accessed. These are derived from the Gateway status that routes traffic to this Compute.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/kpu.v1alpha1.ComputeAddress"
+                }
+              ]
+            },
+            "x-kubernetes-list-type": "atomic"
+          },
           "conditions": {
             "description": "conditions of the Compute.",
             "type": "array",
