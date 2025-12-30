@@ -74,7 +74,7 @@ jobs:
 
       - name: Install Contour
         run: |
-          kubectl apply --server-side -k config/contour
+          kubectl apply --server-side -k config/e2e/contour
           kubectl wait --for=condition=Established --timeout=60s crd/contourdeployments.projectcontour.io
           kubectl wait --for=condition=Available=true --timeout=60s deployment -n projectcontour contour-gateway-provisioner
 
