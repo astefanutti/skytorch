@@ -1,0 +1,19 @@
+---
+kind: Gateway
+apiVersion: gateway.networking.k8s.io/v1
+metadata:
+  name: kpu-gateway
+spec:
+  gatewayClassName: openshift-default
+  listeners:
+    - name: grpc
+      protocol: HTTP
+      port: 50051
+      allowedRoutes:
+        namespaces:
+          from: All
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+          - group: gateway.networking.k8s.io
+            kind: GRPCRoute
