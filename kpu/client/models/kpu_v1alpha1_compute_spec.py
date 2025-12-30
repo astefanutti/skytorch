@@ -20,6 +20,7 @@ import json
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
 from kpu.client.models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
+from kpu.client.models.io_k8s_apimachinery_pkg_api_resource_quantity import IoK8sApimachineryPkgApiResourceQuantity
 from typing import Optional, Set
 from typing_extensions import Self
 
@@ -33,8 +34,9 @@ class KpuV1alpha1ComputeSpec(BaseModel):
     env: Optional[List[IoK8sApiCoreV1EnvVar]] = Field(default=None, description="env is the list of environment variables to set in the Compute runtime.")
     image: Optional[StrictStr] = Field(default=None, description="image is the container image for the Compute runtime.")
     labels: Optional[Dict[str, StrictStr]] = Field(default=None, description="labels to apply to the Compute resources.")
+    resources: Optional[Dict[str, IoK8sApimachineryPkgApiResourceQuantity]] = Field(default=None, description="resources for each of the Compute replicas.")
     suspend: Optional[StrictBool] = Field(default=None, description="suspend defines whether to suspend the running Compute. Defaults to false.")
-    __properties: ClassVar[List[str]] = ["annotations", "args", "command", "env", "image", "labels", "suspend"]
+    __properties: ClassVar[List[str]] = ["annotations", "args", "command", "env", "image", "labels", "resources", "suspend"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -82,6 +84,13 @@ class KpuV1alpha1ComputeSpec(BaseModel):
                 if _item_env:
                     _items.append(_item_env.to_dict())
             _dict['env'] = _items
+        # override the default output from pydantic by calling `to_dict()` of each value in resources (dict)
+        _field_dict = {}
+        if self.resources:
+            for _key_resources in self.resources:
+                if self.resources[_key_resources]:
+                    _field_dict[_key_resources] = self.resources[_key_resources].to_dict()
+            _dict['resources'] = _field_dict
         return _dict
 
     @classmethod
@@ -100,6 +109,12 @@ class KpuV1alpha1ComputeSpec(BaseModel):
             "env": [IoK8sApiCoreV1EnvVar.from_dict(_item) for _item in obj["env"]] if obj.get("env") is not None else None,
             "image": obj.get("image"),
             "labels": obj.get("labels"),
+            "resources": dict(
+                (_k, IoK8sApimachineryPkgApiResourceQuantity.from_dict(_v))
+                for _k, _v in obj["resources"].items()
+            )
+            if obj.get("resources") is not None
+            else None,
             "suspend": obj.get("suspend")
         })
         return _obj

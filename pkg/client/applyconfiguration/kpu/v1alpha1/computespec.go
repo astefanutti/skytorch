@@ -17,6 +17,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/client-go/applyconfigurations/core/v1"
 )
 
@@ -30,6 +31,7 @@ type ComputeSpecApplyConfiguration struct {
 	Command     []string                      `json:"command,omitempty"`
 	Args        []string                      `json:"args,omitempty"`
 	Env         []v1.EnvVarApplyConfiguration `json:"env,omitempty"`
+	Resources   *corev1.ResourceList          `json:"resources,omitempty"`
 }
 
 // ComputeSpecApplyConfiguration constructs a declarative configuration of the ComputeSpec type for use with
@@ -112,5 +114,13 @@ func (b *ComputeSpecApplyConfiguration) WithEnv(values ...*v1.EnvVarApplyConfigu
 		}
 		b.Env = append(b.Env, *values[i])
 	}
+	return b
+}
+
+// WithResources sets the Resources field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Resources field is set to the value of the last call.
+func (b *ComputeSpecApplyConfiguration) WithResources(value corev1.ResourceList) *ComputeSpecApplyConfiguration {
+	b.Resources = &value
 	return b
 }

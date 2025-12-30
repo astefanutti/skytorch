@@ -576,11 +576,25 @@ func schema_pkg_apis_kpu_v1alpha1_ComputeSpec(ref common.ReferenceCallback) comm
 							},
 						},
 					},
+					"resources": {
+						SchemaProps: spec.SchemaProps{
+							Description: "resources for each of the Compute replicas.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/api/resource.Quantity"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/api/core/v1.EnvVar"},
+			"k8s.io/api/core/v1.EnvVar", "k8s.io/apimachinery/pkg/api/resource.Quantity"},
 	}
 }
 

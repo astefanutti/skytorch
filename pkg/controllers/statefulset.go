@@ -72,6 +72,26 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 		env = append(env, envVar)
 	}
 
+	// Build resource requirements
+	resourceRequirements := corev1apply.ResourceRequirements()
+	if len(compute.Spec.Resources) > 0 {
+		// Use resources from Compute spec
+		resourceRequirements.
+			WithRequests(compute.Spec.Resources).
+			WithLimits(compute.Spec.Resources)
+	} else {
+		// Use default resources
+		resourceRequirements.
+			WithRequests(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("100m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			}).
+			WithLimits(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
+			})
+	}
+
 	// Build container
 	container := corev1apply.Container().
 		WithName("server").
@@ -83,17 +103,7 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 				WithProtocol(corev1.ProtocolTCP),
 		).
 		WithEnv(env...).
-		WithResources(
-			corev1apply.ResourceRequirements().
-				WithRequests(corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("100m"),
-					corev1.ResourceMemory: resource.MustParse("256Mi"),
-				}).
-				WithLimits(corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("1"),
-					corev1.ResourceMemory: resource.MustParse("2Gi"),
-				}),
-		).
+		WithResources(resourceRequirements).
 		WithReadinessProbe(
 			corev1apply.Probe().
 				WithGRPC(

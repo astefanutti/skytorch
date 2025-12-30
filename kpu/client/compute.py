@@ -36,6 +36,9 @@ from kpu.client.models.io_k8s_apimachinery_pkg_apis_meta_v1_object_meta import (
     IoK8sApimachineryPkgApisMetaV1ObjectMeta
 )
 from kpu.client.models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
+from kpu.client.models.io_k8s_apimachinery_pkg_api_resource_quantity import (
+    IoK8sApimachineryPkgApiResourceQuantity
+)
 from kpu.torch.client import TensorClient
 
 import kpu.client.aio as aio
@@ -65,7 +68,8 @@ class Compute:
     Example:
         >>> compute = Compute(
         ...     name="my-compute",
-        ...     image="localhost:5001/kpu-torch-server:latest"
+        ...     image="localhost:5001/kpu-torch-server:latest",
+        ...     resources={"cpu": "2", "memory": "4Gi", "nvidia.com/gpu": "1"},
         ... )
         >>>
         >>> # Wait for it to be ready and use it
@@ -93,6 +97,7 @@ class Compute:
         command: Optional[List[str]] = None,
         args: Optional[List[str]] = None,
         env: Optional[Dict[str, str]] = None,
+        resources: Optional[Dict[str, str]] = None,
         labels: Optional[Dict[str, str]] = None,
         annotations: Optional[Dict[str, str]] = None,
         suspend: bool = False,
@@ -110,6 +115,7 @@ class Compute:
             command: Entrypoint command override
             args: Arguments for the entrypoint
             env: Environment variables as dict (will be converted to EnvVar list)
+            resources: Resource requirements as dict (e.g., {"cpu": "2", "memory": "4Gi", "nvidia.com/gpu": "1"})
             labels: Labels to apply to the Compute resources
             annotations: Annotations to apply to the Compute resources
             suspend: Whether to create the Compute in suspended state
@@ -120,6 +126,7 @@ class Compute:
         self._command = command
         self._args = args
         self._env = env
+        self._resources = resources
         self._labels = labels
         self._annotations = annotations
         self._suspend = suspend
@@ -197,7 +204,7 @@ class Compute:
         async with aio.ApiClient() as api_client, aio.DynamicClient(api_client) as dynamic_client:
             compute_api = await dynamic_client.resources.get(
                 api_version="compute.kpu.dev/v1alpha1",
-                kind="Compute"
+                kind="Compute",
             )
             async with Watch(api_client) as watcher:
                 async for event in compute_api.watch(
@@ -324,8 +331,8 @@ class Compute:
                 name=self.name,
                 namespace=self.namespace,
                 body={
-                    "gracePeriodSeconds": grace_period_seconds
-                }
+                    "gracePeriodSeconds": grace_period_seconds,
+                },
             )
 
             logger.info(f"Compute {self.namespace}/{self.name} deleted")
@@ -356,11 +363,20 @@ class Compute:
                 for k, v in self._env.items()
             ]
 
+        # Convert resources dict to ResourceList
+        resource_list = None
+        if self._resources:
+            resource_list = {
+                k: IoK8sApimachineryPkgApiResourceQuantity(v)
+                for k, v in self._resources.items()
+            }
+
         spec = KpuV1alpha1ComputeSpec(
             image=self._image,
             command=self._command,
             args=self._args,
             env=env_vars,
+            resources=resource_list,
             labels=self._labels,
             annotations=self._annotations,
             suspend=self._suspend,
@@ -475,7 +491,7 @@ class Compute:
         self._grpc_client = TensorClient(
             host=host,
             port=port,
-            metadata=[("compute-id", f"{self.namespace}/{self.name}")]
+            metadata=[("compute-id", f"{self.namespace}/{self.name}")],
         )
         # Enter the async context manager
         await self._grpc_client.__aenter__()

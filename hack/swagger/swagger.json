@@ -11769,6 +11769,13 @@
               "default": ""
             }
           },
+          "resources": {
+            "description": "resources for each of the Compute replicas.",
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
+            }
+          },
           "suspend": {
             "description": "suspend defines whether to suspend the running Compute. Defaults to false.",
             "type": "boolean"

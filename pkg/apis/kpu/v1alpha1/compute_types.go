@@ -122,6 +122,10 @@ type ComputeSpec struct {
 	// +listMapKey=name
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// resources for each of the Compute replicas.
+	// +optional
+	Resources corev1.ResourceList `json:"resources,omitempty"`
 }
 
 // PodTemplateSpecOverride represents the spec overrides for Pod template.
