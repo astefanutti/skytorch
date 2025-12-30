@@ -1,10 +1,7 @@
 """
-Example client for the PyTorch tensor streaming gRPC service.
-
-This demonstrates how to use the async streaming methods to send and receive tensors.
+Client for the PyTorch tensor streaming gRPC service.
 """
 
-import asyncio
 import logging
 
 from typing import Optional
@@ -36,31 +33,21 @@ logger = logging.getLogger(__name__)
 class TensorClient:
     """
     Async gRPC client for streaming PyTorch tensors.
+
+    Uses a shared gRPC channel provided by the caller (typically GRPCClient).
     """
 
-    def __init__(self, host: str = 'localhost', port: int = 50051, metadata: Optional[MetadataType] = None):
+    def __init__(self, channel: grpc.aio.Channel, metadata: Optional[MetadataType] = None):
         """
         Initialize the client.
 
         Args:
-            host: Server host
-            port: Server port
+            channel: gRPC channel to use for communication
+            metadata: Optional metadata to include in requests
         """
-        self.address = f'{host}:{port}'
+        self.channel = channel
         self.metadata = metadata
-        self.channel = None
-        self.stub = None
-
-    async def __aenter__(self):
-        """Async context manager entry."""
-        self.channel = grpc.aio.insecure_channel(self.address)
         self.stub = service_pb2_grpc.ServiceStub(self.channel)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        if self.channel:
-            await self.channel.close()
 
     async def send_tensors(self, *tensors: torch.Tensor) -> service_pb2.TensorResponse:
         """
@@ -196,43 +183,3 @@ class TensorClient:
                 logger.info(f"Received processed tensor with shape {tensor.shape}")
 
         return processed_tensors
-
-
-async def main():
-    """Example usage of the tensor client."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    # Create example tensors
-    tensor1 = torch.randn(100, 100)
-    tensor2 = torch.randn(50, 50)
-
-    async with TensorClient() as client:
-        # Example 1: Send tensors to server
-        logger.info("Example 1: Sending tensors to server")
-        response = await client.send_tensors(tensor1, tensor2)
-        logger.info(f"Server response: {response.message}")
-        logger.info(f"Received tensor IDs: {response.received_tensor_ids}")
-
-        # Example 2: Receive tensors from server
-        logger.info("Example 2: Receiving tensors from server")
-        received = await client.receive_tensors(
-            count=2,
-            parameters={'shape': '20,20'}
-        )
-        logger.info(f"Received {len(received)} tensors")
-        for i, tensor in enumerate(received):
-            logger.info(f"  Tensor {i}: shape={tensor.shape}, dtype={tensor.dtype}")
-
-        # Example 3: Bidirectional streaming
-        logger.info("Example 3: Bidirectional streaming")
-        processed = await client.stream_tensors(tensor1, tensor2)
-        logger.info(f"Received {len(processed)} processed tensors")
-        for i, tensor in enumerate(processed):
-            logger.info(f"  Processed tensor {i}: shape={tensor.shape}, dtype={tensor.dtype}")
-
-
-if __name__ == '__main__':
-    asyncio.run(main())

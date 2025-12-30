@@ -39,7 +39,7 @@ from kpu.client.models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
 from kpu.client.models.io_k8s_apimachinery_pkg_api_resource_quantity import (
     IoK8sApimachineryPkgApiResourceQuantity
 )
-from kpu.torch.client import TensorClient
+from kpu.client.grpc import GRPCClient
 
 import kpu.client.aio as aio
 
@@ -54,6 +54,7 @@ class Compute:
     - Creating/updating Compute resources in Kubernetes (using server-side apply)
     - Waiting for them to become ready
     - Streaming tensors to/from the Compute via gRPC
+    - Streaming metrics from the Compute via gRPC
     - Cleaning up resources
 
     The Compute resource is created or updated in Kubernetes when the object
@@ -66,10 +67,15 @@ class Compute:
     - Auto-detects namespace from context or can be explicitly set
 
     Example:
+        >>> def handle_metrics(snapshot):
+        ...     for metric in snapshot.metrics:
+        ...         print(f"{metric.name}: {metric.value} {metric.unit}")
+        >>>
         >>> compute = Compute(
         ...     name="my-compute",
         ...     image="localhost:5001/kpu-torch-server:latest",
         ...     resources={"cpu": "2", "memory": "4Gi", "nvidia.com/gpu": "1"},
+        ...     on_metrics=handle_metrics
         ... )
         >>>
         >>> # Wait for it to be ready and use it
@@ -102,6 +108,7 @@ class Compute:
         annotations: Optional[Dict[str, str]] = None,
         suspend: bool = False,
         on_events: Optional[Callable[[CoreV1Event], None]] = None,
+        on_metrics: Optional[Callable[[object], None]] = None,
     ):
         """
         Initialize and create/update a Compute resource using server-side apply.
@@ -119,7 +126,8 @@ class Compute:
             labels: Labels to apply to the Compute resources
             annotations: Annotations to apply to the Compute resources
             suspend: Whether to create the Compute in suspended state
-            on_events: Optional callback to receive Events for this Compute resource
+            on_events: Optional callback to receive events for this Compute resource
+            on_metrics: Optional callback to receive metrics from this Compute resource
         """
         self.name = name
         self._image = image
@@ -131,6 +139,7 @@ class Compute:
         self._annotations = annotations
         self._suspend = suspend
         self._on_events = on_events
+        self._on_metrics = on_metrics
         self._token = None
 
         # Initialize Kubernetes client if needed
@@ -145,13 +154,14 @@ class Compute:
         self._dynamic_client = dynamic.DynamicClient(self._api_client)
         self._compute_api = self._dynamic_client.resources.get(
             api_version="compute.kpu.dev/v1alpha1",
-            kind="Compute"
+            kind="Compute",
         )
 
         # State tracking
         self._compute_resource: Optional[KpuV1alpha1Compute] = None
-        self._grpc_client: Optional[TensorClient] = None
+        self._grpc_client: Optional[GRPCClient] = None
         self._event_watch_task: Optional[asyncio.Task] = None
+        self._metrics_stream_task: Optional[asyncio.Task] = None
 
         # Start event watching if callback is provided
         if self._on_events is not None:
@@ -181,8 +191,8 @@ class Compute:
         return self._compute_resource
 
     async def ready(
-            self,
-            timeout: int = 60,
+        self,
+        timeout: int = 60,
     ) -> Self:
         """
         Wait for the Compute to become ready using watch.
@@ -240,7 +250,7 @@ class Compute:
                     raise TimeoutError(
                         f"Compute {self.namespace}/{self.name} did not become ready "
                         f"within {timeout} seconds"
-                )
+                    )
 
         # Initialize gRPC client when ready
         await self._init_grpc_client()
@@ -435,6 +445,25 @@ class Compute:
                 except asyncio.CancelledError:
                     pass
 
+    async def _stream_metrics(self):
+        """Stream metrics from this Compute resource and call the callback."""
+        logger.debug(f"Starting metrics streaming for Compute {self.namespace}/{self.name}")
+
+        try:
+            # Stream metrics continuously with 1 second interval
+            async for snapshot in self._grpc_client.metrics.stream_metrics(
+                    interval_seconds=1.0,
+            ):
+                logger.debug(
+                    f"Received metrics snapshot from {snapshot.source} "
+                    f"with {len(snapshot.metrics)} metrics"
+                )
+                self._on_metrics(snapshot)
+        except asyncio.CancelledError:
+            logger.debug(f"Metrics streaming cancelled for Compute {self.namespace}/{self.name}")
+        except Exception as e:
+            logger.error(f"Error streaming metrics for Compute {self.namespace}/{self.name}: {e}")
+
     def _is_ready(self) -> bool:
         """Check if the Compute is ready based on conditions."""
         if not self._compute_resource or not self._compute_resource.status:
@@ -488,7 +517,7 @@ class Compute:
             f"at {host}:{port}"
         )
 
-        self._grpc_client = TensorClient(
+        self._grpc_client = GRPCClient(
             host=host,
             port=port,
             metadata=[("compute-id", f"{self.namespace}/{self.name}")],
@@ -496,13 +525,26 @@ class Compute:
         # Enter the async context manager
         await self._grpc_client.__aenter__()
 
+        # Start metrics streaming if callback is provided
+        if self._on_metrics is not None:
+            self._metrics_stream_task = asyncio.create_task(self._stream_metrics())
+
     async def _cleanup_grpc_client(self):
         """Cleanup the gRPC client connection."""
+        # Cancel metrics stream task if running
+        if self._metrics_stream_task is not None:
+            self._metrics_stream_task.cancel()
+            try:
+                await self._metrics_stream_task
+            except asyncio.CancelledError:
+                pass
+            self._metrics_stream_task = None
+
         if self._grpc_client is not None:
             await self._grpc_client.__aexit__(None, None, None)
             self._grpc_client = None
 
-    # Delegate gRPC tensor streaming methods to TensorClient
+    # Delegate gRPC tensor streaming methods to TensorClient via GRPCClient
 
     async def send_tensors(self, *tensors: torch.Tensor):
         """
@@ -522,7 +564,7 @@ class Compute:
                 f"Compute {self.namespace}/{self.name} is not ready. "
                 "Call ready() first or use as context manager."
             )
-        return await self._grpc_client.send_tensors(*tensors)
+        return await self._grpc_client.torch.send_tensors(*tensors)
 
     async def receive_tensors(
         self,
@@ -547,7 +589,7 @@ class Compute:
                 f"Compute {self.namespace}/{self.name} is not ready. "
                 "Call ready() first or use as context manager."
             )
-        return await self._grpc_client.receive_tensors(count=count, parameters=parameters)
+        return await self._grpc_client.torch.receive_tensors(count=count, parameters=parameters)
 
     async def stream_tensors(
         self,
@@ -570,7 +612,7 @@ class Compute:
                 f"Compute {self.namespace}/{self.name} is not ready. "
                 "Call ready() first or use as context manager."
             )
-        return await self._grpc_client.stream_tensors(*tensors)
+        return await self._grpc_client.torch.stream_tensors(*tensors)
 
     async def __aenter__(self) -> Self:
         """

@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package kpu.metrics.v1;
+
+// MetricType defines the type of metric value
+enum MetricType {
+  UNKNOWN = 0;
+  GAUGE = 1;      // Instantaneous value (e.g., temperature, utilization)
+  COUNTER = 2;    // Cumulative value (e.g., total errors)
+  HISTOGRAM = 3;  // Distribution of values
+}
+
+// Metric represents a single metric data point
+message Metric {
+  // Name of the metric (e.g., "gpu.temperature", "gpu.utilization.compute")
+  string name = 1;
+
+  // Metric type
+  MetricType type = 2;
+
+  // Numeric value of the metric
+  double value = 3;
+
+  // Unit of measurement (e.g., "celsius", "percent", "bytes")
+  string unit = 4;
+
+  // Labels/tags for the metric (e.g., {"device": "0", "gpu": "NVIDIA A100"})
+  map<string, string> labels = 5;
+
+  // Timestamp when the metric was collected (Unix timestamp in seconds)
+  int64 timestamp = 6;
+
+  // Optional help text describing the metric
+  string help = 7;
+}
+
+// MetricsSnapshot contains a collection of metrics at a point in time
+message MetricsSnapshot {
+  // List of metrics
+  repeated Metric metrics = 1;
+
+  // Source identifier (e.g., "nvidia-gpu", "amd-gpu", "cpu")
+  string source = 2;
+
+  // Timestamp of the snapshot
+  int64 timestamp = 3;
+}
+
+// GetMetricsRequest for polling metrics
+message GetMetricsRequest {
+  // Optional filter by metric names (empty = all metrics)
+  repeated string metric_names = 1;
+
+  // Optional filter by source (empty = all sources)
+  repeated string sources = 2;
+
+  // Optional label filters
+  map<string, string> label_filters = 3;
+}
+
+// GetMetricsResponse returns current metrics
+message GetMetricsResponse {
+  // Snapshots from different sources
+  repeated MetricsSnapshot snapshots = 1;
+}
+
+// StreamMetricsRequest for streaming metrics
+message StreamMetricsRequest {
+  // Interval in seconds between metric updates (default: 1.0)
+  double interval_seconds = 1;
+
+  // Optional filter by metric names
+  repeated string metric_names = 2;
+
+  // Optional filter by source
+  repeated string sources = 3;
+
+  // Optional label filters
+  map<string, string> label_filters = 4;
+}
+
+// Service definition for metrics collection
+service Metrics {
+  // Get current metrics (poll-based)
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+
+  // Stream metrics continuously (push-based)
+  rpc StreamMetrics(StreamMetricsRequest) returns (stream MetricsSnapshot);
+}

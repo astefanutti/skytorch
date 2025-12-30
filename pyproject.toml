@@ -64,7 +64,7 @@ torch = [
 extra = "https://download.pytorch.org/whl/cpu"
 
 [tool.setuptools]
-packages = ["kpu", "kpu.server", "kpu.server.health", "kpu.torch", "kpu.torch.server", "kpu.torch.client"]
+packages = ["kpu", "kpu.server", "kpu.server.health", "kpu.server.metrics", "kpu.server.nvidia", "kpu.torch", "kpu.torch.server", "kpu.torch.client"]
 
 [tool.setuptools.dynamic]
 version = { file = ["VERSION.md"] }
@@ -72,6 +72,7 @@ readme = { file = ["README.md"], content-type = "text/markdown" }
 
 [tool.setuptools.package-data]
 "kpu.server.health" = ["*.proto"]
+"kpu.server.metrics" = ["*.proto"]
 "kpu.torch.server" = ["*.proto"]
 
 [tool.black]

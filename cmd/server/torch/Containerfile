@@ -12,6 +12,7 @@ ENV PATH=$VIRTUAL_ENV/bin:$PATH
 
 # Install external dependencies
 RUN pip install --no-cache-dir "torch==2.9.1+cu128" --index-url https://download.pytorch.org/whl/cu128
+RUN pip install --no-cache-dir "nvidia-ml-py"
 
 # Copy the kpu Python package
 COPY --chown=1000:root pyproject.toml README.md VERSION.md ./
@@ -29,6 +30,7 @@ ENV KPU_HOST=[::]
 ENV KPU_MAX_WORKERS=10
 ENV KPU_CHUNK_SIZE=1048576
 ENV KPU_LOG_LEVEL=INFO
+ENV KPU_METRICS_SOURCES=nvidia-gpu
 
 # Run the server
 # Can override with: docker run image --port 8080 --log-level DEBUG

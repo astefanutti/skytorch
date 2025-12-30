@@ -1,5 +1,5 @@
 """
-PyTorch Tensor Streaming gRPC Server
+PyTorch Streaming gRPC Server
 
 This package provides an async gRPC server for streaming PyTorch tensors
 using best practices for serialization and streaming.
@@ -12,16 +12,8 @@ from kpu.torch.server.serialization import (
     DEFAULT_CHUNK_SIZE
 )
 
-try:
-    from kpu.torch.server.server import (
-        TensorServicer,
-        serve
-    )
-except ImportError:
-    # Generated gRPC code not available yet
-    TensorServicer = None
-    serve = None
-
+from kpu.torch.server.service import TensorServicer
+from kpu.torch.server.server import serve
 
 __all__ = [
     'serialize_tensor_to_chunks',

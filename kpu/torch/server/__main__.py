@@ -12,6 +12,7 @@ import grpc
 
 from kpu.torch.server.server import serve, graceful_shutdown
 from kpu.torch.server.serialization import DEFAULT_CHUNK_SIZE
+from kpu.server.metrics.source import load_metrics_source, list_metrics_source_names
 
 
 parser = argparse.ArgumentParser(
@@ -48,6 +49,14 @@ parser.add_argument(
     help='Logging level'
 )
 
+parser.add_argument(
+    '--metrics-sources',
+    type=str,
+    nargs='*',
+    default=os.environ.get('KPU_METRICS_SOURCES', '').split(',') if os.environ.get('KPU_METRICS_SOURCES', '') else [],
+    help=f'Metrics sources to enable (available: {", ".join(list_metrics_source_names())})'
+)
+
 args = parser.parse_args()
 
 logging.basicConfig(
@@ -61,6 +70,7 @@ logger.info(f"  Port: {args.port}")
 logger.info(f"  Host: {args.host}")
 logger.info(f"  Chunk Size: {args.chunk_size} bytes ({args.chunk_size / 1024 / 1024:.2f} MB)")
 logger.info(f"  Log Level: {args.log_level}")
+logger.info(f"  Metrics Sources: {', '.join(args.metrics_sources) if args.metrics_sources else 'none'}")
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
@@ -69,15 +79,30 @@ server = grpc.aio.server()
 for sig in (signal.SIGINT, signal.SIGTERM):
     loop.add_signal_handler(sig, lambda: asyncio.ensure_future(graceful_shutdown(server, grace=5.0)))
 
+# Initialize metrics sources based on CLI configuration
+metrics_sources = []
+for source_name in args.metrics_sources:
+    source = load_metrics_source(source_name)
+    if source is not None:
+        if source.is_available():
+            metrics_sources.append(source)
+            logger.info(f"Enabled metrics source: {source_name}")
+        else:
+            logger.warning(f"Metrics source '{source_name}' is not available")
+
 try:
     loop.run_until_complete(
         serve(
             server,
             host=args.host,
             port=args.port,
-            chunk_size=args.chunk_size
+            chunk_size=args.chunk_size,
+            metrics_sources=metrics_sources,
         )
     )
 finally:
     loop.run_until_complete(server.wait_for_termination())
+    # Cleanup metrics sources
+    for source in metrics_sources:
+        source.cleanup()
     loop.close()

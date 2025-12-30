@@ -19,7 +19,7 @@ else
     PYTHON="python"
 fi
 
-echo "Generating gRPC code for PyTorch tensor service..."
+echo "Generating gRPC code for PyTorch service..."
 $PYTHON -m grpc_tools.protoc \
     -I. \
     --python_out=. \
@@ -34,5 +34,13 @@ $PYTHON -m grpc_tools.protoc \
     --pyi_out=. \
     --grpc_python_out=. \
     kpu/server/health/health.proto
+
+echo "Generating gRPC code for Metrics service..."
+$PYTHON -m grpc_tools.protoc \
+    -I. \
+    --python_out=. \
+    --pyi_out=. \
+    --grpc_python_out=. \
+    kpu/server/metrics/metrics.proto
 
 echo "Generated gRPC code successfully"
