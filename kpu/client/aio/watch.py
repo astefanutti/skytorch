@@ -19,6 +19,7 @@ from functools import partial
 
 from kubernetes import client
 from .api_client import ApiClient
+from .stream import WsApiClient
 
 PYDOC_RETURN_LABEL = ":return:"
 PYDOC_FOLLOW_PARAM = ":param follow:"
@@ -43,22 +44,19 @@ def _find_return_type(func):
     return ""
 
 
-class Stream(object):
+class BaseWatch(object):
+    """
+    Base class for Kubernetes API resource streaming.
 
-    def __init__(self, func, *args, **kwargs):
-        pass
+    Provides common functionality for both HTTP chunked streaming (Watch)
+    and WebSocket streaming (Stream).
+    """
 
-
-class Watch(object):
-
-    def __init__(self, api_client=None, return_type=None):
+    def __init__(self, api_client, return_type=None):
         self._raw_return_type = return_type
         self._stop = False
-        if api_client is None:
-            api_client = ApiClient()
         self._api_client = api_client
         self.resource_version = None
-        self.resp = None
 
     def stop(self):
         self._stop = True
@@ -102,6 +100,31 @@ class Watch(object):
         except json.JSONDecodeError:
             return None
 
+    def stream(self, func, *args, **kwargs):
+        """Stream an API resource and return results via a generator.
+
+        :param func: The API function pointer. Any parameter to the function
+                     can be passed after this parameter.
+
+        :return: Event object with these keys:
+                   'type': The type of event such as "ADDED", "DELETED", etc.
+                   'raw_object': a dict representing the watched object.
+                   'object': A model representation of raw_object. The name of
+                             model will be determined based on
+                             the func's doc string. If it cannot be determined,
+                             'object' value will be the same as 'raw_object'.
+        """
+        self._stop = False
+        self.return_type = self.get_return_type(func)
+        kwargs[self.get_watch_argument_name(func)] = True
+        kwargs['_preload_content'] = False
+        if 'resource_version' in kwargs:
+            self.resource_version = kwargs['resource_version']
+
+        self.func = partial(func, *args, **kwargs)
+
+        return self
+
     def __aiter__(self):
         return self
 
@@ -111,6 +134,158 @@ class Watch(object):
         except:  # noqa: E722
             await self.close()
             raise
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
+
+    # Abstract methods to be implemented by subclasses
+    async def next(self):
+        """Get the next event. Must be implemented by subclasses."""
+        raise NotImplementedError
+
+    async def close(self):
+        """Close the connection. Must be implemented by subclasses."""
+        raise NotImplementedError
+
+
+class Stream(BaseWatch):
+    """
+    WebSocket-based streaming for Kubernetes API resources.
+
+    Similar to Watch but uses WebSocket connections via WsApiClient
+    instead of chunked HTTP streaming.
+    """
+
+    def __init__(self, api_client=None, return_type=None):
+        if api_client is None:
+            api_client = WsApiClient()
+        super().__init__(api_client, return_type)
+        self.ws_ctx = None  # WebSocket context manager
+        self.ws = None      # Actual WebSocket connection
+
+    def stop(self):
+        self._stop = True
+
+    async def _reconnect(self):
+        if self.ws is not None:
+            await self.ws.close()
+            self.ws = None
+        if self.ws_ctx is not None:
+            await self.ws_ctx.__aexit__(None, None, None)
+            self.ws_ctx = None
+        if self.resource_version:
+            self.func.keywords['resource_version'] = self.resource_version
+
+    async def next(self):
+        watch_forever = 'timeout_seconds' not in self.func.keywords
+        retry_410 = watch_forever
+
+        while True:
+            # Set the websocket connection to the user supplied function (eg
+            # `list_namespaced_pods`) if this is the first iteration.
+            if self.ws is None:
+                # func() returns a context manager, we need to enter it
+                self.ws_ctx = await self.func()
+                self.ws = await self.ws_ctx.__aenter__()
+
+            # Abort at the current iteration if the user has called `stop` on this
+            # stream instance.
+            if self._stop:
+                raise StopAsyncIteration
+
+            # Fetch the next K8s response from WebSocket.
+            try:
+                msg = await self.ws.receive()
+
+                # Handle WebSocket message types
+                if msg.type == 1:  # aiohttp.WSMsgType.TEXT
+                    line = msg.data
+                elif msg.type == 8:  # aiohttp.WSMsgType.CLOSE
+                    # WebSocket closed
+                    if watch_forever:
+                        await self._reconnect()
+                        continue
+                    else:
+                        raise StopAsyncIteration
+                elif msg.type == 9:  # aiohttp.WSMsgType.ERROR
+                    # WebSocket error
+                    if watch_forever:
+                        await self._reconnect()
+                        continue
+                    else:
+                        raise StopAsyncIteration
+                else:
+                    # Skip other message types (binary, ping, pong, etc.)
+                    continue
+
+            except asyncio.TimeoutError:
+                # This exception can be raised by aiohttp (client timeout)
+                # but we don't retry if server side timeout is applied.
+                if watch_forever:
+                    await self._reconnect()
+                    continue
+                else:
+                    raise
+            except Exception as e:
+                # Handle other exceptions (connection errors, etc.)
+                if watch_forever:
+                    await self._reconnect()
+                    continue
+                else:
+                    raise
+
+            # Special case for faster log streaming
+            if self.return_type == 'str':
+                if line == '':
+                    # end of log
+                    raise StopAsyncIteration
+                return line
+
+            # Stop the iterator if K8s sends an empty response. This happens when
+            # e.g. the supplied timeout has expired.
+            if line == '':
+                if watch_forever:
+                    await self._reconnect()
+                    continue
+                raise StopAsyncIteration
+
+            # retry 410 error only once
+            try:
+                event = self.unmarshal_event(line, self.return_type)
+            except client.exceptions.ApiException as ex:
+                if ex.status == 410 and retry_410:
+                    retry_410 = False  # retry only once
+                    await self._reconnect()
+                    continue
+                raise
+            retry_410 = watch_forever
+            return event
+
+    async def close(self):
+        await self._api_client.close()
+        if self.ws is not None:
+            await self.ws.close()
+            self.ws = None
+            await self.ws_ctx.__aexit__(None, None, None)
+            self.ws_ctx = None
+
+
+class Watch(BaseWatch):
+    """
+    HTTP chunked streaming for Kubernetes API resources.
+
+    Uses standard HTTP chunked transfer encoding via ApiClient
+    for streaming API resource updates.
+    """
+
+    def __init__(self, api_client=None, return_type=None):
+        if api_client is None:
+            api_client = ApiClient()
+        super().__init__(api_client, return_type)
+        self.resp = None
 
     def _reconnect(self):
         self.resp.close()
@@ -173,48 +348,6 @@ class Watch(object):
                 raise
             retry_410 = watch_forever
             return event
-
-    def stream(self, func, *args, **kwargs):
-        """Watch an API resource and stream the result back via a generator.
-
-        :param func: The API function pointer. Any parameter to the function
-                     can be passed after this parameter.
-
-        :return: Event object with these keys:
-                   'type': The type of event such as "ADDED", "DELETED", etc.
-                   'raw_object': a dict representing the watched object.
-                   'object': A model representation of raw_object. The name of
-                             model will be determined based on
-                             the func's doc string. If it cannot be determined,
-                             'object' value will be the same as 'raw_object'.
-
-        Example:
-            v1 = kubernetes_asyncio.client.CoreV1Api()
-            watch = kubernetes_asyncio.watch.Watch()
-            async for e in watch.stream(v1.list_namespace, timeout_seconds=10):
-                type = e['type']
-                object = e['object']  # object is one of type return_type
-                raw_object = e['raw_object']  # raw_object is a dict
-                ...
-                if should_stop:
-                    watch.stop()
-        """
-        self._stop = False
-        self.return_type = self.get_return_type(func)
-        kwargs[self.get_watch_argument_name(func)] = True
-        kwargs['_preload_content'] = False
-        if 'resource_version' in kwargs:
-            self.resource_version = kwargs['resource_version']
-
-        self.func = partial(func, *args, **kwargs)
-
-        return self
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.close()
 
     async def close(self):
         await self._api_client.close()

@@ -27,7 +27,7 @@ except ImportError as e:
         "Install with: pip install kubernetes"
     )
 
-from kpu.client.aio import Watch
+from kpu.client.aio import Watch, Stream
 from kpu.client.context import compute_ctx
 from kpu.client.init import init, default_namespace
 from kpu.client.models.kpu_v1alpha1_compute import KpuV1alpha1Compute
@@ -211,17 +211,17 @@ class Compute:
             f"(timeout: {timeout}s)"
         )
 
-        async with aio.ApiClient() as api_client, aio.DynamicClient(api_client) as dynamic_client:
+        async with aio.WsApiClient() as api_client, aio.DynamicClient(api_client) as dynamic_client:
             compute_api = await dynamic_client.resources.get(
                 api_version="compute.kpu.dev/v1alpha1",
                 kind="Compute",
             )
-            async with Watch(api_client) as watcher:
+            async with Stream(api_client) as watcher:
                 async for event in compute_api.watch(
-                        namespace=self.namespace,
-                        field_selector=f"metadata.name={self.name}",
-                        timeout=timeout,
-                        watcher=watcher,
+                    namespace=self.namespace,
+                    field_selector=f"metadata.name={self.name}",
+                    timeout=timeout,
+                    watcher=watcher,
                 ):
                     event_type = event["type"]
                     obj = event["object"]
