@@ -76,9 +76,6 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 server = grpc.aio.server()
 
-for sig in (signal.SIGINT, signal.SIGTERM):
-    loop.add_signal_handler(sig, lambda: asyncio.ensure_future(graceful_shutdown(server, grace=5.0)))
-
 # Initialize metrics sources based on CLI configuration
 metrics_sources = []
 for source_name in args.metrics_sources:
@@ -89,6 +86,9 @@ for source_name in args.metrics_sources:
             logger.info(f"Enabled metrics source: {source_name}")
         else:
             logger.warning(f"Metrics source '{source_name}' is not available")
+
+for sig in (signal.SIGINT, signal.SIGTERM):
+    loop.add_signal_handler(sig, lambda: asyncio.ensure_future(graceful_shutdown(server, metrics_sources, grace=5.0)))
 
 try:
     loop.run_until_complete(
@@ -102,7 +102,4 @@ try:
     )
 finally:
     loop.run_until_complete(server.wait_for_termination())
-    # Cleanup metrics sources
-    for source in metrics_sources:
-        source.cleanup()
     loop.close()

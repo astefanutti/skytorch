@@ -86,10 +86,20 @@ async def serve(
     await server.wait_for_termination()
 
 
-async def graceful_shutdown(server: grpc.aio.Server, grace: Optional[float]) -> None:
+async def graceful_shutdown(
+    server: grpc.aio.Server,
+    metrics_sources: list[MetricsSource],
+    grace: Optional[float],
+) -> None:
     logging.info("Graceful shutdown...")
+
     # Shuts down the server. During the grace period,
     # the server won't accept new connections and allow
     # existing RPCs to continue within the grace period.
     await server.stop(grace=grace)
+
+    # Cleanup metrics sources
+    for source in metrics_sources:
+        source.cleanup()
+
     logging.info("Graceful shutdown complete")
