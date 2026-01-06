@@ -50,22 +50,17 @@ async def serve(
         metrics_sources: Optional list of metrics sources
     """
 
-    # Add tensor service
-    servicer = TensorServicer(chunk_size=chunk_size)
-    service_pb2_grpc.add_ServiceServicer_to_server(servicer, server)
-
     # Add health service
+    # FIXME: grpcio-health-checking should be used instead
+    # Note enter_graceful_shutdown should be called, and also look at xDS.
     health_servicer = HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
 
-    # Set health status
+    # Add tensor service
+    servicer = TensorServicer(chunk_size=chunk_size)
+    service_pb2_grpc.add_ServiceServicer_to_server(servicer, server)
     health_servicer.set_service_status(
         "kpu.torch.Service",
-        health_pb2.HealthCheckResponse.SERVING
-    )
-    # Set overall server health
-    health_servicer.set_service_status(
-        "",
         health_pb2.HealthCheckResponse.SERVING
     )
 
@@ -73,6 +68,16 @@ async def serve(
     if metrics_sources:
         metrics_servicer = MetricsServicer(*metrics_sources)
         metrics_pb2_grpc.add_MetricsServicer_to_server(metrics_servicer, server)
+        health_servicer.set_service_status(
+            "kpu.server.Metrics",
+            health_pb2.HealthCheckResponse.SERVING
+        )
+
+    # Set overall server health
+    health_servicer.set_service_status(
+        "",
+        health_pb2.HealthCheckResponse.SERVING
+    )
 
     listen_addr = f'{host}:{port}'
     server.add_insecure_port(listen_addr)
