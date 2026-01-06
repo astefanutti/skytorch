@@ -431,17 +431,19 @@ class Compute:
 
         async with aio.ApiClient() as api_client:
             core_api = CoreV1Api(api_client)
-            async with Watch(api_client).\
+            async with Watch(api_client). \
                     stream(core_api.list_namespaced_event,
                            namespace=self.namespace,
-                           field_selector=f"involvedObject.name={self.name},involvedObject.kind=Compute",
+                           field_selector=f"involvedObject.kind=Pod",
                            send_initial_events=False,
                            resource_version_match="NotOlderThan",
                            ) as stream:
                 try:
                     async for event in stream:
-                        if event["type"] in ["ADDED", "MODIFIED"]:
-                            self._on_events(event["object"])
+                        # FIXME: find a better way to only watch for owned Pods events
+                        if event["raw_object"]["metadata"]["name"].startswith(self.name):
+                            if event["type"] in ["ADDED", "MODIFIED"]:
+                                self._on_events(event["object"])
                 except asyncio.CancelledError:
                     pass
 
