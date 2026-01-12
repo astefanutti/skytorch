@@ -1,13 +1,12 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "build", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "kpu-dev"
 description = "Kubernetes Processing Unit"
 requires-python = ">=3.10"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
+license = {text = "Apache-2.0"}
 authors = [
     { name = "Antonin Stefanutti", email = "antonin.stefanutti@gmail.com" }
 ]
@@ -55,7 +54,7 @@ test = [
 ]
 
 torch = [
-    "torch>=2.0.0",
+    "torch>=2.1.0",
 ]
 
 [tool.pip.index-urls]
@@ -64,7 +63,7 @@ torch = [
 extra = "https://download.pytorch.org/whl/cpu"
 
 [tool.setuptools]
-packages = ["kpu", "kpu.server", "kpu.server.health", "kpu.server.metrics", "kpu.server.nvidia", "kpu.torch", "kpu.torch.server", "kpu.torch.client"]
+packages = ["kpu", "kpu.client", "kpu.client.aio", "kpu.server", "kpu.server.health", "kpu.server.metrics", "kpu.server.nvidia", "kpu.torch", "kpu.torch.server", "kpu.torch.client", "kpu.torch.backend", "kpu.torch.backend.aten"]
 
 [tool.setuptools.dynamic]
 version = { file = ["VERSION.md"] }

@@ -1,0 +1,217 @@
+/**
+ * KPU PyTorch Backend - C++ Extension Module
+ *
+ * This module provides the C++ extension for the KPU PyTorch backend.
+ * It registers the KPU device type with PyTorch's C10 library and
+ * provides the factory pattern for Python callbacks.
+ */
+
+#include <torch/extension.h>
+#include <ATen/Context.h>
+#include <c10/core/Device.h>
+#include <c10/core/impl/DeviceGuardImplInterface.h>
+#include <pybind11/pybind11.h>
+#include <unordered_map>
+#include <mutex>
+
+#include "KpuTensorImpl.h"
+
+namespace py = pybind11;
+
+namespace kpu {
+
+// Forward declarations for registration functions
+void register_kpu_guard();
+void register_kpu_allocator();
+void register_kpu_hooks();
+
+// Thread-local current device index
+static thread_local c10::DeviceIndex g_current_device = 0;
+static c10::DeviceIndex g_device_count = 1;
+
+// Method cache for Python callbacks
+// Using PyObject* to avoid destructor issues at Python shutdown
+static std::unordered_map<std::string, PyObject*> g_method_cache;
+static std::mutex g_method_cache_mutex;
+static bool g_driver_initialized = false;
+
+/**
+ * Clear the method cache.
+ *
+ * This must be called before Python shuts down to avoid GIL issues
+ * when the static destructor runs.
+ */
+void clear_method_cache() {
+    std::lock_guard<std::mutex> lock(g_method_cache_mutex);
+    // Decrement reference counts while Python is still alive
+    for (auto& pair : g_method_cache) {
+        Py_XDECREF(pair.second);
+    }
+    g_method_cache.clear();
+}
+
+/**
+ * Get a method from the Python driver.
+ *
+ * This function provides the factory pattern for C++ to call Python methods.
+ * Methods are cached for efficiency.
+ *
+ * Uses PyObject* internally to avoid destructor issues at Python shutdown.
+ */
+py::object get_method(const std::string& name) {
+    // Check cache first (with lock)
+    {
+        std::lock_guard<std::mutex> lock(g_method_cache_mutex);
+        auto it = g_method_cache.find(name);
+        if (it != g_method_cache.end()) {
+            // Return borrowed reference wrapped in py::object
+            return py::reinterpret_borrow<py::object>(it->second);
+        }
+    }
+
+    // GIL must be held by caller
+    // Import driver and get method
+    py::module driver_module = py::module::import("kpu.torch.backend._driver");
+    py::object driver = driver_module.attr("driver");
+    py::object method = driver.attr("get_method")(name);
+
+    // Cache the method (increment ref count for cache ownership)
+    PyObject* raw_ptr = method.ptr();
+    Py_INCREF(raw_ptr);
+
+    {
+        std::lock_guard<std::mutex> lock(g_method_cache_mutex);
+        // Check if another thread already cached it
+        auto it = g_method_cache.find(name);
+        if (it != g_method_cache.end()) {
+            // Already cached, release our new reference
+            Py_DECREF(raw_ptr);
+        } else {
+            g_method_cache[name] = raw_ptr;
+        }
+    }
+
+    return method;
+}
+
+/**
+ * Initialize the driver connection.
+ */
+void init_driver() {
+    if (g_driver_initialized) {
+        return;
+    }
+
+    py::gil_scoped_acquire acquire;
+
+    // Import driver module to ensure it's initialized
+    py::module::import("kpu.torch.backend._driver");
+
+    g_driver_initialized = true;
+}
+
+// Device management functions
+c10::DeviceIndex device_count() {
+    return g_device_count;
+}
+
+c10::DeviceIndex current_device() {
+    return g_current_device;
+}
+
+void set_device(c10::DeviceIndex device) {
+    TORCH_CHECK(
+        device >= 0 && device < g_device_count,
+        "Invalid KPU device index: ", device,
+        ", device count: ", g_device_count
+    );
+    g_current_device = device;
+}
+
+void set_device_count(c10::DeviceIndex count) {
+    g_device_count = count;
+}
+
+c10::DeviceIndex exchange_device(c10::DeviceIndex device) {
+    auto old_device = g_current_device;
+    if (device >= 0) {
+        set_device(device);
+    }
+    return old_device;
+}
+
+// Initialization function
+void init() {
+    // Register backend name with C10
+    c10::register_privateuse1_backend("kpu");
+
+    // Register components
+    register_kpu_guard();
+    register_kpu_allocator();
+    register_kpu_hooks();
+
+    // Initialize driver connection
+    init_driver();
+}
+
+/**
+ * Get the default generator for a device.
+ *
+ * This is exposed to Python for RNG state management.
+ */
+py::object get_default_generator(c10::DeviceIndex device_index) {
+    auto generator = at::globalContext().defaultGenerator(
+        c10::Device(c10::DeviceType::PrivateUse1, device_index));
+    return py::cast(generator);
+}
+
+/**
+ * Get the metadata hash for a KPU tensor.
+ *
+ * This is exposed to Python for efficient caching.
+ */
+py::object get_metadata_hash(py::object tensor_obj) {
+    // Extract the tensor from the Python object
+    auto tensor = py::cast<at::Tensor>(tensor_obj);
+
+    // Check if tensor is using our custom TensorImpl
+    auto* impl_ptr = dynamic_cast<KpuTensorImpl*>(tensor.unsafeGetTensorImpl());
+    if (impl_ptr) {
+        auto metadata_hash = impl_ptr->get_metadata_hash();
+        return py::int_(metadata_hash);
+    } else {
+        throw std::runtime_error("Tensor is not a KPU tensor with custom TensorImpl");
+    }
+}
+
+}  // namespace kpu
+
+// Python module definition
+PYBIND11_MODULE(_C, m) {
+    m.doc() = "KPU PyTorch Backend C++ Extension";
+
+    // Initialize the backend
+    kpu::init();
+
+    // Expose device management functions to Python
+    m.def("_device_count", &kpu::device_count, "Get number of KPU devices");
+    m.def("_current_device", &kpu::current_device, "Get current KPU device index");
+    m.def("_set_device", &kpu::set_device, "Set current KPU device");
+    m.def("_set_device_count", &kpu::set_device_count, "Set KPU device count");
+    m.def("_exchange_device", &kpu::exchange_device, "Exchange current device");
+    m.def("_init", &kpu::init, "Initialize KPU backend");
+
+    // RNG and metadata functions
+    m.def("_get_default_generator", &kpu::get_default_generator,
+        "Get the default generator for a KPU device");
+    m.def("_get_metadata_hash", &kpu::get_metadata_hash,
+        "Get the metadata hash for a KPU tensor");
+
+    // Cleanup function to avoid GIL issues at shutdown
+    m.def("_clear_method_cache", &kpu::clear_method_cache,
+        "Clear the method cache (call before shutdown)");
+
+    // Register cleanup with atexit
+    py::module atexit = py::module::import("atexit");
+    atexit.attr("register")(py::cpp_function(&kpu::clear_method_cache));
+}
