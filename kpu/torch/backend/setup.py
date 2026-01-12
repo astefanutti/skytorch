@@ -88,7 +88,9 @@ setup(
     url="https://github.com/astefanutti/kpu",
     ext_modules=ext_modules,
     cmdclass={
-        "build_ext": BuildExtension.with_options(no_python_abi_suffix=True),
+        # Use parallel compilation (uses all available cores by default)
+        # Can be overridden with MAX_JOBS environment variable
+        "build_ext": BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=True),
     },
     entry_points={
         "torch.backends": [
