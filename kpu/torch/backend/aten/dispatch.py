@@ -3,12 +3,15 @@ KPU ATen Dispatch - Meta tensor execution for shape inference.
 
 This module provides the fallback mechanism for ATen operations on KPU devices.
 It uses meta tensors to infer output shapes without moving data, then creates
-output tensors on the KPU device.
+output tensors on the KPU device and executes operations remotely.
 """
 
 from typing import Any, Callable
 
 import torch
+
+from kpu.torch.backend._async import run_async
+from kpu.torch.backend import _client
 
 
 def _map_args_kwargs(
@@ -175,11 +178,23 @@ def _execute_with_static_outputs(
         else []
     )
 
-    # TODO: Execute operation remotely via driver when gRPC integration is ready
-    # For now, view operations work because they just create new tensors
-    # with the same storage. Compute operations will need remote execution.
-    #
-    # driver.execute_aten_operation(str(op), args, kwargs, output_tensors)
+    # Execute operation remotely via gRPC
+    non_none_outputs = [t for t in output_tensors if t is not None]
+    if non_none_outputs:
+        # Collect input KPU tensors from original_tensors
+        input_tensors = [
+            t for t in original_tensors.values() if t.device.type == "kpu"
+        ]
+
+        if input_tensors:
+            run_async(
+                _client.execute_aten_operation(
+                    op_name=str(op),
+                    input_tensors=input_tensors,
+                    output_tensors=non_none_outputs,
+                    kwargs=kwargs if kwargs else None,
+                )
+            )
 
     # Return results
     if len(output_tensors) > 1:

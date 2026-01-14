@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1ekpu/torch/server/service.proto\x12\tkpu.torch\"\xd4\x01\n\x0bTensorChunk\x12\x11\n\ttensor_id\x18\x01 \x01(\t\x12\x14\n\x0c\x63hunk_number\x18\x02 \x01(\r\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\x0c\x12\x14\n\x0ctotal_chunks\x18\x04 \x01(\r\x12\x0f\n\x07is_last\x18\x05 \x01(\x08\x12\x36\n\x08metadata\x18\x06 \x03(\x0b\x32$.kpu.torch.TensorChunk.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"O\n\x0eTensorResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x1b\n\x13received_tensor_ids\x18\x03 \x03(\t\"\x8f\x01\n\rTensorRequest\x12\r\n\x05\x63ount\x18\x01 \x01(\r\x12<\n\nparameters\x18\x02 \x03(\x0b\x32(.kpu.torch.TensorRequest.ParametersEntry\x1a\x31\n\x0fParametersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x32\xd8\x01\n\x07Service\x12\x45\n\x0eReceiveTensors\x12\x16.kpu.torch.TensorChunk\x1a\x19.kpu.torch.TensorResponse(\x01\x12\x41\n\x0bSendTensors\x12\x18.kpu.torch.TensorRequest\x1a\x16.kpu.torch.TensorChunk0\x01\x12\x43\n\rStreamTensors\x12\x16.kpu.torch.TensorChunk\x1a\x16.kpu.torch.TensorChunk(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1ekpu/torch/server/service.proto\x12\tkpu.torch\"\xd4\x01\n\x0bTensorChunk\x12\x11\n\ttensor_id\x18\x01 \x01(\t\x12\x14\n\x0c\x63hunk_number\x18\x02 \x01(\r\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\x0c\x12\x14\n\x0ctotal_chunks\x18\x04 \x01(\r\x12\x0f\n\x07is_last\x18\x05 \x01(\x08\x12\x36\n\x08metadata\x18\x06 \x03(\x0b\x32$.kpu.torch.TensorChunk.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"O\n\x0eTensorResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x1b\n\x13received_tensor_ids\x18\x03 \x03(\t\"\xa9\x01\n\x13\x43reateTensorRequest\x12\x11\n\ttensor_id\x18\x01 \x01(\x03\x12\r\n\x05shape\x18\x02 \x03(\x03\x12\r\n\x05\x64type\x18\x03 \x01(\t\x12\x0e\n\x06nbytes\x18\x04 \x01(\x03\x12\x13\n\x0b\x64\x65vice_type\x18\x05 \x01(\t\x12\x0e\n\x06stride\x18\x06 \x03(\x03\x12\x16\n\x0estorage_offset\x18\x07 \x01(\x03\x12\x14\n\x0c\x64\x65vice_index\x18\x08 \x01(\x05\"K\n\x14\x43reateTensorResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\ttensor_id\x18\x03 \x01(\x03\"p\n\x15GetStorageDataRequest\x12\x11\n\ttensor_id\x18\x01 \x01(\x03\x12\r\n\x05shape\x18\x02 \x03(\x03\x12\r\n\x05\x64type\x18\x03 \x01(\t\x12\x0e\n\x06stride\x18\x04 \x03(\x03\x12\x16\n\x0estorage_offset\x18\x05 \x01(\x03\"|\n\x11\x43opyTensorRequest\x12\x15\n\rsrc_tensor_id\x18\x01 \x01(\x03\x12\x15\n\rdst_tensor_id\x18\x02 \x01(\x03\x12\x12\n\nsrc_offset\x18\x03 \x01(\x03\x12\x12\n\ndst_offset\x18\x04 \x01(\x03\x12\x11\n\tnum_bytes\x18\x05 \x01(\x03\"\xa5\x01\n\x0fTensorReference\x12\x11\n\ttensor_id\x18\x01 \x01(\x03\x12\r\n\x05shape\x18\x02 \x03(\x03\x12\r\n\x05\x64type\x18\x03 \x01(\t\x12\x0e\n\x06nbytes\x18\x04 \x01(\x03\x12\x13\n\x0b\x64\x65vice_type\x18\x05 \x01(\t\x12\x0e\n\x06stride\x18\x06 \x03(\x03\x12\x16\n\x0estorage_offset\x18\x07 \x01(\x03\x12\x14\n\x0c\x64\x65vice_index\x18\x08 \x01(\x05\"\xd0\x01\n\x0c\x41tenArgument\x12,\n\x06tensor\x18\x01 \x01(\x0b\x32\x1a.kpu.torch.TensorReferenceH\x00\x12\x16\n\x0cscalar_float\x18\x02 \x01(\x01H\x00\x12\x14\n\nscalar_int\x18\x03 \x01(\x03H\x00\x12\x15\n\x0bscalar_bool\x18\x04 \x01(\x08H\x00\x12\x17\n\rscalar_string\x18\x05 \x01(\tH\x00\x12+\n\nlist_value\x18\x06 \x01(\x0b\x32\x15.kpu.torch.ScalarListH\x00\x42\x07\n\x05value\"K\n\nScalarList\x12\x14\n\x0c\x66loat_values\x18\x01 \x03(\x01\x12\x12\n\nint_values\x18\x02 \x03(\x03\x12\x13\n\x0b\x62ool_values\x18\x03 \x03(\x08\"\xfe\x01\n\x12\x45xecuteAtenRequest\x12\x0f\n\x07op_name\x18\x01 \x01(\t\x12\'\n\x06inputs\x18\x02 \x03(\x0b\x32\x17.kpu.torch.AtenArgument\x12+\n\x07outputs\x18\x03 \x03(\x0b\x32\x1a.kpu.torch.TensorReference\x12\x39\n\x06kwargs\x18\x04 \x03(\x0b\x32).kpu.torch.ExecuteAtenRequest.KwargsEntry\x1a\x46\n\x0bKwargsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12&\n\x05value\x18\x02 \x01(\x0b\x32\x17.kpu.torch.AtenArgument:\x02\x38\x01\"k\n\x13\x45xecuteAtenResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x32\n\x0eoutput_tensors\x18\x03 \x03(\x0b\x32\x1a.kpu.torch.TensorReference2\x8b\x03\n\x07Service\x12O\n\x0c\x43reateTensor\x12\x1e.kpu.torch.CreateTensorRequest\x1a\x1f.kpu.torch.CreateTensorResponse\x12\x43\n\x0cUpdateTensor\x12\x16.kpu.torch.TensorChunk\x1a\x19.kpu.torch.TensorResponse(\x01\x12L\n\x0eGetStorageData\x12 .kpu.torch.GetStorageDataRequest\x1a\x16.kpu.torch.TensorChunk0\x01\x12\x45\n\nCopyTensor\x12\x1c.kpu.torch.CopyTensorRequest\x1a\x19.kpu.torch.TensorResponse\x12U\n\x14\x45xecuteAtenOperation\x12\x1d.kpu.torch.ExecuteAtenRequest\x1a\x1e.kpu.torch.ExecuteAtenResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,18 +33,34 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_TENSORCHUNK_METADATAENTRY']._loaded_options = None
   _globals['_TENSORCHUNK_METADATAENTRY']._serialized_options = b'8\001'
-  _globals['_TENSORREQUEST_PARAMETERSENTRY']._loaded_options = None
-  _globals['_TENSORREQUEST_PARAMETERSENTRY']._serialized_options = b'8\001'
+  _globals['_EXECUTEATENREQUEST_KWARGSENTRY']._loaded_options = None
+  _globals['_EXECUTEATENREQUEST_KWARGSENTRY']._serialized_options = b'8\001'
   _globals['_TENSORCHUNK']._serialized_start=46
   _globals['_TENSORCHUNK']._serialized_end=258
   _globals['_TENSORCHUNK_METADATAENTRY']._serialized_start=211
   _globals['_TENSORCHUNK_METADATAENTRY']._serialized_end=258
   _globals['_TENSORRESPONSE']._serialized_start=260
   _globals['_TENSORRESPONSE']._serialized_end=339
-  _globals['_TENSORREQUEST']._serialized_start=342
-  _globals['_TENSORREQUEST']._serialized_end=485
-  _globals['_TENSORREQUEST_PARAMETERSENTRY']._serialized_start=436
-  _globals['_TENSORREQUEST_PARAMETERSENTRY']._serialized_end=485
-  _globals['_SERVICE']._serialized_start=488
-  _globals['_SERVICE']._serialized_end=704
+  _globals['_CREATETENSORREQUEST']._serialized_start=342
+  _globals['_CREATETENSORREQUEST']._serialized_end=511
+  _globals['_CREATETENSORRESPONSE']._serialized_start=513
+  _globals['_CREATETENSORRESPONSE']._serialized_end=588
+  _globals['_GETSTORAGEDATAREQUEST']._serialized_start=590
+  _globals['_GETSTORAGEDATAREQUEST']._serialized_end=702
+  _globals['_COPYTENSORREQUEST']._serialized_start=704
+  _globals['_COPYTENSORREQUEST']._serialized_end=828
+  _globals['_TENSORREFERENCE']._serialized_start=831
+  _globals['_TENSORREFERENCE']._serialized_end=996
+  _globals['_ATENARGUMENT']._serialized_start=999
+  _globals['_ATENARGUMENT']._serialized_end=1207
+  _globals['_SCALARLIST']._serialized_start=1209
+  _globals['_SCALARLIST']._serialized_end=1284
+  _globals['_EXECUTEATENREQUEST']._serialized_start=1287
+  _globals['_EXECUTEATENREQUEST']._serialized_end=1541
+  _globals['_EXECUTEATENREQUEST_KWARGSENTRY']._serialized_start=1471
+  _globals['_EXECUTEATENREQUEST_KWARGSENTRY']._serialized_end=1541
+  _globals['_EXECUTEATENRESPONSE']._serialized_start=1543
+  _globals['_EXECUTEATENRESPONSE']._serialized_end=1650
+  _globals['_SERVICE']._serialized_start=1653
+  _globals['_SERVICE']._serialized_end=2048
 # @@protoc_insertion_point(module_scope)

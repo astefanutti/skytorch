@@ -23,8 +23,10 @@ Usage:
         output = model(input.to(device))
 """
 
+from __future__ import annotations
+
 import types
-from typing import Union
+from typing import Optional, Union
 
 import torch
 
@@ -226,6 +228,223 @@ def _create_device_module() -> types.ModuleType:
             idx = int(device)
         driver.synchronize(idx)
 
+    def get_device_name(device: Optional[Union[int, torch.device]] = None) -> str:
+        """Get the name of the specified KPU device.
+
+        Args:
+            device: Device index (default: current device)
+
+        Returns:
+            Device name string
+        """
+        _lazy_init()
+        if device is None:
+            idx = current_device()
+        elif isinstance(device, torch.device):
+            idx = device.index if device.index is not None else 0
+        else:
+            idx = int(device)
+        return f"KPU Remote Compute:{idx}"
+
+    def get_device_capability(
+        device: Optional[Union[int, torch.device]] = None,
+    ) -> tuple[int, int]:
+        """Get device compute capability.
+
+        Returns a reasonable default for CUDA compatibility.
+
+        Args:
+            device: Device index (default: current device)
+
+        Returns:
+            Tuple of (major, minor) version
+        """
+        _lazy_init()
+        # Return SM 8.0 (Ampere) compatibility level
+        return (8, 0)
+
+    class _DeviceProperties:
+        """Device properties container for KPU devices."""
+
+        def __init__(self, device_index: int = 0):
+            self.name = f"KPU Remote Compute:{device_index}"
+            self.major = 8
+            self.minor = 0
+            self.total_memory = 0  # Unknown for remote device
+            self.multi_processor_count = 0
+
+    def get_device_properties(
+        device: Optional[Union[int, torch.device]] = None,
+    ) -> _DeviceProperties:
+        """Get device properties.
+
+        Args:
+            device: Device index (default: current device)
+
+        Returns:
+            Device properties object
+        """
+        _lazy_init()
+        if device is None:
+            idx = current_device()
+        elif isinstance(device, torch.device):
+            idx = device.index if device.index is not None else 0
+        else:
+            idx = int(device)
+        return _DeviceProperties(idx)
+
+    # Stream class for compatibility
+    class Stream:
+        """KPU Stream - minimal implementation for compatibility.
+
+        KPU operations are currently synchronous over gRPC, so streams
+        provide minimal functionality for API compatibility.
+        """
+
+        def __init__(
+            self,
+            device: Optional[Union[int, torch.device]] = None,
+            priority: int = 0,
+        ):
+            _lazy_init()
+            if device is None:
+                self.device_index = current_device()
+            elif isinstance(device, int):
+                self.device_index = device
+            elif isinstance(device, torch.device):
+                self.device_index = device.index if device.index is not None else 0
+            else:
+                self.device_index = 0
+            self.priority = priority
+
+        @property
+        def device(self) -> torch.device:
+            return torch.device("kpu", self.device_index)
+
+        def synchronize(self) -> None:
+            synchronize(self.device_index)
+
+        def wait_event(self, event: Event) -> None:
+            pass  # No-op for KPU
+
+        def wait_stream(self, stream: Stream) -> None:
+            pass  # No-op for KPU
+
+        def record_event(self, event: Optional[Event] = None) -> Event:
+            if event is None:
+                event = Event()
+            event.record(self)
+            return event
+
+        def query(self) -> bool:
+            return True  # Always complete for sync operations
+
+        def __enter__(self) -> Stream:
+            return self
+
+        def __exit__(self, *args) -> None:
+            pass
+
+    # Event class for compatibility
+    class Event:
+        """KPU Event - minimal implementation for compatibility."""
+
+        def __init__(self, enable_timing: bool = False, blocking: bool = False):
+            _lazy_init()
+            self.enable_timing = enable_timing
+            self.blocking = blocking
+            self._recorded = False
+
+        def record(self, stream: Optional[Stream] = None) -> None:
+            self._recorded = True
+
+        def wait(self, stream: Optional[Stream] = None) -> None:
+            pass  # No-op for KPU
+
+        def synchronize(self) -> None:
+            pass  # No-op for sync operations
+
+        def elapsed_time(self, end_event: Event) -> float:
+            return 0.0  # Timing not supported
+
+        def query(self) -> bool:
+            return True  # Always complete for sync operations
+
+    def stream(stream_obj: Optional[Stream] = None) -> Stream:
+        """Context manager for stream.
+
+        Args:
+            stream_obj: Stream to use (default: creates new stream)
+
+        Returns:
+            Stream context manager
+        """
+        return stream_obj or Stream()
+
+    def current_stream(device: Optional[Union[int, torch.device]] = None) -> Stream:
+        """Get the current stream for a device.
+
+        Args:
+            device: Device index (default: current device)
+
+        Returns:
+            Current stream for the device
+        """
+        _lazy_init()
+        if device is None:
+            idx = current_device()
+        elif isinstance(device, torch.device):
+            idx = device.index if device.index is not None else 0
+        else:
+            idx = int(device)
+        return Stream(idx)
+
+    def default_stream(device: Optional[Union[int, torch.device]] = None) -> Stream:
+        """Get the default stream for a device.
+
+        Args:
+            device: Device index (default: current device)
+
+        Returns:
+            Default stream for the device
+        """
+        _lazy_init()
+        if device is None:
+            idx = current_device()
+        elif isinstance(device, torch.device):
+            idx = device.index if device.index is not None else 0
+        else:
+            idx = int(device)
+        return Stream(idx)
+
+    # Device context manager
+    class device:
+        """Context manager for switching KPU devices.
+
+        Example:
+            with torch.kpu.device(1):
+                # Operations use device 1
+                t = torch.randn(3, 3, device="kpu")
+        """
+
+        def __init__(self, device_arg: Union[int, torch.device, str]):
+            _lazy_init()
+            if isinstance(device_arg, str):
+                device_arg = torch.device(device_arg)
+            if isinstance(device_arg, torch.device):
+                self._target = device_arg.index if device_arg.index is not None else 0
+            else:
+                self._target = device_arg
+            self._prev: Optional[int] = None
+
+        def __enter__(self) -> None:
+            self._prev = current_device()
+            set_device(self._target)
+
+        def __exit__(self, *args) -> None:
+            if self._prev is not None:
+                set_device(self._prev)
+
     # Attach all methods to the module
     module._initialized = False
     module._lazy_init = _lazy_init
@@ -244,6 +463,21 @@ def _create_device_module() -> types.ModuleType:
 
     module._is_in_bad_fork = _is_in_bad_fork
     module.get_amp_supported_dtype = get_amp_supported_dtype
+
+    # Device info functions
+    module.get_device_name = get_device_name
+    module.get_device_capability = get_device_capability
+    module.get_device_properties = get_device_properties
+
+    # Stream and Event classes
+    module.Stream = Stream
+    module.Event = Event
+    module.stream = stream
+    module.current_stream = current_stream
+    module.default_stream = default_stream
+
+    # Device context manager
+    module.device = device
 
     return module
 

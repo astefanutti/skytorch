@@ -2,16 +2,16 @@ syntax = "proto3";
 
 package kpu.torch;
 
-// Generic service for streaming PyTorch tensors between client and server
+// Tensor management service for KPU PyTorch backend
 service Service {
-  // Client-to-server streaming: receive tensors from client
-  rpc ReceiveTensors(stream TensorChunk) returns (TensorResponse);
+  // Tensor lifecycle management
+  rpc CreateTensor(CreateTensorRequest) returns (CreateTensorResponse);
+  rpc UpdateTensor(stream TensorChunk) returns (TensorResponse);
+  rpc GetStorageData(GetStorageDataRequest) returns (stream TensorChunk);
+  rpc CopyTensor(CopyTensorRequest) returns (TensorResponse);
 
-  // Server-to-client streaming: send tensors to client
-  rpc SendTensors(TensorRequest) returns (stream TensorChunk);
-
-  // Bidirectional streaming: send and receive tensors simultaneously
-  rpc StreamTensors(stream TensorChunk) returns (stream TensorChunk);
+  // ATen operation execution
+  rpc ExecuteAtenOperation(ExecuteAtenRequest) returns (ExecuteAtenResponse);
 }
 
 // Represents a chunk of serialized tensor data
@@ -42,11 +42,85 @@ message TensorResponse {
   repeated string received_tensor_ids = 3;
 }
 
-// Request to send tensors
-message TensorRequest {
-  // Number of tensors to send (optional, server may ignore)
-  uint32 count = 1;
+// Request to create a tensor on the server
+message CreateTensorRequest {
+  int64 tensor_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  int64 nbytes = 4;
+  string device_type = 5;
+  repeated int64 stride = 6;
+  int64 storage_offset = 7;
+  int32 device_index = 8;
+}
 
-  // Optional filters or parameters
-  map<string, string> parameters = 2;
+// Response after creating a tensor
+message CreateTensorResponse {
+  bool success = 1;
+  string message = 2;
+  int64 tensor_id = 3;
+}
+
+// Request to get tensor data from storage
+message GetStorageDataRequest {
+  int64 tensor_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  repeated int64 stride = 4;
+  int64 storage_offset = 5;
+}
+
+// Request to copy tensor data on the server
+message CopyTensorRequest {
+  int64 src_tensor_id = 1;
+  int64 dst_tensor_id = 2;
+  int64 src_offset = 3;
+  int64 dst_offset = 4;
+  int64 num_bytes = 5;
+}
+
+// Reference to a tensor on the server
+message TensorReference {
+  int64 tensor_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  int64 nbytes = 4;
+  string device_type = 5;
+  repeated int64 stride = 6;
+  int64 storage_offset = 7;
+  int32 device_index = 8;
+}
+
+// Argument for ATen operations (can be tensor or scalar)
+message AtenArgument {
+  oneof value {
+    TensorReference tensor = 1;
+    double scalar_float = 2;
+    int64 scalar_int = 3;
+    bool scalar_bool = 4;
+    string scalar_string = 5;
+    ScalarList list_value = 6;
+  }
+}
+
+// List of scalar values
+message ScalarList {
+  repeated double float_values = 1;
+  repeated int64 int_values = 2;
+  repeated bool bool_values = 3;
+}
+
+// Request to execute an ATen operation
+message ExecuteAtenRequest {
+  string op_name = 1;
+  repeated AtenArgument inputs = 2;
+  repeated TensorReference outputs = 3;
+  map<string, AtenArgument> kwargs = 4;
+}
+
+// Response after executing an ATen operation
+message ExecuteAtenResponse {
+  bool success = 1;
+  string message = 2;
+  repeated TensorReference output_tensors = 3;
 }

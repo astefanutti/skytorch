@@ -6,8 +6,20 @@ and their metadata. Storage IDs are used as proxy data pointers in the
 allocator, avoiding actual memory allocation on the client side.
 """
 
-from dataclasses import dataclass
-from typing import Optional
+from __future__ import annotations
+
+import weakref
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Optional
+from weakref import WeakValueDictionary
+
+import torch
+
+from kpu.torch.backend._tensor import get_storage_id, get_tensor_id
+
+if TYPE_CHECKING:
+    from kpu.client.compute import Compute
 
 
 @dataclass
@@ -16,7 +28,12 @@ class StorageInfo:
 
     nbytes: int
     device_index: int
-    # Future: Add remote storage reference when integrated with gRPC
+    _compute_ref: weakref.ref[Compute] = field(repr=False)
+
+    @property
+    def compute(self) -> Optional[Compute]:
+        """Get the associated Compute, or None if garbage collected."""
+        return self._compute_ref()
 
 
 class StorageManager:
@@ -30,11 +47,21 @@ class StorageManager:
 
     def __init__(self):
         self._storages: dict[int, StorageInfo] = {}
+        self._tensor_to_storage: WeakValueDictionary[
+            int, torch.UntypedStorage
+        ] = WeakValueDictionary()
+        self._storage_to_tensors: dict[int, set[int]] = defaultdict(set)
         self._next_id: int = 1
 
-    def create(self, nbytes: int, device_index: int) -> int:
+    def create(
+        self,
+        nbytes: int,
+        device_index: int,
+    ) -> int:
         """
         Create a new storage allocation.
+
+        Retrieves the associated Compute from the DeviceManager using device_index.
 
         Args:
             nbytes: Size of the storage in bytes
@@ -43,9 +70,20 @@ class StorageManager:
         Returns:
             Storage ID (unique identifier for this storage)
         """
+        from kpu.torch.backend._device import device_manager
+
+        # Get Compute from DeviceManager using device_index
+        compute = device_manager.get_compute(device_index)
+        if compute is None:
+            raise RuntimeError(
+                f"No Compute registered for device index {device_index}. "
+                "Ensure you have called compute.device() to register the device."
+            )
+
         storage_id = self._next_id
         self._next_id += 1
-        self._storages[storage_id] = StorageInfo(nbytes, device_index)
+        info = StorageInfo(nbytes, device_index, _compute_ref=weakref.ref(compute))
+        self._storages[storage_id] = info
         return storage_id
 
     def free(self, storage_id: int) -> None:
@@ -81,38 +119,59 @@ class StorageManager:
         """
         return self._storages.get(storage_id)
 
-    def get_nbytes(self, storage_id: int) -> int:
+    def register_tensor(self, tensor: torch.Tensor) -> int:
         """
-        Get the size of a storage in bytes.
+        Register a tensor with its associated storage.
 
         Args:
-            storage_id: ID of the storage
+            tensor: The KPU tensor to register
 
         Returns:
-            Size in bytes, or 0 if not found
+            The tensor ID
         """
-        info = self._storages.get(storage_id)
-        return info.nbytes if info else 0
+        tensor_id = get_tensor_id(tensor)
+        storage_id = get_storage_id(tensor)
+        self._tensor_to_storage[tensor_id] = tensor.untyped_storage()
+        self._storage_to_tensors[storage_id].add(tensor_id)
+        return tensor_id
 
-    def get_device_index(self, storage_id: int) -> int:
+    def get_storage_for_tensor(self, tensor_id: int) -> Optional[torch.UntypedStorage]:
         """
-        Get the device index for a storage.
+        Get the storage associated with a tensor.
 
         Args:
-            storage_id: ID of the storage
+            tensor_id: The tensor ID
 
         Returns:
-            Device index, or 0 if not found
+            The UntypedStorage, or None if not found or garbage collected
         """
-        info = self._storages.get(storage_id)
-        return info.device_index if info else 0
+        return self._tensor_to_storage.get(tensor_id)
 
-    @property
-    def count(self) -> int:
-        """Number of active storage allocations."""
-        return len(self._storages)
+    def get_storage_id_for_tensor(self, tensor_id: int) -> Optional[int]:
+        """
+        Get the storage ID associated with a tensor.
 
-    @property
-    def total_bytes(self) -> int:
-        """Total bytes allocated across all storages."""
-        return sum(info.nbytes for info in self._storages.values())
+        Args:
+            tensor_id: The tensor ID
+
+        Returns:
+            The storage ID, or None if not found
+        """
+        storage = self._tensor_to_storage.get(tensor_id)
+        return storage.data_ptr() if storage is not None else None
+
+    def get_tensors_for_storage(self, storage_id: int) -> set[int]:
+        """
+        Get all tensor IDs associated with a storage.
+
+        Args:
+            storage_id: The storage ID
+
+        Returns:
+            Set of tensor IDs (may be empty)
+        """
+        return self._storage_to_tensors.get(storage_id, set())
+
+
+# Global storage manager singleton
+storage_manager = StorageManager()

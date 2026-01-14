@@ -140,7 +140,7 @@ class Compute:
         self._suspend = suspend
         self._on_events = on_events
         self._on_metrics = on_metrics
-        self._token = None
+        self._ctx_token = None
 
         # Initialize Kubernetes client if needed
         if Configuration._default is None:
@@ -333,6 +333,11 @@ class Compute:
 
         # Cleanup gRPC client
         await self._cleanup_grpc_client()
+
+        # Remove device mappings for this Compute
+        from kpu.torch.backend._device import device_manager
+
+        device_manager.remove_compute_devices(self)
 
         logger.info(f"Deleting Compute {self.namespace}/{self.name}")
 
@@ -548,80 +553,36 @@ class Compute:
 
     # Delegate gRPC tensor streaming methods to TensorClient via GRPCClient
 
-    async def send_tensors(self, *tensors: torch.Tensor):
+    def device(self, type: str, index: int = 0) -> torch.device:
         """
-        Send tensors to the Compute server.
+        Get a torch.Device instance for this Compute resource.
+
+        Uses the DeviceManager to map this Compute and remote device to a
+        local KPU device index.
 
         Args:
-            *tensors: Tensors to send
+            type: Remote device type (e.g., "cuda", "cpu")
+            index: Remote device index (default: 0)
 
         Returns:
-            Response from server
+            torch.device instance of type "kpu" with mapped local index
 
-        Raises:
-            RuntimeError: If the Compute is not ready
+        Example:
+            >>> compute = Compute(name="my-compute")
+            >>> device = compute.device("cuda")
+            >>> device = compute.device("cuda", 0)
+            >>> tensor = torch.randn(3, 3, device=device)
         """
-        if self._grpc_client is None:
-            raise RuntimeError(
-                f"Compute {self.namespace}/{self.name} is not ready. "
-                "Call ready() first or use as context manager."
-            )
-        return await self._grpc_client.torch.send_tensors(*tensors)
+        from kpu.torch.backend._device import device_manager
 
-    async def receive_tensors(
-        self,
-        count: int = 1,
-        parameters: dict = None
-    ) -> List[torch.Tensor]:
-        """
-        Receive tensors from the Compute server.
-
-        Args:
-            count: Number of tensors to request
-            parameters: Optional parameters for the request
-
-        Returns:
-            List of received tensors
-
-        Raises:
-            RuntimeError: If the Compute is not ready
-        """
-        if self._grpc_client is None:
-            raise RuntimeError(
-                f"Compute {self.namespace}/{self.name} is not ready. "
-                "Call ready() first or use as context manager."
-            )
-        return await self._grpc_client.torch.receive_tensors(count=count, parameters=parameters)
-
-    async def stream_tensors(
-        self,
-        *tensors: torch.Tensor
-    ) -> List[torch.Tensor]:
-        """
-        Bidirectional streaming: send tensors and receive processed tensors.
-
-        Args:
-            *tensors: Tensors to send
-
-        Returns:
-            List of processed tensors received from server
-
-        Raises:
-            RuntimeError: If the Compute is not ready
-        """
-        if self._grpc_client is None:
-            raise RuntimeError(
-                f"Compute {self.namespace}/{self.name} is not ready. "
-                "Call ready() first or use as context manager."
-            )
-        return await self._grpc_client.torch.stream_tensors(*tensors)
+        return device_manager.get_kpu_device(self, type, index)
 
     async def __aenter__(self) -> Self:
         """
         Async context manager entry: wait for ready.
         """
         if not compute_ctx.get(None):
-            self._token = compute_ctx.set(self)
+            self._ctx_token = compute_ctx.set(self)
 
         await self.ready()
         return self
@@ -632,5 +593,5 @@ class Compute:
         """
         await self.delete()
 
-        if self._token is not None:
-            compute_ctx.reset(self._token)
+        if self._ctx_token is not None:
+            compute_ctx.reset(self._ctx_token)
