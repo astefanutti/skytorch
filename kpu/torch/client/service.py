@@ -22,8 +22,9 @@ except ImportError:
         "Generated gRPC code not found. Run hack/gen-grpc-proto.sh first."
     )
 
+from kpu.torch.client.tensor import get_tensor_metadata
 from kpu.torch.server.serialization import serialize_tensor_to_chunks, TensorAssembler
-from kpu.torch.common.metadata import TensorMetadata
+from kpu.torch.client.metadata import TensorMetadata
 from grpc.aio._typing import MetadataType
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ class TensorClient:
                 meta["target_storage_offset"] = str(storage_offset)
 
                 chunk = service_pb2.TensorChunk(
-                    tensor_id=t_id,
+                    tensor_id=str(t_id),
                     chunk_number=c_num,
                     data=data,
                     total_chunks=total,
@@ -259,10 +260,12 @@ class TensorClient:
         - Pre-allocated outputs: output_tensors provided, writes to them, returns None
         - Server-created outputs: output_tensors is None, returns list[TensorMetadata]
 
+        Device mapping (KPU → remote) is handled by _to_aten_arg.
+
         Args:
             op_name: ATen operation name (e.g., "aten::add.Tensor")
-            args: Positional arguments (tensors as TensorMetadata, scalars as-is)
-            kwargs: Keyword arguments (tensors as TensorMetadata, scalars as-is)
+            args: Positional arguments (may contain KPU tensors)
+            kwargs: Keyword arguments (may contain KPU tensors)
             output_tensors: Pre-allocated output tensors, or None for server-created
 
         Returns:
@@ -271,20 +274,26 @@ class TensorClient:
         Raises:
             RuntimeError: If operation execution fails
         """
+        from kpu.torch.backend._device import device_manager
+
         request = service_pb2.ExecuteAtenRequest(
             op_name=op_name,
             args=[self._to_aten_arg(arg) for arg in args],
         )
 
-        if kwargs:
-            for k, v in kwargs.items():
-                request.kwargs[k].CopyFrom(self._to_aten_arg(v))
+        for k, v in kwargs.items():
+            request.kwargs[k].CopyFrom(self._to_aten_arg(v))
 
-        # Add output references if provided
+        # Add output references with mapped devices
         if output_tensors is not None:
             for t in output_tensors:
                 if t is not None:
-                    request.outputs.append(self._tensor_to_ref(t))
+                    info = device_manager.get_remote_device_info(t.device.index)
+                    request.outputs.append(
+                        self._tensor_to_ref_with_device(
+                            t, info.device_type, info.device_index
+                        )
+                    )
 
         response = await self.stub.ExecuteAtenOperation(
             request, metadata=self.metadata
@@ -301,10 +310,16 @@ class TensorClient:
 
         return None
 
-    def _tensor_to_ref(self, tensor: torch.Tensor) -> service_pb2.TensorReference:
-        """Convert a torch.Tensor to TensorReference proto."""
-        from kpu.torch.backend._tensor import get_tensor_metadata
+    def _tensor_to_ref_with_device(
+        self,
+        tensor: torch.Tensor,
+        device_type: str,
+        device_index: int,
+    ) -> service_pb2.TensorReference:
+        """Convert a torch.Tensor to TensorReference proto with mapped device."""
         meta = get_tensor_metadata(tensor)
+        meta.device_type = device_type
+        meta.device_index = device_index
         return self._to_tensor_ref(meta)
 
     def _ref_to_metadata(self, ref: service_pb2.TensorReference) -> TensorMetadata:
@@ -336,18 +351,19 @@ class TensorClient:
         )
 
     def _to_aten_arg(self, value) -> service_pb2.AtenArgument:
-        """Convert a value to AtenArgument proto.
+        """Convert a value to AtenArgument proto with device mapping.
 
         Handles:
         - None → none_value
-        - torch.Tensor (KPU) → TensorReference via metadata
+        - torch.Tensor (KPU) → TensorReference with mapped remote device
         - torch.Tensor (CPU, scalar) → scalar value
         - TensorMetadata → TensorReference
         - bool/int/float/str → scalar values
+        - torch.device (KPU) → mapped remote device string
         - torch.device/torch.dtype → string
         - list/tuple → recursive AtenArgumentList
         """
-        from kpu.torch.backend._tensor import get_tensor_metadata
+        from kpu.torch.backend._device import device_manager
 
         arg = service_pb2.AtenArgument()
 
@@ -355,8 +371,11 @@ class TensorClient:
             arg.none_value = True
         elif isinstance(value, torch.Tensor):
             if value.device.type == "kpu":
-                # KPU tensor → convert to TensorReference
+                # KPU tensor → get metadata and map device
+                info = device_manager.get_remote_device_info(value.device.index)
                 meta = get_tensor_metadata(value)
+                meta.device_type = info.device_type
+                meta.device_index = info.device_index
                 arg.tensor.CopyFrom(self._to_tensor_ref(meta))
             elif value.device.type == "cpu" and value.dim() == 0:
                 # CPU scalar tensor → convert to Python scalar
@@ -386,7 +405,14 @@ class TensorClient:
         elif isinstance(value, str):
             arg.scalar_string = value
         elif isinstance(value, torch.device):
-            arg.scalar_string = str(value)
+            if value.type == "kpu":
+                # Map KPU device to remote device
+                info = device_manager.get_remote_device_info(value.index or 0)
+                arg.scalar_string = str(
+                    torch.device(info.device_type, info.device_index)
+                )
+            else:
+                arg.scalar_string = str(value)
         elif isinstance(value, torch.dtype):
             arg.scalar_string = str(value)
         elif isinstance(value, (list, tuple)):

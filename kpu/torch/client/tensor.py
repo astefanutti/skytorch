@@ -11,11 +11,10 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-from kpu.torch.common.metadata import TensorMetadata
+from kpu.torch.client.metadata import TensorMetadata
 
 if TYPE_CHECKING:
     from kpu.client.compute import Compute
-    from kpu.torch.client.service import TensorClient
 
 
 def get_storage_id(tensor: torch.Tensor) -> int:
@@ -129,25 +128,3 @@ def require_compute(tensor: torch.Tensor) -> Compute:
             "Ensure you are within an 'async with Compute(...):' block."
         )
     return compute
-
-
-def get_tensor_client(compute: Compute) -> TensorClient:
-    """
-    Get the TensorClient from a Compute instance.
-
-    Args:
-        compute: The Compute instance
-
-    Returns:
-        TensorClient for gRPC operations
-
-    Raises:
-        RuntimeError: If the Compute is not ready
-    """
-    if compute._grpc_client is None:
-        raise RuntimeError(
-            f"Compute '{compute.name}' is not ready. "
-            "The gRPC client has not been initialized. "
-            "Ensure the Compute is ready before performing tensor operations."
-        )
-    return compute._grpc_client.torch

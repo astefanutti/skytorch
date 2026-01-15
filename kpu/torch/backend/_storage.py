@@ -16,7 +16,7 @@ from weakref import WeakValueDictionary
 
 import torch
 
-from kpu.torch.backend._tensor import get_storage_id, get_tensor_id
+from kpu.torch.client.tensor import get_storage_id, get_tensor_id
 
 if TYPE_CHECKING:
     from kpu.client.compute import Compute

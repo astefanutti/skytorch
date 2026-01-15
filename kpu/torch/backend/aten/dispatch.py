@@ -6,12 +6,13 @@ It uses meta tensors to infer output shapes without moving data, then creates
 output tensors on the KPU device and executes operations remotely.
 """
 
-from typing import Any, Callable
+from typing import Any
 
 import torch
 
 from kpu.torch.backend._async import run_async
 from kpu.torch.backend import _client
+from kpu.torch.client.utils import map_args_kwargs
 
 
 def _create_meta_tensor_from_kpu(
@@ -83,7 +84,7 @@ def _execute_meta_operation(
 
         return obj
 
-    meta_args, meta_kwargs = _map_args_kwargs(to_meta_tensor, args, kwargs)
+    meta_args, meta_kwargs = map_args_kwargs(to_meta_tensor, args, kwargs)
     meta_result = op(*meta_args, **meta_kwargs)
 
     return meta_result, original_tensors
@@ -205,33 +206,3 @@ def _kpu_kernel_fallback(
             f"Operation {op} is not supported on KPU device. "
             f"Meta tensor execution failed."
         )
-
-
-def _map_args_kwargs(
-        func: Callable[[Any], Any],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    """
-    Apply func to all elements in args/kwargs, recursing into lists/tuples.
-
-    The func should handle leaf values (non-containers). Recursion into
-    lists and tuples is handled by this function.
-
-    Args:
-        func: Transformer function for leaf values
-        args: Positional arguments to transform
-        kwargs: Keyword arguments to transform
-
-    Returns:
-        Transformed (args, kwargs) tuple
-    """
-    def transform(obj: Any) -> Any:
-        if isinstance(obj, (list, tuple)):
-            return type(obj)(transform(item) for item in obj)
-        return func(obj)
-
-    return (
-        tuple(transform(arg) for arg in args),
-        {k: transform(v) for k, v in kwargs.items()},
-    )

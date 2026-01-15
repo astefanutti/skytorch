@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import torch
 
+from kpu.client import Compute
 from kpu.torch.backend._device import device_manager
-from kpu.torch.backend._tensor import (
+from kpu.torch.client.tensor import (
     get_tensor_id,
-    get_tensor_client,
     require_compute,
     resolve_compute,
 )
-from kpu.torch.common.metadata import TensorMetadata
+from kpu.torch.client import TensorClient
+from kpu.torch.client.metadata import TensorMetadata
 
 
 async def copy_kpu_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
@@ -35,7 +36,7 @@ async def copy_kpu_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
         raise ValueError("copy_kpu_to_cpu requires a KPU tensor")
 
     compute = require_compute(tensor)
-    client = get_tensor_client(compute)
+    client = _require_client(compute)
 
     cpu_tensor = await client.get_storage_data(
         tensor_id=get_tensor_id(tensor),
@@ -71,7 +72,7 @@ async def copy_cpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
         raise ValueError("copy_cpu_to_kpu requires a CPU source tensor")
 
     compute = require_compute(dst)
-    client = get_tensor_client(compute)
+    client = _require_client(compute)
 
     await client.update_tensor(
         tensor=src.contiguous(),
@@ -115,7 +116,7 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
             "Both tensors must be on the same Compute resource."
         )
 
-    client = get_tensor_client(src_compute)
+    client = _require_client(src_compute)
 
     # Use server-side copy for efficiency
     await client.copy_tensor(
@@ -161,7 +162,7 @@ async def execute_aten_operation(
             "Ensure you are within an 'async with Compute(...):' block."
         )
 
-    client = get_tensor_client(compute)
+    client = _require_client(compute)
 
     return await client.execute_aten_operation(
         op_name=op_name,
@@ -169,3 +170,25 @@ async def execute_aten_operation(
         kwargs=kwargs,
         output_tensors=output_tensors,
     )
+
+
+def _require_client(compute: Compute) -> TensorClient:
+    """
+    Get the TensorClient from a Compute instance.
+
+    Args:
+        compute: The Compute instance
+
+    Returns:
+        TensorClient for gRPC operations
+
+    Raises:
+        RuntimeError: If the Compute is not ready
+    """
+    if compute._grpc_client is None:
+        raise RuntimeError(
+            f"Compute '{compute.name}' is not ready. "
+            "The gRPC client has not been initialized. "
+            "Ensure the Compute is ready before performing tensor operations."
+        )
+    return compute._grpc_client.torch

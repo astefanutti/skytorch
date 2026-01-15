@@ -1,8 +1,8 @@
 """
-TensorMetadata - Shared metadata class for KPU tensors.
+TensorMetadata - Metadata class for KPU tensors.
 
 This module defines the TensorMetadata dataclass used for creating and
-referencing tensors on the server. It is imported by both client and server.
+referencing tensors on the server.
 """
 
 from dataclasses import dataclass
