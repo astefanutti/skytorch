@@ -91,7 +91,7 @@ message TensorReference {
   int32 device_index = 8;
 }
 
-// Argument for ATen operations (can be tensor or scalar)
+// Argument for ATen operations (can be tensor, scalar, or nested structure)
 message AtenArgument {
   oneof value {
     TensorReference tensor = 1;
@@ -99,21 +99,21 @@ message AtenArgument {
     int64 scalar_int = 3;
     bool scalar_bool = 4;
     string scalar_string = 5;
-    ScalarList list_value = 6;
+    AtenArgumentList list_value = 6;
+    bool none_value = 7;  // Represents Python None
   }
 }
 
-// List of scalar values
-message ScalarList {
-  repeated double float_values = 1;
-  repeated int64 int_values = 2;
-  repeated bool bool_values = 3;
+// List of AtenArguments (for nested lists/tuples)
+message AtenArgumentList {
+  repeated AtenArgument values = 1;
+  bool is_tuple = 2;  // Preserve tuple vs list distinction
 }
 
 // Request to execute an ATen operation
 message ExecuteAtenRequest {
   string op_name = 1;
-  repeated AtenArgument inputs = 2;
+  repeated AtenArgument args = 2;  // Positional arguments (preserves order)
   repeated TensorReference outputs = 3;
   map<string, AtenArgument> kwargs = 4;
 }

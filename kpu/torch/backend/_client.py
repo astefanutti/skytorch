@@ -7,17 +7,16 @@ remote ATen operation execution via gRPC.
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 
+from kpu.torch.backend._device import device_manager
 from kpu.torch.backend._tensor import (
     get_tensor_id,
-    get_tensor_metadata,
     get_tensor_client,
     require_compute,
     resolve_compute,
 )
+from kpu.torch.common.metadata import TensorMetadata
 
 
 async def copy_kpu_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
@@ -129,38 +128,44 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
 
 
 async def execute_aten_operation(
+    kpu_device: torch.device,
     op_name: str,
-    input_tensors: list[torch.Tensor],
-    output_tensors: list[torch.Tensor],
-    kwargs: Optional[dict] = None,
-) -> None:
+    args: tuple,
+    kwargs: dict,
+    output_tensors: list[torch.Tensor] | None,
+) -> list[TensorMetadata] | None:
     """
     Execute an ATen operation on the remote Compute.
 
-    Resolves the Compute from the input tensors. All tensors must be on
-    the same Compute.
+    Supports two modes:
+    - Pre-allocated outputs: output_tensors provided, writes to them, returns None
+    - Server-created outputs: output_tensors is None, returns list[TensorMetadata]
 
     Args:
+        kpu_device: KPU device to execute on
         op_name: ATen operation name (e.g., "aten::add.Tensor")
-        input_tensors: List of input KPU tensors
-        output_tensors: List of output KPU tensors
-        kwargs: Optional keyword arguments for the operation
+        args: Positional arguments (may contain KPU tensors)
+        kwargs: Keyword arguments (may contain KPU tensors)
+        output_tensors: Pre-allocated output tensors, or None for server-created
+
+    Returns:
+        None if output_tensors provided, list[TensorMetadata] if server created outputs
 
     Raises:
-        RuntimeError: If no Compute context is available
+        RuntimeError: If no Compute registered for the device
     """
-    if not input_tensors:
-        raise ValueError("execute_aten_operation requires at least one input tensor")
+    compute = device_manager.get_compute(kpu_device.index)
+    if compute is None:
+        raise RuntimeError(
+            "No Compute context available for ATen operation. "
+            "Ensure you are within an 'async with Compute(...):' block."
+        )
 
-    compute = require_compute(input_tensors[0])
     client = get_tensor_client(compute)
 
-    input_refs = [get_tensor_metadata(t) for t in input_tensors]
-    output_refs = [get_tensor_metadata(t) for t in output_tensors]
-
-    await client.execute_aten_operation(
+    return await client.execute_aten_operation(
         op_name=op_name,
-        input_refs=input_refs,
-        output_refs=output_refs,
+        args=args,
         kwargs=kwargs,
+        output_tensors=output_tensors,
     )

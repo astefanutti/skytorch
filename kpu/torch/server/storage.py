@@ -100,6 +100,34 @@ class ServerStorageManager:
             return self._storages[tensor_id]
         return self.create(tensor_id, nbytes, dtype, device_type, device_index)
 
+    def register_tensor(self, tensor: torch.Tensor) -> int:
+        """Register an existing tensor and return its storage ID.
+
+        Uses the tensor's data_ptr as the storage ID. If already registered,
+        returns the existing ID.
+
+        Args:
+            tensor: The tensor to register
+
+        Returns:
+            The storage ID (data_ptr of the underlying storage)
+        """
+        storage = tensor.untyped_storage()
+        storage_id = storage.data_ptr()
+
+        if storage_id not in self._storages:
+            info = ServerStorageInfo(
+                tensor_id=storage_id,
+                nbytes=storage.nbytes(),
+                dtype=tensor.dtype,
+                device_type=tensor.device.type,
+                device_index=tensor.device.index or 0,
+                tensor=tensor.view(-1),  # Store as 1D view
+            )
+            self._storages[storage_id] = info
+
+        return storage_id
+
     def delete(self, tensor_id: int) -> None:
         """Delete storage by tensor_id.
 

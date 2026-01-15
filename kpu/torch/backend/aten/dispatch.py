@@ -14,24 +14,6 @@ from kpu.torch.backend._async import run_async
 from kpu.torch.backend import _client
 
 
-def _map_args_kwargs(
-    func: Callable,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    """Apply func to all elements in args/kwargs, recursing into lists/tuples."""
-
-    def map_container(container):
-        if isinstance(container, (list, tuple)):
-            return type(container)(func(item) for item in container)
-        return func(container)
-
-    return (
-        tuple(map_container(arg) for arg in args),
-        {k: map_container(v) for k, v in kwargs.items()},
-    )
-
-
 def _create_meta_tensor_from_kpu(
     kpu_tensor: torch.Tensor,
     meta_storage_cache: dict[torch.UntypedStorage, torch.UntypedStorage],
@@ -64,20 +46,18 @@ def _execute_meta_operation(
     op: torch._ops.OpOverload,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
-    device_container: list[torch.device],
+    devices: list[torch.device],
 ) -> tuple[Any, dict]:
     """Execute operation on meta tensors for shape inference and device resolution."""
     original_tensors: dict[torch.UntypedStorage, torch.Tensor] = {}
     meta_storage_cache: dict[torch.UntypedStorage, torch.UntypedStorage] = {}
 
     if "device" in kwargs:
-        device_container.append(kwargs["device"])
+        devices.append(kwargs["device"])
 
     def to_meta_tensor(obj):
-        # Check tensor device if container still empty
-        if not device_container and isinstance(obj, torch.Tensor):
-            if obj.device.type == "kpu":
-                device_container.append(obj.device)
+        if isinstance(obj, torch.Tensor):
+            devices.append(obj.device)
 
         # Convert tensor to meta for shape inference
         if isinstance(obj, torch.Tensor):
@@ -179,22 +159,15 @@ def _execute_with_static_outputs(
     )
 
     # Execute operation remotely via gRPC
-    non_none_outputs = [t for t in output_tensors if t is not None]
-    if non_none_outputs:
-        # Collect input KPU tensors from original_tensors
-        input_tensors = [
-            t for t in original_tensors.values() if t.device.type == "kpu"
-        ]
-
-        if input_tensors:
-            run_async(
-                _client.execute_aten_operation(
-                    op_name=str(op),
-                    input_tensors=input_tensors,
-                    output_tensors=non_none_outputs,
-                    kwargs=kwargs if kwargs else None,
-                )
-            )
+    run_async(
+        _client.execute_aten_operation(
+            kpu_device=kpu_device,
+            op_name=str(op),
+            args=args,
+            kwargs=kwargs,
+            output_tensors=output_tensors,
+        )
+    )
 
     # Return results
     if len(output_tensors) > 1:
@@ -211,25 +184,20 @@ def _kpu_kernel_fallback(
     **kwargs: Any,
 ) -> Any:
     """Execute PyTorch operations on KPU devices using meta tensor dispatch."""
-    device_container: list[torch.device] = []
+    devices: list[torch.device] = []
 
     try:
         meta_result, original_tensors = _execute_meta_operation(
-            op, args, kwargs, device_container
+            op, args, kwargs, devices
         )
 
-        if not device_container:
-            # No KPU device found in args, likely a factory function
-            # Try to get device from first tensor output
-            if isinstance(meta_result, torch.Tensor):
-                device_container.append(torch.device("kpu", 0))
-            else:
-                raise RuntimeError(
-                    f"Could not determine KPU device for operation {op}"
-                )
+        if not devices:
+            raise RuntimeError(
+                f"Could not determine KPU device for operation {op}"
+            )
 
         return _execute_with_static_outputs(
-            op, args, kwargs, device_container[0], meta_result, original_tensors
+            op, args, kwargs, devices[0], meta_result, original_tensors
         )
     except NotImplementedError:
         # Meta execution not implemented for this operation
@@ -237,3 +205,33 @@ def _kpu_kernel_fallback(
             f"Operation {op} is not supported on KPU device. "
             f"Meta tensor execution failed."
         )
+
+
+def _map_args_kwargs(
+        func: Callable[[Any], Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """
+    Apply func to all elements in args/kwargs, recursing into lists/tuples.
+
+    The func should handle leaf values (non-containers). Recursion into
+    lists and tuples is handled by this function.
+
+    Args:
+        func: Transformer function for leaf values
+        args: Positional arguments to transform
+        kwargs: Keyword arguments to transform
+
+    Returns:
+        Transformed (args, kwargs) tuple
+    """
+    def transform(obj: Any) -> Any:
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(transform(item) for item in obj)
+        return func(obj)
+
+    return (
+        tuple(transform(arg) for arg in args),
+        {k: transform(v) for k, v in kwargs.items()},
+    )

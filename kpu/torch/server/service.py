@@ -296,37 +296,62 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         Execute an ATen operation on server tensors.
 
+        Supports two modes:
+        - Pre-allocated outputs: request.outputs provided, writes to them
+        - Server-created outputs: request.outputs empty, returns result metadata
+
         Args:
-            request: ExecuteAtenRequest with operation name and tensor refs
+            request: ExecuteAtenRequest with operation name and arguments
             context: gRPC context
 
         Returns:
-            ExecuteAtenResponse with success status
+            ExecuteAtenResponse with success status and optionally output metadata
         """
         try:
-            # Resolve input tensors from storage
-            inputs = [self._resolve_tensor_ref(ref) for ref in request.inputs]
-            outputs = [self._resolve_tensor_ref(ref) for ref in request.outputs]
+            # Resolve args - replace tensor refs with actual tensors
+            args = tuple(self._resolve_aten_arg(arg) for arg in request.args)
             kwargs = self._resolve_kwargs(dict(request.kwargs))
 
             # Get the ATen op
             op = self._get_aten_op(request.op_name)
 
-            logger.info(
-                f"Executing {request.op_name} with {len(inputs)} inputs, "
-                f"{len(outputs)} outputs"
-            )
+            if request.outputs:
+                # Pre-allocated outputs mode
+                outputs = [self._resolve_tensor_ref(ref) for ref in request.outputs]
 
-            # Execute with pre-allocated outputs
-            if outputs:
+                logger.info(
+                    f"Executing {request.op_name} with {len(args)} args, "
+                    f"{len(outputs)} pre-allocated outputs, {len(kwargs)} kwargs"
+                )
+
                 if len(outputs) == 1:
-                    op(*inputs, out=outputs[0], **kwargs)
+                    op(*args, out=outputs[0], **kwargs)
                 else:
-                    op(*inputs, out=tuple(outputs), **kwargs)
-            else:
-                op(*inputs, **kwargs)
+                    op(*args, out=tuple(outputs), **kwargs)
 
-            return service_pb2.ExecuteAtenResponse(success=True)
+                return service_pb2.ExecuteAtenResponse(success=True)
+            else:
+                # Server creates outputs mode
+                logger.info(
+                    f"Executing {request.op_name} with {len(args)} args, "
+                    f"server-created outputs, {len(kwargs)} kwargs"
+                )
+
+                result = op(*args, **kwargs)
+
+                # Convert result to TensorReference list
+                output_refs = []
+                if isinstance(result, torch.Tensor):
+                    output_refs.append(self._tensor_to_ref(result))
+                elif isinstance(result, (tuple, list)):
+                    for t in result:
+                        if isinstance(t, torch.Tensor):
+                            output_refs.append(self._tensor_to_ref(t))
+
+                return service_pb2.ExecuteAtenResponse(
+                    success=True,
+                    output_tensors=output_refs,
+                )
 
         except Exception as e:
             logger.error(f"Error executing ATen operation: {e}")
@@ -334,6 +359,20 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 success=False,
                 message=str(e),
             )
+
+    def _tensor_to_ref(self, tensor: torch.Tensor) -> service_pb2.TensorReference:
+        """Convert a tensor to TensorReference proto."""
+        storage_id = self.storage.register_tensor(tensor)
+        return service_pb2.TensorReference(
+            tensor_id=storage_id,
+            shape=list(tensor.shape),
+            dtype=str(tensor.dtype),
+            nbytes=tensor.untyped_storage().nbytes(),
+            device_type=tensor.device.type,
+            stride=list(tensor.stride()),
+            storage_offset=tensor.storage_offset(),
+            device_index=tensor.device.index or 0,
+        )
 
     def _resolve_tensor_ref(
         self, ref: service_pb2.TensorReference
@@ -352,33 +391,35 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         numel = torch.Size(shape).numel()
         return info.tensor[: numel].view(shape)
 
+    def _resolve_aten_arg(self, arg: service_pb2.AtenArgument):
+        """Resolve an AtenArgument to a Python value, replacing tensor refs."""
+        which = arg.WhichOneof("value")
+
+        if which == "tensor":
+            return self._resolve_tensor_ref(arg.tensor)
+        elif which == "scalar_float":
+            return arg.scalar_float
+        elif which == "scalar_int":
+            return arg.scalar_int
+        elif which == "scalar_bool":
+            return arg.scalar_bool
+        elif which == "scalar_string":
+            return arg.scalar_string
+        elif which == "none_value":
+            return None
+        elif which == "list_value":
+            values = [self._resolve_aten_arg(v) for v in arg.list_value.values]
+            if arg.list_value.is_tuple:
+                return tuple(values)
+            return values
+        else:
+            raise ValueError(f"Unknown AtenArgument type: {which}")
+
     def _resolve_kwargs(
         self, kwargs: dict[str, service_pb2.AtenArgument]
     ) -> dict:
         """Resolve kwargs from proto format to Python values."""
-        result = {}
-        for key, arg in kwargs.items():
-            which = arg.WhichOneof("value")
-            if which == "tensor":
-                result[key] = self._resolve_tensor_ref(arg.tensor)
-            elif which == "scalar_float":
-                result[key] = arg.scalar_float
-            elif which == "scalar_int":
-                result[key] = arg.scalar_int
-            elif which == "scalar_bool":
-                result[key] = arg.scalar_bool
-            elif which == "scalar_string":
-                result[key] = arg.scalar_string
-            elif which == "list_value":
-                # Handle list values
-                list_val = arg.list_value
-                if list_val.float_values:
-                    result[key] = list(list_val.float_values)
-                elif list_val.int_values:
-                    result[key] = list(list_val.int_values)
-                elif list_val.bool_values:
-                    result[key] = list(list_val.bool_values)
-        return result
+        return {key: self._resolve_aten_arg(arg) for key, arg in kwargs.items()}
 
     def _get_aten_op(self, op_name: str):
         """Get ATen operator by name.

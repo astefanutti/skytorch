@@ -118,33 +118,33 @@ class TensorReference(_message.Message):
     def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., device_index: _Optional[int] = ...) -> None: ...
 
 class AtenArgument(_message.Message):
-    __slots__ = ("tensor", "scalar_float", "scalar_int", "scalar_bool", "scalar_string", "list_value")
+    __slots__ = ("tensor", "scalar_float", "scalar_int", "scalar_bool", "scalar_string", "list_value", "none_value")
     TENSOR_FIELD_NUMBER: _ClassVar[int]
     SCALAR_FLOAT_FIELD_NUMBER: _ClassVar[int]
     SCALAR_INT_FIELD_NUMBER: _ClassVar[int]
     SCALAR_BOOL_FIELD_NUMBER: _ClassVar[int]
     SCALAR_STRING_FIELD_NUMBER: _ClassVar[int]
     LIST_VALUE_FIELD_NUMBER: _ClassVar[int]
+    NONE_VALUE_FIELD_NUMBER: _ClassVar[int]
     tensor: TensorReference
     scalar_float: float
     scalar_int: int
     scalar_bool: bool
     scalar_string: str
-    list_value: ScalarList
-    def __init__(self, tensor: _Optional[_Union[TensorReference, _Mapping]] = ..., scalar_float: _Optional[float] = ..., scalar_int: _Optional[int] = ..., scalar_bool: bool = ..., scalar_string: _Optional[str] = ..., list_value: _Optional[_Union[ScalarList, _Mapping]] = ...) -> None: ...
+    list_value: AtenArgumentList
+    none_value: bool
+    def __init__(self, tensor: _Optional[_Union[TensorReference, _Mapping]] = ..., scalar_float: _Optional[float] = ..., scalar_int: _Optional[int] = ..., scalar_bool: bool = ..., scalar_string: _Optional[str] = ..., list_value: _Optional[_Union[AtenArgumentList, _Mapping]] = ..., none_value: bool = ...) -> None: ...
 
-class ScalarList(_message.Message):
-    __slots__ = ("float_values", "int_values", "bool_values")
-    FLOAT_VALUES_FIELD_NUMBER: _ClassVar[int]
-    INT_VALUES_FIELD_NUMBER: _ClassVar[int]
-    BOOL_VALUES_FIELD_NUMBER: _ClassVar[int]
-    float_values: _containers.RepeatedScalarFieldContainer[float]
-    int_values: _containers.RepeatedScalarFieldContainer[int]
-    bool_values: _containers.RepeatedScalarFieldContainer[bool]
-    def __init__(self, float_values: _Optional[_Iterable[float]] = ..., int_values: _Optional[_Iterable[int]] = ..., bool_values: _Optional[_Iterable[bool]] = ...) -> None: ...
+class AtenArgumentList(_message.Message):
+    __slots__ = ("values", "is_tuple")
+    VALUES_FIELD_NUMBER: _ClassVar[int]
+    IS_TUPLE_FIELD_NUMBER: _ClassVar[int]
+    values: _containers.RepeatedCompositeFieldContainer[AtenArgument]
+    is_tuple: bool
+    def __init__(self, values: _Optional[_Iterable[_Union[AtenArgument, _Mapping]]] = ..., is_tuple: bool = ...) -> None: ...
 
 class ExecuteAtenRequest(_message.Message):
-    __slots__ = ("op_name", "inputs", "outputs", "kwargs")
+    __slots__ = ("op_name", "args", "outputs", "kwargs")
     class KwargsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -153,14 +153,14 @@ class ExecuteAtenRequest(_message.Message):
         value: AtenArgument
         def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[AtenArgument, _Mapping]] = ...) -> None: ...
     OP_NAME_FIELD_NUMBER: _ClassVar[int]
-    INPUTS_FIELD_NUMBER: _ClassVar[int]
+    ARGS_FIELD_NUMBER: _ClassVar[int]
     OUTPUTS_FIELD_NUMBER: _ClassVar[int]
     KWARGS_FIELD_NUMBER: _ClassVar[int]
     op_name: str
-    inputs: _containers.RepeatedCompositeFieldContainer[AtenArgument]
+    args: _containers.RepeatedCompositeFieldContainer[AtenArgument]
     outputs: _containers.RepeatedCompositeFieldContainer[TensorReference]
     kwargs: _containers.MessageMap[str, AtenArgument]
-    def __init__(self, op_name: _Optional[str] = ..., inputs: _Optional[_Iterable[_Union[AtenArgument, _Mapping]]] = ..., outputs: _Optional[_Iterable[_Union[TensorReference, _Mapping]]] = ..., kwargs: _Optional[_Mapping[str, AtenArgument]] = ...) -> None: ...
+    def __init__(self, op_name: _Optional[str] = ..., args: _Optional[_Iterable[_Union[AtenArgument, _Mapping]]] = ..., outputs: _Optional[_Iterable[_Union[TensorReference, _Mapping]]] = ..., kwargs: _Optional[_Mapping[str, AtenArgument]] = ...) -> None: ...
 
 class ExecuteAtenResponse(_message.Message):
     __slots__ = ("success", "message", "output_tensors")

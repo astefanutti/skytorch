@@ -248,34 +248,43 @@ class TensorClient:
     async def execute_aten_operation(
         self,
         op_name: str,
-        input_refs: list[TensorMetadata],
-        output_refs: list[TensorMetadata],
-        kwargs: Optional[dict] = None,
-    ) -> bool:
+        args: tuple,
+        kwargs: dict,
+        output_tensors: list[torch.Tensor] | None,
+    ) -> list[TensorMetadata] | None:
         """
         Execute an ATen operation on the server.
 
+        Supports two modes:
+        - Pre-allocated outputs: output_tensors provided, writes to them, returns None
+        - Server-created outputs: output_tensors is None, returns list[TensorMetadata]
+
         Args:
             op_name: ATen operation name (e.g., "aten::add.Tensor")
-            input_refs: List of input tensor metadata
-            output_refs: List of output tensor metadata
-            kwargs: Optional keyword arguments for the operation
+            args: Positional arguments (tensors as TensorMetadata, scalars as-is)
+            kwargs: Keyword arguments (tensors as TensorMetadata, scalars as-is)
+            output_tensors: Pre-allocated output tensors, or None for server-created
 
         Returns:
-            True if successful
+            None if output_tensors provided, list[TensorMetadata] if server created outputs
 
         Raises:
             RuntimeError: If operation execution fails
         """
         request = service_pb2.ExecuteAtenRequest(
             op_name=op_name,
-            inputs=[self._to_aten_arg(m) for m in input_refs],
-            outputs=[self._to_tensor_ref(m) for m in output_refs],
+            args=[self._to_aten_arg(arg) for arg in args],
         )
 
         if kwargs:
             for k, v in kwargs.items():
                 request.kwargs[k].CopyFrom(self._to_aten_arg(v))
+
+        # Add output references if provided
+        if output_tensors is not None:
+            for t in output_tensors:
+                if t is not None:
+                    request.outputs.append(self._tensor_to_ref(t))
 
         response = await self.stub.ExecuteAtenOperation(
             request, metadata=self.metadata
@@ -285,7 +294,31 @@ class TensorClient:
             raise RuntimeError(f"ATen operation failed: {response.message}")
 
         logger.info(f"Executed {op_name} on server")
-        return True
+
+        # Return output metadata if server created outputs
+        if output_tensors is None and response.output_tensors:
+            return [self._ref_to_metadata(ref) for ref in response.output_tensors]
+
+        return None
+
+    def _tensor_to_ref(self, tensor: torch.Tensor) -> service_pb2.TensorReference:
+        """Convert a torch.Tensor to TensorReference proto."""
+        from kpu.torch.backend._tensor import get_tensor_metadata
+        meta = get_tensor_metadata(tensor)
+        return self._to_tensor_ref(meta)
+
+    def _ref_to_metadata(self, ref: service_pb2.TensorReference) -> TensorMetadata:
+        """Convert TensorReference proto to TensorMetadata."""
+        return TensorMetadata(
+            tensor_id=ref.tensor_id,
+            shape=tuple(ref.shape),
+            dtype=eval(ref.dtype),  # "torch.float32" -> torch.float32
+            nbytes=ref.nbytes,
+            device_type=ref.device_type,
+            stride=tuple(ref.stride) if ref.stride else None,
+            storage_offset=ref.storage_offset,
+            device_index=ref.device_index,
+        )
 
     def _to_tensor_ref(
         self, meta: TensorMetadata
@@ -303,10 +336,45 @@ class TensorClient:
         )
 
     def _to_aten_arg(self, value) -> service_pb2.AtenArgument:
-        """Convert a value to AtenArgument proto."""
+        """Convert a value to AtenArgument proto.
+
+        Handles:
+        - None → none_value
+        - torch.Tensor (KPU) → TensorReference via metadata
+        - torch.Tensor (CPU, scalar) → scalar value
+        - TensorMetadata → TensorReference
+        - bool/int/float/str → scalar values
+        - torch.device/torch.dtype → string
+        - list/tuple → recursive AtenArgumentList
+        """
+        from kpu.torch.backend._tensor import get_tensor_metadata
+
         arg = service_pb2.AtenArgument()
 
-        if isinstance(value, TensorMetadata):
+        if value is None:
+            arg.none_value = True
+        elif isinstance(value, torch.Tensor):
+            if value.device.type == "kpu":
+                # KPU tensor → convert to TensorReference
+                meta = get_tensor_metadata(value)
+                arg.tensor.CopyFrom(self._to_tensor_ref(meta))
+            elif value.device.type == "cpu" and value.dim() == 0:
+                # CPU scalar tensor → convert to Python scalar
+                scalar = value.item()
+                if isinstance(scalar, bool):
+                    arg.scalar_bool = scalar
+                elif isinstance(scalar, int):
+                    arg.scalar_int = scalar
+                elif isinstance(scalar, float):
+                    arg.scalar_float = scalar
+                else:
+                    arg.scalar_string = str(scalar)
+            else:
+                raise ValueError(
+                    f"Unsupported tensor device: {value.device.type}. "
+                    f"Only KPU tensors and 0-dim CPU scalars are allowed."
+                )
+        elif isinstance(value, TensorMetadata):
             arg.tensor.CopyFrom(self._to_tensor_ref(value))
         elif isinstance(value, bool):
             # Must check bool before int since bool is subclass of int
@@ -317,16 +385,17 @@ class TensorClient:
             arg.scalar_float = value
         elif isinstance(value, str):
             arg.scalar_string = value
+        elif isinstance(value, torch.device):
+            arg.scalar_string = str(value)
+        elif isinstance(value, torch.dtype):
+            arg.scalar_string = str(value)
         elif isinstance(value, (list, tuple)):
-            # Handle lists of scalars
-            if all(isinstance(x, float) for x in value):
-                arg.list_value.float_values.extend(value)
-            elif all(isinstance(x, bool) for x in value):
-                arg.list_value.bool_values.extend(value)
-            elif all(isinstance(x, int) for x in value):
-                arg.list_value.int_values.extend(value)
-            else:
-                raise ValueError(f"Unsupported list type in ATen argument: {value}")
+            # Handle nested lists/tuples recursively
+            list_arg = service_pb2.AtenArgumentList()
+            list_arg.is_tuple = isinstance(value, tuple)
+            for item in value:
+                list_arg.values.append(self._to_aten_arg(item))
+            arg.list_value.CopyFrom(list_arg)
         else:
             raise ValueError(f"Unsupported ATen argument type: {type(value)}")
 
