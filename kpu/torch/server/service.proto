@@ -17,7 +17,7 @@ service Service {
 // Represents a chunk of serialized tensor data
 message TensorChunk {
   // Unique identifier for the tensor (used to group chunks)
-  string tensor_id = 1;
+  int64 tensor_id = 1;
 
   // Chunk sequence number (for ordering)
   uint32 chunk_number = 2;

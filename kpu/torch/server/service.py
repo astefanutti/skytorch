@@ -30,7 +30,7 @@ from kpu.torch.server.serialization import (
     TensorAssembler,
     DEFAULT_CHUNK_SIZE,
 )
-from kpu.torch.server.storage import ServerStorageManager
+from kpu.torch.server.storage import StorageManager
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             chunk_size: Size of chunks for streaming tensors
         """
         self.chunk_size = chunk_size
-        self.storage = ServerStorageManager()
+        self.storage = StorageManager()
 
     async def CreateTensor(
         self,
@@ -133,26 +133,38 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     metadata=chunk_metadata,
                 )
 
-                if tensor is not None:
-                    # Auto-create storage if it doesn't exist (implicit creation)
-                    info = self.storage.get_or_create(
+                if tensor is None:
+                    continue
+
+                # Get existing storage or create if it doesn't exist
+                info = self.storage.get(tensor_id)
+                if info is None:
+                    info = self.storage.create(
                         tensor_id=tensor_id,
                         nbytes=tensor.untyped_storage().nbytes(),
                         dtype=tensor.dtype,
                     )
+                    created = True
+                else:
+                    created = False
 
-                    # Copy data into storage
-                    offset = int(metadata.get("target_storage_offset", "0"))
-                    if offset == 0 and info.tensor.numel() == tensor.numel():
-                        # Full tensor update
-                        info.tensor.copy_(tensor.view(-1))
-                    else:
-                        # Partial update with offset
-                        info.tensor.view(-1)[
-                            offset : offset + tensor.numel()
-                        ].copy_(tensor.view(-1))
+                # Copy data into storage
+                offset = int(metadata.get("target_storage_offset", "0"))
+                if offset == 0 and info.tensor.numel() == tensor.numel():
+                    # Full tensor update
+                    info.tensor.copy_(tensor.view(-1))
+                else:
+                    # Partial update with offset
+                    info.tensor.view(-1)[
+                        offset : offset + tensor.numel()
+                    ].copy_(tensor.view(-1))
 
-                    received_ids.append(str(tensor_id))
+                received_ids.append(str(tensor_id))
+                if created:
+                    logger.info(
+                        f"Created tensor {tensor_id} with shape {tensor.shape}"
+                    )
+                else:
                     logger.info(
                         f"Updated tensor {tensor_id} with shape {tensor.shape}"
                     )
@@ -211,7 +223,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             # Stream the tensor data
             for chunk_data in serialize_tensor_to_chunks(
-                tensor.contiguous(), self.chunk_size
+                tensor.contiguous(), tensor_id, self.chunk_size
             ):
                 t_id, c_num, data, total, is_last, meta = chunk_data
 

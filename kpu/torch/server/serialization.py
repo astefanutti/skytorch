@@ -5,8 +5,7 @@ This module provides stream-based serialization following PyTorch best practices
 """
 
 import io
-from typing import Iterator, Optional, Dict
-import uuid
+from typing import Iterator, Optional
 
 try:
     import torch
@@ -20,10 +19,10 @@ DEFAULT_CHUNK_SIZE = 1024 * 1024
 
 def serialize_tensor_to_chunks(
     tensor: torch.Tensor,
+    tensor_id: int,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
-    tensor_id: Optional[str] = None,
-    metadata: Optional[Dict[str, str]] = None
-) -> Iterator[tuple[str, int, bytes, int, bool, Optional[Dict[str, str]]]]:
+    metadata: Optional[dict[str, str]] = None,
+) -> Iterator[tuple[int, int, bytes, int, bool, Optional[dict[str, str]]]]:
     """
     Serialize a PyTorch tensor into chunks for streaming.
 
@@ -32,15 +31,12 @@ def serialize_tensor_to_chunks(
     Args:
         tensor: PyTorch tensor to serialize
         chunk_size: Size of each chunk in bytes
-        tensor_id: Unique identifier for the tensor (generated if not provided)
+        tensor_id: Unique identifier for the tensor
         metadata: Optional metadata to include with the tensor
 
     Yields:
         Tuples of (tensor_id, chunk_number, data, total_chunks, is_last, metadata)
     """
-    if tensor_id is None:
-        tensor_id = str(uuid.uuid4())
-
     # Serialize tensor to bytes using PyTorch's save method
     buffer = io.BytesIO()
     torch.save(tensor, buffer)
@@ -77,7 +73,7 @@ def serialize_tensor_to_chunks(
         # Include metadata only in first chunk
         chunk_metadata = first_chunk_metadata if chunk_number == 0 else None
 
-        yield (tensor_id, chunk_number, chunk_data, total_chunks, is_last, chunk_metadata)
+        yield tensor_id, chunk_number, chunk_data, total_chunks, is_last, chunk_metadata
 
         offset = end_offset
         chunk_number += 1
@@ -89,16 +85,16 @@ class TensorAssembler:
     """
 
     def __init__(self):
-        self.buffers: Dict[str, Dict] = {}
+        self.buffers: dict[int, dict] = {}
 
     def add_chunk(
         self,
-        tensor_id: str,
+        tensor_id: int,
         chunk_number: int,
         data: bytes,
         total_chunks: int,
         is_last: bool,
-        metadata: Optional[Dict[str, str]] = None
+        metadata: Optional[dict[str, str]] = None
     ) -> Optional[torch.Tensor]:
         """
         Add a chunk to the assembler.
@@ -134,7 +130,7 @@ class TensorAssembler:
 
         return None
 
-    def _assemble_tensor(self, tensor_id: str) -> torch.Tensor:
+    def _assemble_tensor(self, tensor_id: int) -> torch.Tensor:
         """
         Assemble all chunks into a complete tensor.
 
@@ -161,7 +157,7 @@ class TensorAssembler:
 
         return tensor
 
-    def get_metadata(self, tensor_id: str) -> Optional[Dict[str, str]]:
+    def get_metadata(self, tensor_id: int) -> Optional[dict[str, str]]:
         """
         Get metadata for a tensor being assembled.
 

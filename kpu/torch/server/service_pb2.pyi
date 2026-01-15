@@ -21,13 +21,13 @@ class TensorChunk(_message.Message):
     TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
     IS_LAST_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
-    tensor_id: str
+    tensor_id: int
     chunk_number: int
     data: bytes
     total_chunks: int
     is_last: bool
     metadata: _containers.ScalarMap[str, str]
-    def __init__(self, tensor_id: _Optional[str] = ..., chunk_number: _Optional[int] = ..., data: _Optional[bytes] = ..., total_chunks: _Optional[int] = ..., is_last: bool = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    def __init__(self, tensor_id: _Optional[int] = ..., chunk_number: _Optional[int] = ..., data: _Optional[bytes] = ..., total_chunks: _Optional[int] = ..., is_last: bool = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class TensorResponse(_message.Message):
     __slots__ = ("success", "message", "received_tensor_ids")

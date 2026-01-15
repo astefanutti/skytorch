@@ -12,7 +12,7 @@ import torch
 
 
 @dataclass
-class ServerStorageInfo:
+class StorageInfo:
     """Server-side storage information."""
 
     tensor_id: int
@@ -23,11 +23,11 @@ class ServerStorageInfo:
     tensor: torch.Tensor  # Actual tensor data
 
 
-class ServerStorageManager:
+class StorageManager:
     """Server-side storage manager for tensor data."""
 
     def __init__(self):
-        self._storages: dict[int, ServerStorageInfo] = {}
+        self._storages: dict[int, StorageInfo] = {}
 
     def create(
         self,
@@ -36,7 +36,7 @@ class ServerStorageManager:
         dtype: torch.dtype,
         device_type: str = "cpu",
         device_index: int = 0,
-    ) -> ServerStorageInfo:
+    ) -> StorageInfo:
         """Create storage with given tensor_id.
 
         Args:
@@ -47,14 +47,14 @@ class ServerStorageManager:
             device_index: Device index
 
         Returns:
-            ServerStorageInfo for the created storage
+            StorageInfo for the created storage
         """
         # Allocate actual tensor storage
         elem_size = torch.empty(0, dtype=dtype).element_size()
         numel = nbytes // elem_size
         tensor = torch.empty(numel, dtype=dtype)
 
-        info = ServerStorageInfo(
+        info = StorageInfo(
             tensor_id=tensor_id,
             nbytes=nbytes,
             dtype=dtype,
@@ -65,40 +65,16 @@ class ServerStorageManager:
         self._storages[tensor_id] = info
         return info
 
-    def get(self, tensor_id: int) -> Optional[ServerStorageInfo]:
+    def get(self, tensor_id: int) -> Optional[StorageInfo]:
         """Get storage by tensor_id.
 
         Args:
             tensor_id: Unique identifier for the tensor
 
         Returns:
-            ServerStorageInfo if found, None otherwise
+            StorageInfo if found, None otherwise
         """
         return self._storages.get(tensor_id)
-
-    def get_or_create(
-        self,
-        tensor_id: int,
-        nbytes: int,
-        dtype: torch.dtype,
-        device_type: str = "cpu",
-        device_index: int = 0,
-    ) -> ServerStorageInfo:
-        """Get existing storage or create new one.
-
-        Args:
-            tensor_id: Unique identifier for the tensor
-            nbytes: Total size in bytes (used if creating)
-            dtype: PyTorch dtype for the storage (used if creating)
-            device_type: Device type (used if creating)
-            device_index: Device index (used if creating)
-
-        Returns:
-            ServerStorageInfo for the existing or created storage
-        """
-        if tensor_id in self._storages:
-            return self._storages[tensor_id]
-        return self.create(tensor_id, nbytes, dtype, device_type, device_index)
 
     def register_tensor(self, tensor: torch.Tensor) -> int:
         """Register an existing tensor and return its storage ID.
@@ -116,7 +92,7 @@ class ServerStorageManager:
         storage_id = storage.data_ptr()
 
         if storage_id not in self._storages:
-            info = ServerStorageInfo(
+            info = StorageInfo(
                 tensor_id=storage_id,
                 nbytes=storage.nbytes(),
                 dtype=tensor.dtype,

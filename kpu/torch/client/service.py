@@ -114,7 +114,7 @@ class TensorClient:
                 f"Uploading tensor to {tensor_id} "
                 f"(shape={tensor.shape}, offset={storage_offset})"
             )
-            for chunk_data in serialize_tensor_to_chunks(tensor):
+            for chunk_data in serialize_tensor_to_chunks(tensor, tensor_id):
                 t_id, c_num, data, total, is_last, meta = chunk_data
 
                 # Add storage targeting metadata
@@ -124,7 +124,7 @@ class TensorClient:
                 meta["target_storage_offset"] = str(storage_offset)
 
                 chunk = service_pb2.TensorChunk(
-                    tensor_id=str(t_id),
+                    tensor_id=t_id,
                     chunk_number=c_num,
                     data=data,
                     total_chunks=total,
