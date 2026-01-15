@@ -9,37 +9,15 @@ calls our Python code synchronously, but we need to make async gRPC calls.
 from __future__ import annotations
 
 import asyncio
+import asyncio.events as events
+import os
+import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Coroutine, Optional, TypeVar
+from contextlib import contextmanager, suppress
+from heapq import heappop
+from typing import Any, Coroutine, TypeVar
 
 T = TypeVar("T")
-
-# Store the main event loop for cross-thread async calls
-_event_loop: Optional[asyncio.AbstractEventLoop] = None
-_loop_thread_id: Optional[int] = None
-
-
-def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
-    """
-    Set the event loop for cross-thread async calls.
-
-    Call this from the main async context (e.g., when entering Compute)
-    so that worker threads can schedule coroutines on this loop.
-
-    Args:
-        loop: The event loop to use for async operations
-    """
-    global _event_loop, _loop_thread_id
-    _event_loop = loop
-    _loop_thread_id = threading.current_thread().ident
-
-
-def clear_event_loop() -> None:
-    """Clear the stored event loop reference."""
-    global _event_loop, _loop_thread_id
-    _event_loop = None
-    _loop_thread_id = None
 
 
 def run_async(coro: Coroutine[Any, Any, T]) -> T:
@@ -50,13 +28,8 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
     calls our Python code synchronously, but we need to make async
     gRPC calls to transfer tensor data.
 
-    Strategy:
-    1. If there's a stored event loop running in a different thread,
-       use run_coroutine_threadsafe to schedule on that loop.
-    2. If we're in the same thread as a running loop, run the coroutine
-       in a new event loop in a worker thread.
-    3. If a loop exists but isn't running, use run_until_complete()
-    4. If no loop exists, create one with asyncio.run()
+    On first call, applies the nest_asyncio patch to the running event loop
+    to allow nested run_until_complete calls.
 
     Args:
         coro: Async coroutine to execute
@@ -64,36 +37,209 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
     Returns:
         Result of the coroutine
     """
-    current_thread_id = threading.current_thread().ident
+    loop = asyncio.get_running_loop()
 
-    # Check if there's a running loop in the current thread
-    try:
-        current_loop = asyncio.get_running_loop()
-    except RuntimeError:
-        current_loop = None
+    # Apply nest_asyncio patch on first call for this loop
+    if not hasattr(loop, '_nest_patched'):
+        apply(loop)
 
-    # If we have a stored event loop running in a different thread, use it
-    if (
-        _event_loop is not None
-        and _loop_thread_id is not None
-        and _loop_thread_id != current_thread_id
-    ):
+    return loop.run_until_complete(coro)
+
+
+"""Patch asyncio to allow nested event loops. Copied from nest_asyncio"""
+
+def apply(loop=None):
+    """Patch asyncio to make its event loop reentrant."""
+    _patch_asyncio()
+    _patch_policy()
+
+    loop = loop or asyncio.get_event_loop()
+    _patch_loop(loop)
+
+
+def _patch_asyncio():
+    """Patch asyncio module to use pure Python tasks and futures."""
+
+    def run(main, *, debug=False):
+        loop = asyncio.get_event_loop()
+        loop.set_debug(debug)
+        task = asyncio.ensure_future(main)
         try:
-            if _event_loop.is_running():
-                future = asyncio.run_coroutine_threadsafe(coro, _event_loop)
-                return future.result()
-        except RuntimeError:
-            pass  # Loop was closed, fall through to other methods
+            return loop.run_until_complete(task)
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    loop.run_until_complete(task)
 
-    # We're in the same thread as the event loop, or no stored loop available
-    # Run in a new event loop in a worker thread
-    if current_loop is not None and current_loop.is_running():
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(asyncio.run, coro).result()
+    def _get_event_loop(stacklevel=3):
+        loop = events._get_running_loop()
+        if loop is None:
+            loop = events.get_event_loop_policy().get_event_loop()
+        return loop
 
-    # Loop exists but isn't running - use it directly
-    if current_loop is not None:
-        return current_loop.run_until_complete(coro)
+    # Use module level _current_tasks, all_tasks and patch run method.
+    if hasattr(asyncio, '_nest_patched'):
+        return
+    if sys.version_info >= (3, 6, 0):
+        asyncio.Task = asyncio.tasks._CTask = asyncio.tasks.Task = \
+            asyncio.tasks._PyTask
+        asyncio.Future = asyncio.futures._CFuture = asyncio.futures.Future = \
+            asyncio.futures._PyFuture
+    if sys.version_info < (3, 7, 0):
+        asyncio.tasks._current_tasks = asyncio.tasks.Task._current_tasks
+        asyncio.all_tasks = asyncio.tasks.Task.all_tasks
+    if sys.version_info >= (3, 9, 0):
+        events._get_event_loop = events.get_event_loop = \
+            asyncio.get_event_loop = _get_event_loop
+    asyncio.run = run
+    asyncio._nest_patched = True
 
-    # No loop at all - create one
-    return asyncio.run(coro)
+
+def _patch_policy():
+    """Patch the policy to always return a patched loop."""
+
+    def get_event_loop(self):
+        if self._local._loop is None:
+            loop = self.new_event_loop()
+            _patch_loop(loop)
+            self.set_event_loop(loop)
+        return self._local._loop
+
+    policy = events.get_event_loop_policy()
+    policy.__class__.get_event_loop = get_event_loop
+
+
+def _patch_loop(loop):
+    """Patch loop to make it reentrant."""
+
+    def run_forever(self):
+        with manage_run(self), manage_asyncgens(self):
+            while True:
+                self._run_once()
+                if self._stopping:
+                    break
+        self._stopping = False
+
+    def run_until_complete(self, future):
+        with manage_run(self):
+            f = asyncio.ensure_future(future, loop=self)
+            if f is not future:
+                f._log_destroy_pending = False
+            while not f.done():
+                self._run_once()
+                if self._stopping:
+                    break
+            if not f.done():
+                raise RuntimeError(
+                    'Event loop stopped before Future completed.')
+            return f.result()
+
+    def _run_once(self):
+        """
+        Simplified re-implementation of asyncio's _run_once that
+        runs handles as they become ready.
+        """
+        ready = self._ready
+        scheduled = self._scheduled
+        while scheduled and scheduled[0]._cancelled:
+            heappop(scheduled)
+
+        timeout = (
+            0 if ready or self._stopping
+            else min(max(
+                scheduled[0]._when - self.time(), 0), 86400) if scheduled
+            else None)
+        event_list = self._selector.select(timeout)
+        self._process_events(event_list)
+
+        end_time = self.time() + self._clock_resolution
+        while scheduled and scheduled[0]._when < end_time:
+            handle = heappop(scheduled)
+            ready.append(handle)
+
+        for _ in range(len(ready)):
+            if not ready:
+                break
+            handle = ready.popleft()
+            if not handle._cancelled:
+                # preempt the current task so that that checks in
+                # Task.__step do not raise
+                curr_task = curr_tasks.pop(self, None)
+
+                try:
+                    handle._run()
+                finally:
+                    # restore the current task
+                    if curr_task is not None:
+                        curr_tasks[self] = curr_task
+
+        handle = None
+
+    @contextmanager
+    def manage_run(self):
+        """Set up the loop for running."""
+        self._check_closed()
+        old_thread_id = self._thread_id
+        old_running_loop = events._get_running_loop()
+        try:
+            self._thread_id = threading.get_ident()
+            events._set_running_loop(self)
+            self._num_runs_pending += 1
+            if self._is_proactorloop:
+                if self._self_reading_future is None:
+                    self.call_soon(self._loop_self_reading)
+            yield
+        finally:
+            self._thread_id = old_thread_id
+            events._set_running_loop(old_running_loop)
+            self._num_runs_pending -= 1
+            if self._is_proactorloop:
+                if (self._num_runs_pending == 0
+                        and self._self_reading_future is not None):
+                    ov = self._self_reading_future._ov
+                    self._self_reading_future.cancel()
+                    if ov is not None:
+                        self._proactor._unregister(ov)
+                    self._self_reading_future = None
+
+    @contextmanager
+    def manage_asyncgens(self):
+        if not hasattr(sys, 'get_asyncgen_hooks'):
+            # Python version is too old.
+            return
+        old_agen_hooks = sys.get_asyncgen_hooks()
+        try:
+            self._set_coroutine_origin_tracking(self._debug)
+            if self._asyncgens is not None:
+                sys.set_asyncgen_hooks(
+                    firstiter=self._asyncgen_firstiter_hook,
+                    finalizer=self._asyncgen_finalizer_hook)
+            yield
+        finally:
+            self._set_coroutine_origin_tracking(False)
+            if self._asyncgens is not None:
+                sys.set_asyncgen_hooks(*old_agen_hooks)
+
+    def _check_running(self):
+        """Do not throw exception if loop is already running."""
+        pass
+
+    if hasattr(loop, '_nest_patched'):
+        return
+    if not isinstance(loop, asyncio.BaseEventLoop):
+        raise ValueError('Can\'t patch loop of type %s' % type(loop))
+    cls = loop.__class__
+    cls.run_forever = run_forever
+    cls.run_until_complete = run_until_complete
+    cls._run_once = _run_once
+    cls._check_running = _check_running
+    cls._check_runnung = _check_running  # typo in Python 3.7 source
+    cls._num_runs_pending = 1 if loop.is_running() else 0
+    cls._is_proactorloop = (
+            os.name == 'nt' and issubclass(cls, asyncio.ProactorEventLoop))
+    if sys.version_info < (3, 7, 0):
+        cls._set_coroutine_origin_tracking = cls._set_coroutine_wrapper
+    curr_tasks = asyncio.tasks._current_tasks \
+        if sys.version_info >= (3, 7, 0) else asyncio.Task._current_tasks
+    cls._nest_patched = True
