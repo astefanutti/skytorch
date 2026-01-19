@@ -17,7 +17,7 @@ service Service {
 // Represents a chunk of serialized tensor data
 message TensorChunk {
   // Tensor ID
-  int64 tensor_id = 1;
+  uint64 tensor_id = 1;
 
   // Chunk sequence number (for ordering)
   uint32 chunk_number = 2;
@@ -43,7 +43,7 @@ message TensorResponse {
 
 // Request to create a tensor on the server
 message CreateTensorRequest {
-  int64 tensor_id = 1;
+  uint64 tensor_id = 1;
   repeated int64 shape = 2;
   string dtype = 3;
   int64 nbytes = 4;
@@ -55,7 +55,7 @@ message CreateTensorRequest {
 
 // Request to get tensor data from storage
 message GetTensorRequest {
-  int64 tensor_id = 1;
+  uint64 tensor_id = 1;
   repeated int64 shape = 2;
   string dtype = 3;
   repeated int64 stride = 4;
@@ -64,8 +64,8 @@ message GetTensorRequest {
 
 // Request to copy tensor data on the server
 message CopyTensorRequest {
-  int64 src_tensor_id = 1;
-  int64 dst_tensor_id = 2;
+  uint64 src_tensor_id = 1;
+  uint64 dst_tensor_id = 2;
   int64 src_offset = 3;
   int64 dst_offset = 4;
   int64 num_bytes = 5;
@@ -73,7 +73,7 @@ message CopyTensorRequest {
 
 // Reference to a tensor on the server
 message TensorReference {
-  int64 tensor_id = 1;
+  uint64 tensor_id = 1;
 }
 
 // Argument for ATen operations (can be tensor, scalar, or nested structure)
