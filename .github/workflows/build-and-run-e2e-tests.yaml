@@ -102,6 +102,10 @@ jobs:
         run: |
           pip install --extra-index-url https://download.pytorch.org/whl/cpu -e ".[test,torch]"
 
+      - name: Build KPU PyTorch Backend
+        run: |
+          python kpu/torch/backend/setup.py build_ext --inplace
+
       - name: Run E2E tests
         run: |
           TEST_IMAGE="kpu-torch-server:test"
