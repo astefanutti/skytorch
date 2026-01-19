@@ -29,7 +29,7 @@ If you don't have a cluster, you can create one using KinD:
 
 ```bash
 # Create KinD cluster with custom configuration
-kind create cluster --config test/kind.yaml --name kpu-test
+kind create cluster --config test/e2e/kind.yaml --name kpu-test
 
 # Load the kpu-torch-server image into the cluster
 docker pull ghcr.io/astefanutti/kpu-torch-server
@@ -47,32 +47,32 @@ kubectl get pods -n kpu-system
 #### Run All E2E Tests
 
 ```bash
-pytest test/ -v -m e2e
+pytest test/e2e -v -m e2e
 ```
 
 #### Run Specific Test File
 
 ```bash
 # Compute tests
-pytest test/test_compute_e2e.py -v
+pytest test/e2e/test_compute_e2e.py -v
 
 # Cluster tests
-pytest test/test_cluster_e2e.py -v
+pytest test/e2e/test_cluster_e2e.py -v
 
 # Init tests
-pytest test/test_init_e2e.py -v
+pytest test/e2e/test_init_e2e.py -v
 ```
 
 #### Run Specific Test
 
 ```bash
-pytest test/test_compute_e2e.py::test_compute_managed -v
+pytest test/e2e/test_compute_e2e.py::test_compute_managed -v
 ```
 
 #### Run with Detailed Output
 
 ```bash
-pytest test/ -v -s -m e2e
+pytest test/e2e -v -s -m e2e
 ```
 
 The `-s` flag disables output capturing, allowing you to see print statements and logs.
@@ -80,7 +80,7 @@ The `-s` flag disables output capturing, allowing you to see print statements an
 #### Skip Slow Tests
 
 ```bash
-pytest test/ -v -m "e2e and not slow"
+pytest test/e2e -v -m "e2e and not slow"
 ```
 
 ### Test Markers
@@ -90,7 +90,7 @@ pytest test/ -v -m "e2e and not slow"
 
 ### Environment Configuration
 
-Tests use fixtures for configuration, defined in `test/conftest.py`:
+Tests use fixtures for configuration, defined in `test/e2e/conftest.py`:
 
 - **test_image**: Container image for Compute resources (default: `ghcr.io/astefanutti/kpu-torch-server`)
 
@@ -102,18 +102,18 @@ Set environment variables before running tests:
 
 ```bash
 export KPU_TEST_IMAGE="your-custom-image:tag"
-pytest test/ -v -m e2e
+pytest test/e2e -v -m e2e
 ```
 
 Or inline:
 
 ```bash
-KPU_TEST_IMAGE="your-custom-image:tag" pytest test/ -v -m e2e
+KPU_TEST_IMAGE="your-custom-image:tag" pytest test/e2e -v -m e2e
 ```
 
 #### Option 2: Edit Fixtures
 
-For persistent local configuration, edit the fixtures in `test/conftest.py`:
+For persistent local configuration, edit the fixtures in `test/e2e/conftest.py`:
 
 ```python
 @pytest.fixture(scope="session")
@@ -165,7 +165,7 @@ Key steps in CI/CD:
   uses: helm/kind-action@v1.13.0
   with:
     cluster_name: kpu
-    config: test/kind.yaml
+    config: test/e2e/kind.yaml
 
 - name: Install Gateway API CRDs
   run: kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/experimental-install.yaml
@@ -182,7 +182,7 @@ Key steps in CI/CD:
 
 - name: Run E2E tests
   run: |
-    KPU_TEST_IMAGE="${IMAGE_TAG}" pytest test/ -v -m e2e
+    KPU_TEST_IMAGE="${IMAGE_TAG}" pytest test/e2e -v -m e2e
 ```
 
 ### Test Structure
@@ -234,7 +234,7 @@ async def test_new_feature(test_image):
 
 ```bash
 pip install pytest-xdist
-pytest test/ -v -m e2e -n auto
+pytest test/e2e -v -m e2e -n auto
 ```
 
 Note: Be careful with parallel execution as it can create many resources simultaneously.
@@ -257,7 +257,7 @@ To debug a failed test:
 
 3. **Run single test with output**:
    ```bash
-   pytest test/test_compute_e2e.py::test_compute_managed -v -s
+   pytest test/e2e/test_compute_e2e.py::test_compute_managed -v -s
    ```
 
 4. **Add breakpoints** (using pytest's built-in debugger):
@@ -267,5 +267,5 @@ To debug a failed test:
 
    Then run with:
    ```bash
-   pytest test/test_compute_e2e.py::test_compute_managed -v -s
+   pytest test/e2e/test_compute_e2e.py::test_compute_managed -v -s
    ```
