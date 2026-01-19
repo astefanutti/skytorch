@@ -17,6 +17,7 @@ import json
 import pydoc
 from functools import partial
 
+from aiohttp import WSMsgType
 from kubernetes import client
 from .api_client import ApiClient
 from .stream import WsApiClient
@@ -201,16 +202,16 @@ class Stream(BaseWatch):
                 msg = await self.ws.receive()
 
                 # Handle WebSocket message types
-                if msg.type == 1:  # aiohttp.WSMsgType.TEXT
+                if msg.type == WSMsgType.TEXT:
                     line = msg.data
-                elif msg.type == 8:  # aiohttp.WSMsgType.CLOSE
+                elif msg.type == WSMsgType.CLOSE or msg.type == WSMsgType.CLOSED:
                     # WebSocket closed
                     if watch_forever:
                         await self._reconnect()
                         continue
                     else:
                         raise StopAsyncIteration
-                elif msg.type == 9:  # aiohttp.WSMsgType.ERROR
+                elif msg.type == WSMsgType.ERROR:
                     # WebSocket error
                     if watch_forever:
                         await self._reconnect()
