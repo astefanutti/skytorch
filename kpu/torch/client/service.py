@@ -57,12 +57,15 @@ class TensorClient:
         self.metadata = metadata
         self.stub = service_pb2_grpc.ServiceStub(self.channel)
 
-    async def create_tensor(self, metadata: TensorMetadata) -> None:
+    async def create_tensor(
+        self, metadata: TensorMetadata, tensor_ref: Optional[int] = None
+    ) -> None:
         """
         Create a tensor on the server.
 
         Args:
             metadata: TensorMetadata with tensor configuration
+            tensor_ref: Optional reference to base tensor for view creation
 
         Raises:
             RuntimeError: If tensor creation fails
@@ -77,6 +80,8 @@ class TensorClient:
             storage_offset=metadata.storage_offset,
             device_index=metadata.device_index,
         )
+        if tensor_ref is not None:
+            request.tensor_ref = tensor_ref
 
         response = await self.stub.CreateTensor(request, metadata=self.metadata)
 

@@ -35,7 +35,7 @@ class TensorResponse(_message.Message):
     def __init__(self, success: bool = ..., message: _Optional[str] = ...) -> None: ...
 
 class CreateTensorRequest(_message.Message):
-    __slots__ = ("tensor_id", "shape", "dtype", "nbytes", "device_type", "stride", "storage_offset", "device_index")
+    __slots__ = ("tensor_id", "shape", "dtype", "nbytes", "device_type", "stride", "storage_offset", "device_index", "tensor_ref")
     TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
     SHAPE_FIELD_NUMBER: _ClassVar[int]
     DTYPE_FIELD_NUMBER: _ClassVar[int]
@@ -44,6 +44,7 @@ class CreateTensorRequest(_message.Message):
     STRIDE_FIELD_NUMBER: _ClassVar[int]
     STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
     DEVICE_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TENSOR_REF_FIELD_NUMBER: _ClassVar[int]
     tensor_id: int
     shape: _containers.RepeatedScalarFieldContainer[int]
     dtype: str
@@ -52,7 +53,8 @@ class CreateTensorRequest(_message.Message):
     stride: _containers.RepeatedScalarFieldContainer[int]
     storage_offset: int
     device_index: int
-    def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., device_index: _Optional[int] = ...) -> None: ...
+    tensor_ref: int
+    def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., device_index: _Optional[int] = ..., tensor_ref: _Optional[int] = ...) -> None: ...
 
 class GetTensorRequest(_message.Message):
     __slots__ = ("tensor_id", "shape", "dtype", "stride", "storage_offset")

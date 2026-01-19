@@ -201,20 +201,38 @@ async def _ensure_tensor_created(
 
     If the tensor is not already registered, creates it on the server
     with the appropriate remote device mapping and registers it locally.
+    If the tensor is a view of an already-registered tensor, creates
+    a view on the server referencing the base tensor's storage.
 
     Args:
         tensor: KPU tensor to create
         client: TensorClient for gRPC operations
     """
-    if storage_manager.reference(tensor) is None:
+    tensor_id = get_tensor_id(tensor)
+    ref = storage_manager.reference(tensor)
+
+    if ref == tensor_id:
+        # Tensor already registered
+        return
+
+    if ref is not None:
+        # ref is different tensor_id → this tensor is a view of base tensor
+        # Create view on server referencing the base tensor
         metadata = get_tensor_metadata(tensor)
-        # Map local KPU device to remote device
         remote_info = device_manager.get_remote_device_info(tensor.device.index)
         metadata.device_type = remote_info.device_type
         metadata.device_index = remote_info.device_index
-        # Create tensor on server and register it
-        await client.create_tensor(metadata)
+        await client.create_tensor(metadata, tensor_ref=ref)
         storage_manager.register(tensor)
+        return
+
+    # No reference found → create new tensor with fresh storage
+    metadata = get_tensor_metadata(tensor)
+    remote_info = device_manager.get_remote_device_info(tensor.device.index)
+    metadata.device_type = remote_info.device_type
+    metadata.device_index = remote_info.device_index
+    await client.create_tensor(metadata)
+    storage_manager.register(tensor)
 
 
 def _resolve_compute(tensor: torch.Tensor) -> Optional[Compute]:

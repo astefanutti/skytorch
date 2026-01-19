@@ -67,16 +67,25 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         try:
             dtype = eval(request.dtype)  # "torch.float32" -> torch.float32
-            device = torch.device(request.device_type, request.device_index)
-
-            # Create tensor with UntypedStorage and register it
-            storage = torch.UntypedStorage(request.nbytes, device=device)
             shape = list(request.shape)
             stride = list(request.stride) if request.stride else None
             storage_offset = request.storage_offset
-            tensor = torch.empty(0, dtype=dtype, device=device).set_(
-                storage, storage_offset, shape, stride
-            )
+
+            if request.HasField("tensor_ref"):
+                # Create view from existing tensor's storage
+                base_tensor = self.tensor_manager.get(request.tensor_ref)
+                storage = base_tensor.untyped_storage()
+                tensor = torch.empty(0, dtype=dtype, device=base_tensor.device).set_(
+                    storage, storage_offset, shape, stride
+                )
+            else:
+                # Create new tensor with fresh storage
+                device = torch.device(request.device_type, request.device_index)
+                storage = torch.UntypedStorage(request.nbytes, device=device)
+                tensor = torch.empty(0, dtype=dtype, device=device).set_(
+                    storage, storage_offset, shape, stride
+                )
+
             self.tensor_manager.register(request.tensor_id, tensor)
 
             logger.info(
@@ -309,7 +318,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 )
 
         except Exception as e:
-            logger.error(f"Error executing ATen operation: {e}")
+            logger.error(f"Error executing ATen operation {request.op_name}: {e}")
             return service_pb2.ExecuteAtenResponse(
                 success=False,
                 message=str(e),

@@ -51,6 +51,7 @@ message CreateTensorRequest {
   repeated int64 stride = 6;
   int64 storage_offset = 7;
   int32 device_index = 8;
+  optional uint64 tensor_ref = 9;  // Reference to base tensor for views
 }
 
 // Request to get tensor data from storage
