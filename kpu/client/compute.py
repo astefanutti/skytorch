@@ -226,6 +226,12 @@ class Compute:
                     event_type = event["type"]
                     obj = event["object"]
 
+                    # Handle deletion
+                    if event_type == "DELETED":
+                        raise TimeoutError(
+                            f"Compute {self.namespace}/{self.name} was deleted"
+                        )
+
                     # Update our cached resource
                     self._compute_resource = KpuV1alpha1Compute.from_dict(obj.to_dict())
 
