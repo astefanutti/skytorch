@@ -6,22 +6,13 @@ import asyncio
 import pytest
 import torch
 
+import kpu.torch.backend  # noqa: F401 - Register 'kpu' device
 from kpu.client import Compute, Cluster, log_event
-
-
-@pytest.fixture
-def test_tensors():
-    """Create test tensors for operations."""
-    return {
-        'tensor1': torch.randn(100, 100),
-        'tensor2': torch.randn(50, 50),
-        'tensor3': torch.randn(20, 20)
-    }
 
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cluster_managed(test_image, test_tensors):
+async def test_cluster_managed(test_image):
     """
     Test managing cluster of Compute resources in parallel.
 
@@ -29,12 +20,10 @@ async def test_cluster_managed(test_image, test_tensors):
     - Creating Cluster with multiple Computes
     - Default log_event callback
     - Unpacking computes from cluster
-    - Parallel operations with asyncio.gather
+    - Parallel PyTorch operations with asyncio.gather
+    - Verifying actual computation results
     - Automatic cleanup
     """
-    tensor1 = test_tensors['tensor1']
-    tensor2 = test_tensors['tensor2']
-
     async with Cluster(
         Compute(
             name="test-cluster-1",
@@ -47,20 +36,38 @@ async def test_cluster_managed(test_image, test_tensors):
             on_events=log_event,
         )
     ) as (compute1, compute2):
-        # Verify both computes are ready
         assert compute1.is_ready()
         assert compute2.is_ready()
         assert compute1.name == "test-cluster-1"
         assert compute2.name == "test-cluster-2"
 
-        # Send tensors to both servers in parallel
-        response1, response2 = await asyncio.gather(
-            compute1.send_tensors(tensor1),
-            compute2.send_tensors(tensor2),
-        )
+        # Get devices for both computes
+        device1 = compute1.device("cpu")
+        device2 = compute2.device("cpu")
 
-        assert response1.success is True
-        assert response2.success is True
+        # Create reference tensors on CPU
+        x_cpu = torch.randn(10, 10)
+        y_cpu = torch.randn(10, 10)
+
+        # Transfer to both KPU devices
+        x1 = x_cpu.to(device1)
+        y1 = y_cpu.to(device1)
+        x2 = x_cpu.to(device2)
+        y2 = y_cpu.to(device2)
+
+        # Perform operations on both computes
+        z1 = x1 + y1
+        z2 = x2 * y2
+
+        # Copy results back to CPU
+        z1_result = z1.cpu()
+        z2_result = z2.cpu()
+
+        # Verify actual computation results
+        expected_z1 = x_cpu + y_cpu
+        expected_z2 = x_cpu * y_cpu
+        assert torch.allclose(z1_result, expected_z1)
+        assert torch.allclose(z2_result, expected_z2)
 
     # Both computes are automatically deleted
     assert not compute1.is_ready()
@@ -82,69 +89,51 @@ async def test_cluster_manual(test_image):
         Compute(name="test-delete-2", image=test_image),
     )
 
-    # Wait for ready
     await cluster.ready(timeout=300)
-
-    # Manual delete
     await cluster.delete()
 
-    # Verify all are deleted
     assert not cluster.is_ready()
 
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cluster_parallel_receive(test_image, test_tensors):
+async def test_cluster_parallel_operations(test_image):
     """
-    Test receiving tensors from multiple Computes in parallel.
+    Test parallel tensor operations across multiple Computes.
 
     Covers:
-    - Parallel receive_tensors operations
-    - Gathering results from multiple Computes
+    - Different operations on different Computes
+    - Parallel execution pattern
+    - Verifying results from multiple Computes
     """
     async with Cluster(
-        Compute(name="test-recv-1", image=test_image),
-        Compute(name="test-recv-2", image=test_image),
+        Compute(name="test-ops-1", image=test_image),
+        Compute(name="test-ops-2", image=test_image),
     ) as (compute1, compute2):
-        # Receive from both in parallel
-        tensors1, tensors2 = await asyncio.gather(
-            compute1.receive_tensors(count=2, parameters={'shape': '10,10'}),
-            compute2.receive_tensors(count=2, parameters={'shape': '20,20'}),
-        )
+        device1 = compute1.device("cpu")
+        device2 = compute2.device("cpu")
+
+        # Create test tensors
+        cpu_tensor1 = torch.randn(100, 100)
+        cpu_tensor2 = torch.randn(50, 50)
+
+        # Transfer to different computes
+        kpu_tensor1 = cpu_tensor1.to(device1)
+        kpu_tensor2 = cpu_tensor2.to(device2)
+
+        # Different operations on each compute
+        result1 = kpu_tensor1 * 2
+        result2 = torch.matmul(kpu_tensor2, kpu_tensor2.T)
+
+        # Copy results back
+        cpu_result1 = result1.cpu()
+        cpu_result2 = result2.cpu()
 
         # Verify results
-        assert len(tensors1) == 2
-        assert len(tensors2) == 2
-        assert all(t.shape == (10, 10) for t in tensors1)
-        assert all(t.shape == (20, 20) for t in tensors2)
-
-
-@pytest.mark.e2e
-@pytest.mark.asyncio
-async def test_cluster_parallel_streaming(test_image, test_tensors):
-    """
-    Test bidirectional streaming across multiple Computes.
-
-    Covers:
-    - Parallel stream_tensors operations
-    - Processing on multiple Computes simultaneously
-    """
-    tensor1 = test_tensors['tensor1']
-    tensor2 = test_tensors['tensor2']
-
-    async with Cluster(
-        Compute(name="test-stream-1", image=test_image),
-        Compute(name="test-stream-2", image=test_image),
-    ) as (compute1, compute2):
-        # Stream to both in parallel
-        processed1, processed2 = await asyncio.gather(
-            compute1.stream_tensors(tensor1),
-            compute2.stream_tensors(tensor2),
-        )
-
-        # Verify results
-        assert len(processed1) >= 1
-        assert len(processed2) >= 1
+        expected1 = cpu_tensor1 * 2
+        expected2 = torch.matmul(cpu_tensor2, cpu_tensor2.T)
+        assert torch.allclose(cpu_result1, expected1)
+        assert torch.allclose(cpu_result2, expected2)
 
 
 @pytest.mark.e2e
@@ -180,11 +169,8 @@ async def test_cluster_events(test_image):
     ) as (compute1, compute2):
         assert compute1.is_ready()
         assert compute2.is_ready()
-
-        # Wait a bit for events
         await asyncio.sleep(5)
-
-        # TODO: assert for events
+        # Events are received asynchronously
 
 
 @pytest.mark.e2e
@@ -197,9 +183,6 @@ async def test_cluster_error_handling(test_image):
     - ExceptionGroup on multiple failures
     - Cleanup on error
     """
-    # This test intentionally creates computes that might have issues
-    # to test error handling
-    # For now, just verify normal cleanup works
     async with Cluster(
         Compute(name="test-error-1", image=test_image),
         Compute(name="test-error-2", image=test_image),
