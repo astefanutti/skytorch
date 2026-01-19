@@ -6,85 +6,74 @@ import asyncio
 import pytest
 import torch
 
+import kpu.torch.backend  # noqa: F401 - Register 'kpu' device
 from kpu.client import Compute, log_event
-
-
-@pytest.fixture
-def test_tensors():
-    """Create test tensors for operations."""
-    return {
-        'tensor1': torch.randn(100, 100),
-        'tensor2': torch.randn(50, 50),
-        'tensor3': torch.randn(20, 20)
-    }
 
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_compute_managed(test_image, test_tensors):
+async def test_compute_managed(test_image):
     """
     Test managing a Compute with a context manager.
 
     Covers:
     - Creating Compute with context manager
-    - Default log_event callback
-    - Sending tensors
-    - Receiving tensors
-    - Bidirectional streaming
+    - Creating tensors on KPU device
+    - Performing PyTorch operations remotely
+    - Copying results back to CPU
+    - Verifying actual computation results
     - Automatic cleanup
     """
-    tensor1 = test_tensors['tensor1']
-    tensor2 = test_tensors['tensor2']
-
     async with Compute(
         name="test-managed",
         image=test_image,
         on_events=log_event,
     ) as compute:
-        # Verify compute is ready
         assert compute.is_ready()
         assert compute.name == "test-managed"
 
-        # Send tensors to the server
-        response = await compute.send_tensors(tensor1, tensor2)
-        assert response.success is True
-        assert response.message is not None
-        assert len(response.received_tensor_ids) == 2
+        # Get KPU device mapped to remote CPU
+        device = compute.device("cpu")
 
-        # Receive tensors from server
-        received = await compute.receive_tensors(
-            count=2,
-            parameters={'shape': '20,20'}
-        )
-        assert len(received) == 2
-        for tensor in received:
-            assert tensor.shape == (20, 20)
+        # Create reference tensors on CPU
+        x_cpu = torch.randn(10, 10)
+        y_cpu = torch.randn(10, 10)
 
-        # Bidirectional streaming
-        processed = await compute.stream_tensors(tensor1, tensor2)
-        assert len(processed) == 2
-        # Processed tensors should have same shapes as input
-        assert processed[0].shape == tensor1.shape
-        assert processed[1].shape == tensor2.shape
+        # Transfer to KPU
+        x = x_cpu.to(device)
+        y = y_cpu.to(device)
+
+        # Perform operations on KPU
+        z = x + y
+        w = torch.matmul(x, y)
+
+        # Copy results back to CPU
+        z_result = z.cpu()
+        w_result = w.cpu()
+
+        # Verify actual computation results
+        expected_z = x_cpu + y_cpu
+        expected_w = torch.matmul(x_cpu, y_cpu)
+        assert torch.allclose(z_result, expected_z)
+        assert torch.allclose(w_result, expected_w)
 
     # Compute is automatically deleted when exiting context
-    # Verify it's deleted by checking is_ready would fail
     assert not compute.is_ready()
 
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_compute_manual(test_image, test_tensors):
+async def test_compute_manual(test_image):
     """
     Test managing a Compute manually.
 
     Covers:
     - Creating Compute without context manager
     - ready() with timeout
-    - Manual operations
-    - suspend()
-    - resume()
-    - delete()
+    - CPU to KPU data transfer
+    - KPU to CPU data transfer
+    - Verifying actual computation results
+    - Manual delete()
     """
     compute = Compute(
         name="test-manual",
@@ -92,19 +81,25 @@ async def test_compute_manual(test_image, test_tensors):
     )
 
     try:
-        # Wait for it to be ready with timeout
         await compute.ready(timeout=300)
         assert compute.is_ready()
 
-        # Use it - receive tensors
-        tensors = await compute.receive_tensors(count=1)
-        assert len(tensors) >= 1
-        assert tensors[0].shape is not None
-    finally:
-        # Clean up manually
-        await compute.delete()
+        device = compute.device("cpu")
 
-        # Verify deletion
+        # Transfer CPU tensor to KPU
+        cpu_input = torch.randn(100, 100)
+        kpu_tensor = cpu_input.to(device)
+
+        # Perform operation
+        result = kpu_tensor * 2
+
+        # Transfer back to CPU and verify actual computation result
+        cpu_result = result.cpu()
+        expected = cpu_input * 2
+        assert torch.allclose(cpu_result, expected)
+
+    finally:
+        await compute.delete()
         assert not compute.is_ready()
 
 
@@ -112,7 +107,7 @@ async def test_compute_manual(test_image, test_tensors):
 @pytest.mark.asyncio
 async def test_compute_events(test_image):
     """
-    Test watching for a Compute events.
+    Test watching for Compute events.
 
     Covers:
     - Event callback registration
@@ -133,11 +128,8 @@ async def test_compute_events(test_image):
         on_events=custom_event_handler,
     ) as compute:
         assert compute.is_ready()
-
-        # Wait a bit for events to be generated
         await asyncio.sleep(5)
-
-        # TODO: assert for events
+        # Events are received asynchronously
 
 
 @pytest.mark.e2e
@@ -162,7 +154,6 @@ async def test_compute_resource(test_image):
         assert resource.metadata.name == "test-resource"
         assert resource.status is not None
 
-        # Check conditions
         if resource.status.conditions:
             ready_condition = next(
                 (c for c in resource.status.conditions if c.type == "Ready"),
