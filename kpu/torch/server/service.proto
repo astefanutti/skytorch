@@ -5,9 +5,9 @@ package kpu.torch;
 // Tensor management service for KPU PyTorch backend
 service Service {
   // Tensor lifecycle management
-  rpc CreateTensor(CreateTensorRequest) returns (CreateTensorResponse);
+  rpc CreateTensor(CreateTensorRequest) returns (TensorResponse);
   rpc UpdateTensor(stream TensorChunk) returns (TensorResponse);
-  rpc GetStorageData(GetStorageDataRequest) returns (stream TensorChunk);
+  rpc GetTensor(GetTensorRequest) returns (stream TensorChunk);
   rpc CopyTensor(CopyTensorRequest) returns (TensorResponse);
 
   // ATen operation execution
@@ -16,7 +16,7 @@ service Service {
 
 // Represents a chunk of serialized tensor data
 message TensorChunk {
-  // Unique identifier for the tensor (used to group chunks)
+  // Tensor ID
   int64 tensor_id = 1;
 
   // Chunk sequence number (for ordering)
@@ -28,18 +28,17 @@ message TensorChunk {
   // Total number of chunks for this tensor (set in first chunk)
   uint32 total_chunks = 4;
 
-  // Indicates if this is the last chunk
-  bool is_last = 5;
-
-  // Optional metadata (shape, dtype, etc.) - included in first chunk
-  map<string, string> metadata = 6;
+  // Tensor info (set on first chunk only)
+  repeated int64 shape = 7;
+  repeated int64 stride = 8;
+  int64 storage_offset = 9;
+  string dtype = 10;
 }
 
 // Response after receiving tensors
 message TensorResponse {
   bool success = 1;
   string message = 2;
-  repeated string received_tensor_ids = 3;
 }
 
 // Request to create a tensor on the server
@@ -54,15 +53,8 @@ message CreateTensorRequest {
   int32 device_index = 8;
 }
 
-// Response after creating a tensor
-message CreateTensorResponse {
-  bool success = 1;
-  string message = 2;
-  int64 tensor_id = 3;
-}
-
 // Request to get tensor data from storage
-message GetStorageDataRequest {
+message GetTensorRequest {
   int64 tensor_id = 1;
   repeated int64 shape = 2;
   string dtype = 3;
@@ -82,13 +74,6 @@ message CopyTensorRequest {
 // Reference to a tensor on the server
 message TensorReference {
   int64 tensor_id = 1;
-  repeated int64 shape = 2;
-  string dtype = 3;
-  int64 nbytes = 4;
-  string device_type = 5;
-  repeated int64 stride = 6;
-  int64 storage_offset = 7;
-  int32 device_index = 8;
 }
 
 // Argument for ATen operations (can be tensor, scalar, or nested structure)

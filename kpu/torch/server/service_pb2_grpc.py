@@ -38,16 +38,16 @@ class ServiceStub(object):
         self.CreateTensor = channel.unary_unary(
                 '/kpu.torch.Service/CreateTensor',
                 request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorRequest.SerializeToString,
-                response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorResponse.FromString,
+                response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
                 _registered_method=True)
         self.UpdateTensor = channel.stream_unary(
                 '/kpu.torch.Service/UpdateTensor',
                 request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorChunk.SerializeToString,
                 response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
                 _registered_method=True)
-        self.GetStorageData = channel.unary_stream(
-                '/kpu.torch.Service/GetStorageData',
-                request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.GetStorageDataRequest.SerializeToString,
+        self.GetTensor = channel.unary_stream(
+                '/kpu.torch.Service/GetTensor',
+                request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.GetTensorRequest.SerializeToString,
                 response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorChunk.FromString,
                 _registered_method=True)
         self.CopyTensor = channel.unary_unary(
@@ -79,7 +79,7 @@ class ServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def GetStorageData(self, request, context):
+    def GetTensor(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -104,16 +104,16 @@ def add_ServiceServicer_to_server(servicer, server):
             'CreateTensor': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateTensor,
                     request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorRequest.FromString,
-                    response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorResponse.SerializeToString,
+                    response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.SerializeToString,
             ),
             'UpdateTensor': grpc.stream_unary_rpc_method_handler(
                     servicer.UpdateTensor,
                     request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorChunk.FromString,
                     response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.SerializeToString,
             ),
-            'GetStorageData': grpc.unary_stream_rpc_method_handler(
-                    servicer.GetStorageData,
-                    request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.GetStorageDataRequest.FromString,
+            'GetTensor': grpc.unary_stream_rpc_method_handler(
+                    servicer.GetTensor,
+                    request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.GetTensorRequest.FromString,
                     response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorChunk.SerializeToString,
             ),
             'CopyTensor': grpc.unary_unary_rpc_method_handler(
@@ -154,7 +154,7 @@ class Service(object):
             target,
             '/kpu.torch.Service/CreateTensor',
             kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorRequest.SerializeToString,
-            kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorResponse.FromString,
+            kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -193,7 +193,7 @@ class Service(object):
             _registered_method=True)
 
     @staticmethod
-    def GetStorageData(request,
+    def GetTensor(request,
             target,
             options=(),
             channel_credentials=None,
@@ -206,8 +206,8 @@ class Service(object):
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/kpu.torch.Service/GetStorageData',
-            kpu_dot_torch_dot_server_dot_service__pb2.GetStorageDataRequest.SerializeToString,
+            '/kpu.torch.Service/GetTensor',
+            kpu_dot_torch_dot_server_dot_service__pb2.GetTensorRequest.SerializeToString,
             kpu_dot_torch_dot_server_dot_service__pb2.TensorChunk.FromString,
             options,
             channel_credentials,

@@ -19,7 +19,7 @@ class TensorMetadata:
     shape: tuple[int, ...]
     dtype: torch.dtype
     nbytes: int  # Total storage size in bytes
-    device_type: str  # Device type (e.g., "kpu", "cuda", "cpu")
+    device_type: str  # Device type (e.g., "cuda", "cpu")
     stride: Optional[tuple[int, ...]] = None
     storage_offset: int = 0
     device_index: int = 0

@@ -119,7 +119,7 @@ class StorageManager:
         """
         return self._storages.get(storage_id)
 
-    def register_tensor(self, tensor: torch.Tensor) -> int:
+    def register(self, tensor: torch.Tensor) -> int:
         """
         Register a tensor with its associated storage.
 
@@ -135,42 +135,27 @@ class StorageManager:
         self._storage_to_tensors[storage_id].add(tensor_id)
         return tensor_id
 
-    def get_storage_for_tensor(self, tensor_id: int) -> Optional[torch.UntypedStorage]:
+    def reference(self, tensor: torch.Tensor) -> Optional[int]:
         """
-        Get the storage associated with a tensor.
+        Get a registered tensor ID for this tensor or its storage.
 
         Args:
-            tensor_id: The tensor ID
+            tensor: The tensor to look up
 
         Returns:
-            The UntypedStorage, or None if not found or garbage collected
+            The tensor's ID if registered, otherwise the first registered
+            tensor ID sharing the same storage, otherwise None
         """
-        return self._tensor_to_storage.get(tensor_id)
+        tensor_id = get_tensor_id(tensor)
+        if tensor_id in self._tensor_to_storage:
+            return tensor_id
 
-    def get_storage_id_for_tensor(self, tensor_id: int) -> Optional[int]:
-        """
-        Get the storage ID associated with a tensor.
+        storage_id = get_storage_id(tensor)
+        tensor_ids = self._storage_to_tensors.get(storage_id)
+        if tensor_ids:
+            return next(iter(tensor_ids))
 
-        Args:
-            tensor_id: The tensor ID
-
-        Returns:
-            The storage ID, or None if not found
-        """
-        storage = self._tensor_to_storage.get(tensor_id)
-        return storage.data_ptr() if storage is not None else None
-
-    def get_tensors_for_storage(self, storage_id: int) -> set[int]:
-        """
-        Get all tensor IDs associated with a storage.
-
-        Args:
-            storage_id: The storage ID
-
-        Returns:
-            Set of tensor IDs (may be empty)
-        """
-        return self._storage_to_tensors.get(storage_id, set())
+        return None
 
 
 # Global storage manager singleton

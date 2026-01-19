@@ -17,7 +17,7 @@ Usage:
 
     # Use with Compute context
     from kpu.client import Compute
-    async with Compute(name="my-compute", image="...") as compute:
+    async with Compute(name="my-compute") as compute:
         device = torch.device("kpu")
         model = MyModel().to(device)
         output = model(input.to(device))

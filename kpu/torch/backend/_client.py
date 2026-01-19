@@ -1,30 +1,29 @@
 """
 KPU Client operations - Async tensor transfer and remote execution.
 
-This module provides async functions for tensor data transfer and
-remote ATen operation execution via gRPC.
+This module provides async functions for tensor data transfer,
+remote ATen operation execution via gRPC, and Compute resolution.
 """
 
 from __future__ import annotations
+
+from typing import Optional
 
 import torch
 
 from kpu.client import Compute
 from kpu.torch.backend._device import device_manager
-from kpu.torch.client.tensor import (
-    get_tensor_id,
-    require_compute,
-    resolve_compute,
-)
+from kpu.torch.backend._storage import storage_manager
+from kpu.torch.client.tensor import get_storage_id, get_tensor_id, get_tensor_metadata
 from kpu.torch.client import TensorClient
-from kpu.torch.client.metadata import TensorMetadata
+from kpu.torch.client.utils import async_map_args_kwargs
 
 
 async def copy_kpu_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     """
     Copy data from a KPU tensor to a CPU tensor.
 
-    Uses get_storage_data to download tensor data from the server.
+    Uses get_tensor to download tensor data from the server.
 
     Args:
         tensor: Source KPU tensor
@@ -35,20 +34,16 @@ async def copy_kpu_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     if tensor.device.type != "kpu":
         raise ValueError("copy_kpu_to_cpu requires a KPU tensor")
 
-    compute = require_compute(tensor)
+    compute = _require_compute(tensor)
     client = _require_client(compute)
 
-    cpu_tensor = await client.get_storage_data(
+    cpu_tensor = await client.get_tensor(
         tensor_id=get_tensor_id(tensor),
         shape=tuple(tensor.shape),
         dtype=tensor.dtype,
         stride=tuple(tensor.stride()),
         storage_offset=tensor.storage_offset(),
     )
-
-    # Ensure the received tensor has the correct shape
-    if cpu_tensor.shape != tensor.shape:
-        cpu_tensor = cpu_tensor.view(tensor.shape)
 
     return cpu_tensor
 
@@ -57,7 +52,9 @@ async def copy_cpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
     """
     Copy data from a CPU tensor to a KPU tensor.
 
-    Uses update_tensor to upload tensor data to the server.
+    Uses update_tensor to upload tensor to the server.
+    If the destination tensor is not registered,
+    creates it first before updating.
 
     Args:
         src: Source CPU tensor
@@ -71,14 +68,11 @@ async def copy_cpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
     if src.device.type != "cpu":
         raise ValueError("copy_cpu_to_kpu requires a CPU source tensor")
 
-    compute = require_compute(dst)
+    compute = _require_compute(dst)
     client = _require_client(compute)
 
-    await client.update_tensor(
-        tensor=src.contiguous(),
-        tensor_id=get_tensor_id(dst),
-        storage_offset=dst.storage_offset(),
-    )
+    await _ensure_tensor_created(dst, client)
+    await client.update_tensor(src=src, tensor_id=get_tensor_id(dst))
 
     return dst
 
@@ -101,8 +95,8 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
     if src.device.type != "kpu" or dst.device.type != "kpu":
         raise ValueError("copy_kpu_to_kpu requires KPU tensors")
 
-    src_compute = resolve_compute(src)
-    dst_compute = resolve_compute(dst)
+    src_compute = _resolve_compute(src)
+    dst_compute = _resolve_compute(dst)
 
     if src_compute is None or dst_compute is None:
         raise RuntimeError(
@@ -134,13 +128,13 @@ async def execute_aten_operation(
     args: tuple,
     kwargs: dict,
     output_tensors: list[torch.Tensor] | None,
-) -> list[TensorMetadata] | None:
+) -> list[int] | None:
     """
     Execute an ATen operation on the remote Compute.
 
     Supports two modes:
     - Pre-allocated outputs: output_tensors provided, writes to them, returns None
-    - Server-created outputs: output_tensors is None, returns list[TensorMetadata]
+    - Server-created outputs: output_tensors is None, returns list[int] (tensor_ids)
 
     Args:
         kpu_device: KPU device to execute on
@@ -150,7 +144,7 @@ async def execute_aten_operation(
         output_tensors: Pre-allocated output tensors, or None for server-created
 
     Returns:
-        None if output_tensors provided, list[TensorMetadata] if server created outputs
+        None if output_tensors provided, list[int] of tensor_ids if server created outputs
 
     Raises:
         RuntimeError: If no Compute registered for the device
@@ -164,12 +158,114 @@ async def execute_aten_operation(
 
     client = _require_client(compute)
 
+    async def process_arg(obj):
+        """Process an argument: register tensors and map devices."""
+        if isinstance(obj, torch.Tensor):
+            if obj.device.type == "kpu":
+                await _ensure_tensor_created(obj, client)
+                return obj
+            elif obj.device.type == "cpu" and obj.dim() == 0:
+                return obj  # CPU scalar tensors are valid
+            else:
+                raise ValueError(
+                    f"Unsupported tensor: {obj.device.type} with dim {obj.dim()}. "
+                    f"Only KPU tensors and 0-dim CPU scalar tensors are allowed."
+                )
+        elif isinstance(obj, torch.device):
+            if obj.type == "kpu":
+                # Map KPU device to remote device
+                info = device_manager.get_remote_device_info(obj.index or 0)
+                return torch.device(info.device_type, info.device_index)
+            return obj
+        return obj
+
+    # Process args/kwargs: register tensors and map devices
+    processed_args, processed_kwargs = await async_map_args_kwargs(
+        process_arg, args, kwargs
+    )
+
     return await client.execute_aten_operation(
         op_name=op_name,
-        args=args,
-        kwargs=kwargs,
+        args=processed_args,
+        kwargs=processed_kwargs,
         output_tensors=output_tensors,
     )
+
+
+async def _ensure_tensor_created(
+        tensor: torch.Tensor,
+        client: TensorClient,
+) -> None:
+    """
+    Ensure a KPU tensor is created on the remote server.
+
+    If the tensor is not already registered, creates it on the server
+    with the appropriate remote device mapping and registers it locally.
+
+    Args:
+        tensor: KPU tensor to create
+        client: TensorClient for gRPC operations
+    """
+    if storage_manager.reference(tensor) is None:
+        metadata = get_tensor_metadata(tensor)
+        # Map local KPU device to remote device
+        remote_info = device_manager.get_remote_device_info(tensor.device.index)
+        metadata.device_type = remote_info.device_type
+        metadata.device_index = remote_info.device_index
+        # Create tensor on server and register it
+        await client.create_tensor(metadata)
+        storage_manager.register(tensor)
+
+
+def _resolve_compute(tensor: torch.Tensor) -> Optional[Compute]:
+    """
+    Resolve the Compute associated with a KPU tensor.
+
+    Resolution order:
+    1. Check if the tensor's storage has an associated Compute
+    2. Fall back to the current context (compute_ctx)
+
+    Args:
+        tensor: A KPU tensor
+
+    Returns:
+        The associated Compute, or None if not found
+    """
+    storage_id = get_storage_id(tensor)
+    storage_info = storage_manager.get(storage_id)
+
+    # First, try storage-associated Compute
+    if storage_info is not None and storage_info.compute is not None:
+        return storage_info.compute
+
+    # Fall back to context
+    from kpu.client.context import compute_ctx
+
+    return compute_ctx.get(None)
+
+
+def _require_compute(tensor: torch.Tensor) -> Compute:
+    """
+    Resolve and require a Compute for a tensor.
+
+    Like resolve_compute but raises if no Compute is available.
+
+    Args:
+        tensor: A KPU tensor
+
+    Returns:
+        The associated Compute
+
+    Raises:
+        RuntimeError: If no Compute context is available
+    """
+    compute = _resolve_compute(tensor)
+    if compute is None:
+        raise RuntimeError(
+            "No Compute context available for KPU tensor operation. "
+            "Ensure you are within an 'async with Compute(...):' block."
+        )
+    return compute
 
 
 def _require_client(compute: Compute) -> TensorClient:

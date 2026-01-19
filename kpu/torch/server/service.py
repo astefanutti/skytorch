@@ -30,7 +30,7 @@ from kpu.torch.server.serialization import (
     TensorAssembler,
     DEFAULT_CHUNK_SIZE,
 )
-from kpu.torch.server.storage import StorageManager
+from kpu.torch.server.tensor import TensorManager
 
 logger = logging.getLogger(__name__)
 
@@ -48,46 +48,49 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             chunk_size: Size of chunks for streaming tensors
         """
         self.chunk_size = chunk_size
-        self.storage = StorageManager()
+        self.tensor_manager = TensorManager()
 
     async def CreateTensor(
         self,
         request: service_pb2.CreateTensorRequest,
         context: grpc.aio.ServicerContext,
-    ) -> service_pb2.CreateTensorResponse:
+    ) -> service_pb2.TensorResponse:
         """
-        Create a tensor on the server (explicit creation).
+        Create a tensor on the server.
 
         Args:
             request: CreateTensorRequest with tensor metadata
             context: gRPC context
 
         Returns:
-            CreateTensorResponse with success status
+            TensorResponse with success status
         """
         try:
             dtype = eval(request.dtype)  # "torch.float32" -> torch.float32
+            device = torch.device(request.device_type, request.device_index)
 
-            self.storage.create(
-                tensor_id=request.tensor_id,
-                nbytes=request.nbytes,
-                dtype=dtype,
-                device_type=request.device_type,
-                device_index=request.device_index,
+            # Create tensor with UntypedStorage and register it
+            storage = torch.UntypedStorage(request.nbytes, device=device)
+            shape = list(request.shape)
+            stride = list(request.stride) if request.stride else None
+            storage_offset = request.storage_offset
+            tensor = torch.empty(0, dtype=dtype, device=device).set_(
+                storage, storage_offset, shape, stride
             )
+            self.tensor_manager.register(request.tensor_id, tensor)
 
             logger.info(
                 f"Created tensor {request.tensor_id} "
                 f"(nbytes={request.nbytes}, dtype={dtype})"
             )
 
-            return service_pb2.CreateTensorResponse(
+            return service_pb2.TensorResponse(
                 success=True,
-                tensor_id=request.tensor_id,
+                message=f"Created tensor {request.tensor_id}",
             )
         except Exception as e:
             logger.error(f"Failed to create tensor: {e}")
-            return service_pb2.CreateTensorResponse(
+            return service_pb2.TensorResponse(
                 success=False,
                 message=str(e),
             )
@@ -98,94 +101,52 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         context: grpc.aio.ServicerContext,
     ) -> service_pb2.TensorResponse:
         """
-        Receive tensor data and update storage (auto-creates if needed).
+        Receive tensor data and update storage.
 
         Args:
             request_iterator: Async iterator of tensor chunks from client
             context: gRPC context
 
         Returns:
-            TensorResponse with success status and received tensor IDs
+            TensorResponse with success status
         """
         assembler = TensorAssembler()
-        received_ids = []
+        tensor_id = None
 
         try:
             async for chunk in request_iterator:
-                metadata = dict(chunk.metadata) if chunk.metadata else {}
-                tensor_id = int(metadata.get("target_tensor_id", "0"))
+                if tensor_id is None:
+                    tensor_id = chunk.tensor_id
 
                 logger.debug(
                     f"Received chunk {chunk.chunk_number}/{chunk.total_chunks} "
                     f"for tensor {tensor_id}"
                 )
 
-                # Convert metadata from proto map to dict
-                chunk_metadata = dict(chunk.metadata) if chunk.metadata else None
-
-                # Add chunk to assembler
-                tensor = assembler.add_chunk(
-                    tensor_id=chunk.tensor_id,
-                    chunk_number=chunk.chunk_number,
-                    data=chunk.data,
-                    total_chunks=chunk.total_chunks,
-                    is_last=chunk.is_last,
-                    metadata=chunk_metadata,
-                )
-
+                tensor = assembler.add_chunk(chunk)
                 if tensor is None:
                     continue
 
-                # Get existing storage or create if it doesn't exist
-                info = self.storage.get(tensor_id)
-                if info is None:
-                    info = self.storage.create(
-                        tensor_id=tensor_id,
-                        nbytes=tensor.untyped_storage().nbytes(),
-                        dtype=tensor.dtype,
-                    )
-                    created = True
-                else:
-                    created = False
+                target = self.tensor_manager.get(tensor_id)
+                target.copy_(tensor.to(target.device))
 
-                # Copy data into storage
-                offset = int(metadata.get("target_storage_offset", "0"))
-                if offset == 0 and info.tensor.numel() == tensor.numel():
-                    # Full tensor update
-                    info.tensor.copy_(tensor.view(-1))
-                else:
-                    # Partial update with offset
-                    info.tensor.view(-1)[
-                        offset : offset + tensor.numel()
-                    ].copy_(tensor.view(-1))
-
-                received_ids.append(str(tensor_id))
-                if created:
-                    logger.info(
-                        f"Created tensor {tensor_id} with shape {tensor.shape}"
-                    )
-                else:
-                    logger.info(
-                        f"Updated tensor {tensor_id} with shape {tensor.shape}"
-                    )
+                logger.info(f"Updated tensor {tensor_id} with shape {tensor.shape}")
 
             return service_pb2.TensorResponse(
                 success=True,
-                message=f"Received {len(received_ids)} tensor(s)",
-                received_tensor_ids=received_ids,
+                message=f"Updated tensor {tensor_id}",
             )
 
         except Exception as e:
-            logger.error(f"Error receiving tensors: {e}")
+            logger.error(f"Error updating tensor {tensor_id}: {e}")
             return service_pb2.TensorResponse(
                 success=False,
                 message=f"Error: {str(e)}",
-                received_tensor_ids=received_ids,
             )
 
-    async def GetStorageData(
+    async def GetTensor(
         self,
-        request: service_pb2.GetStorageDataRequest,
+        request: service_pb2.GetTensorRequest,
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[service_pb2.TensorChunk]:
         """
@@ -204,43 +165,32 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         stride = tuple(request.stride) if request.stride else None
         offset = request.storage_offset
 
-        info = self.storage.get(tensor_id)
-        if info is None:
-            await context.abort(
-                grpc.StatusCode.NOT_FOUND, f"Tensor {tensor_id} not found"
-            )
-            return
-
         try:
+            tensor = self.tensor_manager.get(tensor_id)
+
             # Create view with requested shape/stride
             if stride:
-                tensor = info.tensor.as_strided(shape, stride, offset)
+                tensor = tensor.as_strided(shape, stride, offset)
             else:
                 numel = torch.Size(shape).numel()
-                tensor = info.tensor[offset : offset + numel].view(shape)
+                tensor = tensor[offset : offset + numel].view(shape)
 
             logger.info(f"Sending tensor {tensor_id} with shape {tensor.shape}")
 
             # Stream the tensor data
-            for chunk_data in serialize_tensor_to_chunks(
-                tensor.contiguous(), tensor_id, self.chunk_size
+            for chunk in serialize_tensor_to_chunks(
+                tensor_id, tensor, self.chunk_size
             ):
-                t_id, c_num, data, total, is_last, meta = chunk_data
-
-                chunk = service_pb2.TensorChunk(
-                    tensor_id=t_id,
-                    chunk_number=c_num,
-                    data=data,
-                    total_chunks=total,
-                    is_last=is_last,
+                logger.debug(
+                    f"Sending chunk {chunk.chunk_number}/{chunk.total_chunks} "
+                    f"for tensor {chunk.tensor_id}"
                 )
-
-                if meta:
-                    chunk.metadata.update(meta)
-
-                logger.debug(f"Sending chunk {c_num}/{total} for tensor {t_id}")
                 yield chunk
 
+        except ValueError:
+            await context.abort(
+                grpc.StatusCode.NOT_FOUND, f"Tensor {tensor_id} not found"
+            )
         except Exception as e:
             logger.error(f"Error sending tensor data: {e}")
             await context.abort(grpc.StatusCode.INTERNAL, f"Error: {e}")
@@ -260,16 +210,17 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         Returns:
             TensorResponse with success status
         """
-        src_info = self.storage.get(request.src_tensor_id)
-        dst_info = self.storage.get(request.dst_tensor_id)
-
-        if src_info is None:
+        try:
+            src_tensor = self.tensor_manager.get(request.src_tensor_id)
+        except ValueError:
             return service_pb2.TensorResponse(
                 success=False,
                 message=f"Source tensor {request.src_tensor_id} not found",
             )
 
-        if dst_info is None:
+        try:
+            dst_tensor = self.tensor_manager.get(request.dst_tensor_id)
+        except ValueError:
             return service_pb2.TensorResponse(
                 success=False,
                 message=f"Destination tensor {request.dst_tensor_id} not found",
@@ -277,8 +228,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         try:
             # Copy bytes
-            src_bytes = src_info.tensor.view(torch.uint8)
-            dst_bytes = dst_info.tensor.view(torch.uint8)
+            src_bytes = src_tensor.view(torch.uint8)
+            dst_bytes = dst_tensor.view(torch.uint8)
             num_bytes = (
                 request.num_bytes if request.num_bytes > 0 else src_bytes.numel()
             )
@@ -327,39 +278,31 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             # Get the ATen op
             op = self._get_aten_op(request.op_name)
 
+            logger.info(
+                f"Executing {request.op_name} with {len(args)} args, "
+                f"{len(kwargs)} kwargs"
+            )
+            result = op(*args, **kwargs)
+
+            # Normalize result to list
+            if isinstance(result, torch.Tensor):
+                result_tensors = [result]
+            elif isinstance(result, (tuple, list)):
+                result_tensors = [t for t in result if isinstance(t, torch.Tensor)]
+            else:
+                result_tensors = []
+
             if request.outputs:
-                # Pre-allocated outputs mode
-                outputs = [self._resolve_tensor_ref(ref) for ref in request.outputs]
-
-                logger.info(
-                    f"Executing {request.op_name} with {len(args)} args, "
-                    f"{len(outputs)} pre-allocated outputs, {len(kwargs)} kwargs"
-                )
-
-                if len(outputs) == 1:
-                    op(*args, out=outputs[0], **kwargs)
-                else:
-                    op(*args, out=tuple(outputs), **kwargs)
-
+                # Pre-allocated outputs mode: register results with IDs from request.outputs
+                # for ref, tensor in zip(request.outputs, result_tensors):
+                #     if tensor is not None:
+                #         self.tensor_manager.register(ref.tensor_id, tensor)
                 return service_pb2.ExecuteAtenResponse(success=True)
             else:
-                # Server creates outputs mode
-                logger.info(
-                    f"Executing {request.op_name} with {len(args)} args, "
-                    f"server-created outputs, {len(kwargs)} kwargs"
-                )
-
-                result = op(*args, **kwargs)
-
-                # Convert result to TensorReference list
+                # Server-created outputs mode: register and return references
                 output_refs = []
-                if isinstance(result, torch.Tensor):
-                    output_refs.append(self._tensor_to_ref(result))
-                elif isinstance(result, (tuple, list)):
-                    for t in result:
-                        if isinstance(t, torch.Tensor):
-                            output_refs.append(self._tensor_to_ref(t))
-
+                for tensor in result_tensors:
+                    output_refs.append(self._tensor_to_ref(tensor))
                 return service_pb2.ExecuteAtenResponse(
                     success=True,
                     output_tensors=output_refs,
@@ -374,41 +317,16 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
     def _tensor_to_ref(self, tensor: torch.Tensor) -> service_pb2.TensorReference:
         """Convert a tensor to TensorReference proto."""
-        storage_id = self.storage.register_tensor(tensor)
-        return service_pb2.TensorReference(
-            tensor_id=storage_id,
-            shape=list(tensor.shape),
-            dtype=str(tensor.dtype),
-            nbytes=tensor.untyped_storage().nbytes(),
-            device_type=tensor.device.type,
-            stride=list(tensor.stride()),
-            storage_offset=tensor.storage_offset(),
-            device_index=tensor.device.index or 0,
-        )
-
-    def _resolve_tensor_ref(
-        self, ref: service_pb2.TensorReference
-    ) -> torch.Tensor:
-        """Resolve TensorReference to actual tensor."""
-        info = self.storage.get(ref.tensor_id)
-        if info is None:
-            raise ValueError(f"Tensor {ref.tensor_id} not found")
-
-        shape = tuple(ref.shape)
-        stride = tuple(ref.stride) if ref.stride else None
-
-        if stride:
-            return info.tensor.as_strided(shape, stride, ref.storage_offset)
-
-        numel = torch.Size(shape).numel()
-        return info.tensor[: numel].view(shape)
+        storage_id = tensor.untyped_storage().data_ptr()
+        self.tensor_manager.register(storage_id, tensor)
+        return service_pb2.TensorReference(tensor_id=storage_id)
 
     def _resolve_aten_arg(self, arg: service_pb2.AtenArgument):
         """Resolve an AtenArgument to a Python value, replacing tensor refs."""
         which = arg.WhichOneof("value")
 
         if which == "tensor":
-            return self._resolve_tensor_ref(arg.tensor)
+            return self.tensor_manager.get(arg.tensor.tensor_id)
         elif which == "scalar_float":
             return arg.scalar_float
         elif which == "scalar_int":
@@ -437,14 +355,13 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """Get ATen operator by name.
 
         Args:
-            op_name: Operation name (e.g., "aten::add.Tensor")
+            op_name: Operation name (e.g., "aten.add.Tensor")
 
         Returns:
             The ATen operator callable
         """
-        # op_name format: "aten::add.Tensor"
-        parts = op_name.replace("aten::", "").split(".")
-        op = getattr(torch.ops.aten, parts[0])
-        if len(parts) > 1:
-            op = getattr(op, parts[1])
+        parts = op_name.split(".")
+        op = torch.ops
+        for part in parts:
+            op = getattr(op, part)
         return op

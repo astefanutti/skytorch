@@ -7,37 +7,32 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class TensorChunk(_message.Message):
-    __slots__ = ("tensor_id", "chunk_number", "data", "total_chunks", "is_last", "metadata")
-    class MetadataEntry(_message.Message):
-        __slots__ = ("key", "value")
-        KEY_FIELD_NUMBER: _ClassVar[int]
-        VALUE_FIELD_NUMBER: _ClassVar[int]
-        key: str
-        value: str
-        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    __slots__ = ("tensor_id", "chunk_number", "data", "total_chunks", "shape", "stride", "storage_offset", "dtype")
     TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
     CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
     DATA_FIELD_NUMBER: _ClassVar[int]
     TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
-    IS_LAST_FIELD_NUMBER: _ClassVar[int]
-    METADATA_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    STRIDE_FIELD_NUMBER: _ClassVar[int]
+    STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
     tensor_id: int
     chunk_number: int
     data: bytes
     total_chunks: int
-    is_last: bool
-    metadata: _containers.ScalarMap[str, str]
-    def __init__(self, tensor_id: _Optional[int] = ..., chunk_number: _Optional[int] = ..., data: _Optional[bytes] = ..., total_chunks: _Optional[int] = ..., is_last: bool = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    stride: _containers.RepeatedScalarFieldContainer[int]
+    storage_offset: int
+    dtype: str
+    def __init__(self, tensor_id: _Optional[int] = ..., chunk_number: _Optional[int] = ..., data: _Optional[bytes] = ..., total_chunks: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., dtype: _Optional[str] = ...) -> None: ...
 
 class TensorResponse(_message.Message):
-    __slots__ = ("success", "message", "received_tensor_ids")
+    __slots__ = ("success", "message")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
-    RECEIVED_TENSOR_IDS_FIELD_NUMBER: _ClassVar[int]
     success: bool
     message: str
-    received_tensor_ids: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, success: bool = ..., message: _Optional[str] = ..., received_tensor_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+    def __init__(self, success: bool = ..., message: _Optional[str] = ...) -> None: ...
 
 class CreateTensorRequest(_message.Message):
     __slots__ = ("tensor_id", "shape", "dtype", "nbytes", "device_type", "stride", "storage_offset", "device_index")
@@ -59,17 +54,7 @@ class CreateTensorRequest(_message.Message):
     device_index: int
     def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., device_index: _Optional[int] = ...) -> None: ...
 
-class CreateTensorResponse(_message.Message):
-    __slots__ = ("success", "message", "tensor_id")
-    SUCCESS_FIELD_NUMBER: _ClassVar[int]
-    MESSAGE_FIELD_NUMBER: _ClassVar[int]
-    TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
-    success: bool
-    message: str
-    tensor_id: int
-    def __init__(self, success: bool = ..., message: _Optional[str] = ..., tensor_id: _Optional[int] = ...) -> None: ...
-
-class GetStorageDataRequest(_message.Message):
+class GetTensorRequest(_message.Message):
     __slots__ = ("tensor_id", "shape", "dtype", "stride", "storage_offset")
     TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
     SHAPE_FIELD_NUMBER: _ClassVar[int]
@@ -98,24 +83,10 @@ class CopyTensorRequest(_message.Message):
     def __init__(self, src_tensor_id: _Optional[int] = ..., dst_tensor_id: _Optional[int] = ..., src_offset: _Optional[int] = ..., dst_offset: _Optional[int] = ..., num_bytes: _Optional[int] = ...) -> None: ...
 
 class TensorReference(_message.Message):
-    __slots__ = ("tensor_id", "shape", "dtype", "nbytes", "device_type", "stride", "storage_offset", "device_index")
+    __slots__ = ("tensor_id",)
     TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
-    SHAPE_FIELD_NUMBER: _ClassVar[int]
-    DTYPE_FIELD_NUMBER: _ClassVar[int]
-    NBYTES_FIELD_NUMBER: _ClassVar[int]
-    DEVICE_TYPE_FIELD_NUMBER: _ClassVar[int]
-    STRIDE_FIELD_NUMBER: _ClassVar[int]
-    STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
-    DEVICE_INDEX_FIELD_NUMBER: _ClassVar[int]
     tensor_id: int
-    shape: _containers.RepeatedScalarFieldContainer[int]
-    dtype: str
-    nbytes: int
-    device_type: str
-    stride: _containers.RepeatedScalarFieldContainer[int]
-    storage_offset: int
-    device_index: int
-    def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., device_index: _Optional[int] = ...) -> None: ...
+    def __init__(self, tensor_id: _Optional[int] = ...) -> None: ...
 
 class AtenArgument(_message.Message):
     __slots__ = ("tensor", "scalar_float", "scalar_int", "scalar_bool", "scalar_string", "list_value", "none_value")
