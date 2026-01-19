@@ -476,9 +476,6 @@ def _create_device_module() -> types.ModuleType:
     module.current_stream = current_stream
     module.default_stream = default_stream
 
-    # Device context manager
-    module.device = device
-
     return module
 
 

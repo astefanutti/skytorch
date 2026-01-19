@@ -88,6 +88,11 @@ class Driver:
         """Exchange the current device."""
         return runtime_manager.exchange_device(device_index)
 
+    @register(registry)
+    def set_device_count(self, count: int) -> None:
+        """Set the number of devices."""
+        runtime_manager.set_device_count(count)
+
     # Stream operations
 
     @register(registry)

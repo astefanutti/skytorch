@@ -25,10 +25,6 @@ void register_kpu_guard();
 void register_kpu_allocator();
 void register_kpu_hooks();
 
-// Thread-local current device index
-static thread_local c10::DeviceIndex g_current_device = 0;
-static c10::DeviceIndex g_device_count = 1;
-
 // Method cache for Python callbacks
 // Using PyObject* to avoid destructor issues at Python shutdown
 static std::unordered_map<std::string, PyObject*> g_method_cache;
@@ -110,34 +106,30 @@ void init_driver() {
     g_driver_initialized = true;
 }
 
-// Device management functions
+// Device management functions - delegate to Python
 c10::DeviceIndex device_count() {
-    return g_device_count;
+    py::gil_scoped_acquire acquire;
+    return get_method("device_count")().cast<c10::DeviceIndex>();
 }
 
 c10::DeviceIndex current_device() {
-    return g_current_device;
+    py::gil_scoped_acquire acquire;
+    return get_method("current_device")().cast<c10::DeviceIndex>();
 }
 
 void set_device(c10::DeviceIndex device) {
-    TORCH_CHECK(
-        device >= 0 && device < g_device_count,
-        "Invalid KPU device index: ", device,
-        ", device count: ", g_device_count
-    );
-    g_current_device = device;
+    py::gil_scoped_acquire acquire;
+    get_method("set_device")(device);
 }
 
 void set_device_count(c10::DeviceIndex count) {
-    g_device_count = count;
+    py::gil_scoped_acquire acquire;
+    get_method("set_device_count")(count);
 }
 
 c10::DeviceIndex exchange_device(c10::DeviceIndex device) {
-    auto old_device = g_current_device;
-    if (device >= 0) {
-        set_device(device);
-    }
-    return old_device;
+    py::gil_scoped_acquire acquire;
+    return get_method("exchange_device")(device).cast<c10::DeviceIndex>();
 }
 
 // Initialization function
@@ -192,13 +184,6 @@ PYBIND11_MODULE(_C, m) {
 
     // Initialize the backend
     kpu::init();
-
-    // Expose device management functions to Python
-    m.def("_device_count", &kpu::device_count, "Get number of KPU devices");
-    m.def("_current_device", &kpu::current_device, "Get current KPU device index");
-    m.def("_set_device", &kpu::set_device, "Set current KPU device");
-    m.def("_set_device_count", &kpu::set_device_count, "Set KPU device count");
-    m.def("_exchange_device", &kpu::exchange_device, "Exchange current device");
     m.def("_init", &kpu::init, "Initialize KPU backend");
 
     // RNG and metadata functions

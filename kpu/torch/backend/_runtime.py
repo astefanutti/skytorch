@@ -5,6 +5,7 @@ This module provides the RuntimeManager for managing device state,
 streams, and events for the KPU backend.
 """
 
+import threading
 from collections import defaultdict
 
 
@@ -16,7 +17,7 @@ class RuntimeManager:
     """
 
     def __init__(self):
-        self._current_device: int = 0
+        self._local = threading.local()
         self._device_count: int = 1
         self._current_streams: dict[int, int] = defaultdict(lambda: 0)
         self._stream_registry: dict[int, list[int]] = defaultdict(lambda: [0])
@@ -33,16 +34,16 @@ class RuntimeManager:
 
     def get_device(self) -> int:
         """Get the current device index."""
-        return self._current_device
+        return getattr(self._local, "device", 0)
 
     def set_device(self, device_index: int) -> None:
         """Set the current device."""
         if 0 <= device_index < self._device_count:
-            self._current_device = device_index
+            self._local.device = device_index
 
     def exchange_device(self, device_index: int) -> int:
         """Exchange the current device, returning the previous one."""
-        old_device = self._current_device
+        old_device = self.get_device()
         self.set_device(device_index)
         return old_device
 
