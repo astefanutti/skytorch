@@ -3,6 +3,7 @@
 import functools
 import inspect
 import os
+import re
 from typing import Optional
 
 import torch
@@ -26,6 +27,9 @@ class Compute:
             y = x + 1
             print(y.cpu())
     """
+
+    # Device string parsing pattern
+    _DEVICE_PATTERN = re.compile(r"^([a-zA-Z_]+)(?::(\d+))?$")
 
     def __init__(
         self,
@@ -64,20 +68,52 @@ class Compute:
             await self._grpc_client.__aexit__(exc_type, exc_val, exc_tb)
             self._grpc_client = None
 
-    def device(self, type: str = "cpu", index: int = 0) -> torch.device:
+    def device(self, type: str = "cpu", index: Optional[int] = None) -> torch.device:
         """
         Get a KPU device mapped to this Compute.
 
         Args:
-            type: Remote device type (e.g., "cpu", "cuda")
-            index: Remote device index
+            type: Remote device type, optionally with index (e.g., "cuda", "cuda:0", "cpu")
+            index: Remote device index (default: 0). Cannot be specified if type
+                   already contains an index.
 
         Returns:
             torch.device with type "kpu" and mapped local index
+
+        Raises:
+            RuntimeError: If type contains an index and index is also passed explicitly,
+                          or if the device string format is invalid
+
+        Example:
+            >>> compute = Compute("localhost:50051")
+            >>> device = compute.device("cuda")      # Same as cuda:0
+            >>> device = compute.device("cuda:1")    # Uses index 1
+            >>> device = compute.device("cuda", 1)   # Same as cuda:1
         """
         from kpu.torch.backend._device import device_manager
 
-        return device_manager.get_kpu_device(self, type, index)
+        # Validate and parse device string
+        match = self._DEVICE_PATTERN.match(type)
+        if not match:
+            raise RuntimeError(
+                f"Invalid device string: {type!r}. "
+                f"Expected format: 'device_type' or 'device_type:index'"
+            )
+
+        device_type = match.group(1)
+        parsed_index = match.group(2)
+
+        if parsed_index is not None:
+            if index is not None:
+                raise RuntimeError(
+                    f"type (string) must not include an index because index was "
+                    f"passed explicitly: {type}"
+                )
+            device_index = int(parsed_index)
+        else:
+            device_index = index if index is not None else 0
+
+        return device_manager.get_kpu_device(self, device_type, device_index)
 
 
 def compute(

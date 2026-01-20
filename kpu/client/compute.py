@@ -7,6 +7,7 @@ in Kubernetes and connecting to them via gRPC.
 
 import asyncio
 import logging
+import re
 from typing import Callable, Dict, List, Optional, Self
 
 try:
@@ -94,6 +95,9 @@ class Compute:
     # Condition types
     CONDITION_READY = "Ready"
     CONDITION_SUSPENDED = "Suspended"
+
+    # Device string parsing pattern
+    _DEVICE_PATTERN = re.compile(r"^([a-zA-Z_]+)(?::(\d+))?$")
 
     def __init__(
         self,
@@ -557,9 +561,7 @@ class Compute:
             await self._grpc_client.__aexit__(None, None, None)
             self._grpc_client = None
 
-    # Delegate gRPC tensor streaming methods to TensorClient via GRPCClient
-
-    def device(self, type: str, index: int = 0) -> torch.device:
+    def device(self, type: str, index: Optional[int] = None) -> torch.device:
         """
         Get a torch.Device instance for this Compute resource.
 
@@ -567,21 +569,48 @@ class Compute:
         local KPU device index.
 
         Args:
-            type: Remote device type (e.g., "cuda", "cpu")
-            index: Remote device index (default: 0)
+            type: Remote device type, optionally with index (e.g., "cuda", "cuda:0", "cpu")
+            index: Remote device index (default: 0). Cannot be specified if type
+                   already contains an index.
 
         Returns:
             torch.device instance of type "kpu" with mapped local index
 
+        Raises:
+            RuntimeError: If type contains an index and index is also passed explicitly,
+                          or if the device string format is invalid
+
         Example:
             >>> compute = Compute(name="my-compute")
-            >>> device = compute.device("cuda")
-            >>> device = compute.device("cuda", 0)
+            >>> device = compute.device("cuda")      # Same as cuda:0
+            >>> device = compute.device("cuda:1")    # Uses index 1
+            >>> device = compute.device("cuda", 1)   # Same as cuda:1
             >>> tensor = torch.randn(3, 3, device=device)
         """
         from kpu.torch.backend._device import device_manager
 
-        return device_manager.get_kpu_device(self, type, index)
+        # Validate and parse device string
+        match = self._DEVICE_PATTERN.match(type)
+        if not match:
+            raise RuntimeError(
+                f"Invalid device string: {type!r}. "
+                f"Expected format: 'device_type' or 'device_type:index'"
+            )
+
+        device_type = match.group(1)
+        parsed_index = match.group(2)
+
+        if parsed_index is not None:
+            if index is not None:
+                raise RuntimeError(
+                    f"type (string) must not include an index because index was "
+                    f"passed explicitly: {type}"
+                )
+            device_index = int(parsed_index)
+        else:
+            device_index = index if index is not None else 0
+
+        return device_manager.get_kpu_device(self, device_type, device_index)
 
     async def __aenter__(self) -> Self:
         """
