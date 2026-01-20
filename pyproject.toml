@@ -135,4 +135,5 @@ addopts = [
 markers = [
     "slow: slow tests (deselect with '-m \"not slow\"')",
     "e2e: end-to-end tests (requires a Kubernetes cluster with KPU installed)",
+    "it: integration tests (uses KPU PyTorch server)",
 ]
