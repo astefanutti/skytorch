@@ -1,18 +1,15 @@
 name: build-and-run-e2e-tests
 
 on:
-  push:
+  workflow_run:
+    workflows: ["build-and-run-it-tests"]
+    types:
+      - completed
     branches:
       - main
+  push:
     tags:
       - 'v*'
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
-      - 'LICENSE'
-  pull_request:
-    branches:
-      - main
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -26,6 +23,7 @@ jobs:
   e2e-test:
     name: Run E2E Tests
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     env:
       working-directory: .
 
