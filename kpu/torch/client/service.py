@@ -276,7 +276,8 @@ class TensorClient:
         - torch.Tensor (KPU) → TensorReference with tensor_id
         - torch.Tensor (CPU, scalar) → scalar value
         - bool/int/float/str → scalar values
-        - torch.device/torch.dtype → string
+        - torch.device → string
+        - torch.dtype → scalar_dtype
         - list/tuple → recursive AtenArgumentList
         """
         arg = service_pb2.AtenArgument()
@@ -316,7 +317,7 @@ class TensorClient:
         elif isinstance(value, torch.device):
             arg.scalar_string = str(value)
         elif isinstance(value, torch.dtype):
-            arg.scalar_string = str(value)
+            arg.scalar_dtype = str(value)
         elif isinstance(value, (list, tuple)):
             # Handle nested lists/tuples recursively
             list_arg = service_pb2.AtenArgumentList()

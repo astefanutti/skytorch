@@ -87,6 +87,7 @@ message AtenArgument {
     string scalar_string = 5;
     AtenArgumentList list_value = 6;
     bool none_value = 7;  // Represents Python None
+    string scalar_dtype = 8;  // torch.dtype as string (e.g., "torch.float32")
   }
 }
 

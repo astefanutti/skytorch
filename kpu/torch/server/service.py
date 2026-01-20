@@ -347,6 +347,13 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             return arg.scalar_bool
         elif which == "scalar_string":
             return arg.scalar_string
+        elif which == "scalar_dtype":
+            # Convert dtype string (e.g., "torch.float32") to torch.dtype
+            dtype_str = arg.scalar_dtype
+            if dtype_str.startswith("torch."):
+                dtype_name = dtype_str[6:]  # Remove "torch." prefix
+                return getattr(torch, dtype_name)
+            raise ValueError(f"Invalid dtype string: {dtype_str}")
         elif which == "none_value":
             return None
         elif which == "list_value":
