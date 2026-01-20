@@ -1,15 +1,18 @@
-name: build-and-run-e2e-tests
+name: build-and-run-tests
 
 on:
-  workflow_run:
-    workflows: ["build-and-run-it-tests"]
-    types:
-      - completed
+  push:
     branches:
       - main
-  push:
     tags:
       - 'v*'
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    branches:
+      - main
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -20,10 +23,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  e2e-test:
+  it-tests:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.11
+
+      - name: Install KPU dependencies
+        run: |
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -e ".[test,torch]"
+
+      - name: Build KPU PyTorch Backend
+        run: |
+          python kpu/torch/backend/setup.py build_ext --inplace
+
+      - name: Run Integration tests
+        run: |
+          pytest test/it -v -m it
+
+  e2e-tests:
     name: Run E2E Tests
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    needs: [it-tests]
     env:
       working-directory: .
 

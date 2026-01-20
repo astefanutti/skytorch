@@ -23,7 +23,7 @@ on:
       - 'LICENSE'
 
 jobs:
-  operator_image:
+  operator-image:
     if: github.repository_owner == 'astefanutti'
     name: Build and push operator container image
     runs-on: ubuntu-latest
@@ -101,7 +101,7 @@ jobs:
           cache-to: type=gha,scope=${{ github.ref_name }},mode=max
           provenance: false
 
-  torch_server_image:
+  torch-server-image:
     if: github.repository_owner == 'astefanutti'
     name: Build and push PyTorch server image
     runs-on: ubuntu-latest
