@@ -180,6 +180,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             # Create view with requested shape/stride
             if stride:
                 tensor = tensor.as_strided(shape, stride, offset)
+            elif not shape:
+                # Scalar tensor: access element at offset
+                tensor = tensor.flatten()[offset]
             else:
                 numel = torch.Size(shape).numel()
                 tensor = tensor[offset : offset + numel].view(shape)
@@ -201,7 +204,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 grpc.StatusCode.NOT_FOUND, f"Tensor {tensor_id} not found"
             )
         except Exception as e:
-            logger.error(f"Error sending tensor data: {e}")
+            logger.error(f"Error sending tensor: {e}")
             await context.abort(grpc.StatusCode.INTERNAL, f"Error: {e}")
 
     async def CopyTensor(
