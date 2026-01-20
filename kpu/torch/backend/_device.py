@@ -7,7 +7,6 @@ remote Compute resources and local KPU device indices.
 
 from __future__ import annotations
 
-import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
@@ -21,14 +20,11 @@ if TYPE_CHECKING:
 class RemoteDeviceInfo:
     """Information about a remote device."""
 
-    compute_ref: weakref.ref[Compute]  # Weak reference to Compute
+    # TODO: This should ideally be a weak-reference but it can be garbage collected in some cases
+    #       before the fist tensor is created if a strong reference isn't kept until then.
+    compute: Compute  # Strong reference to Compute
     device_type: str  # Remote device type (e.g., "cuda", "cpu")
     device_index: int  # Remote device index
-
-    @property
-    def compute(self) -> Optional[Compute]:
-        """Get the Compute, or None if it was garbage collected."""
-        return self.compute_ref()
 
 
 class DeviceManager:
@@ -82,7 +78,7 @@ class DeviceManager:
 
         # Store bidirectional mapping
         remote_info = RemoteDeviceInfo(
-            compute_ref=weakref.ref(compute),
+            compute=compute,
             device_type=device_type,
             device_index=device_index,
         )
