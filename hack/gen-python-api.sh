@@ -19,6 +19,9 @@ ROOT_DIR="$(pwd)"
 SWAGGER_CODEGEN_CONF="hack/swagger/config.json"
 SWAGGER_CODEGEN_FILE="hack/swagger/swagger.json"
 
+# Clean up existing generated models
+rm -rf "${PKG_ROOT}/models"
+
 echo "Generating Python API models using ${CONTAINER_RUNTIME}..."
 # We need to add user to allow container override existing files.
 ${CONTAINER_RUNTIME} run --user "$(id -u)":"$(id -g)" --rm \
@@ -28,5 +31,4 @@ ${CONTAINER_RUNTIME} run --user "$(id -u)":"$(id -g)" --rm \
   -c "local/${SWAGGER_CODEGEN_CONF}" \
   -o "local/${API_OUTPUT_PATH}" \
   -p=packageVersion="${API_VERSION}" \
-  --global-property apis,apiTests=false \
   --global-property models,modelTests=false,modelDocs=false
