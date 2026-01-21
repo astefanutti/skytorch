@@ -6,7 +6,13 @@ This module provides a GRPCClient class that encapsulates all gRPC service clien
 """
 
 import logging
+import os
 from typing import Optional
+
+# Suppress gRPC fork warning when using threads
+# Must be set before importing grpc
+# See: https://github.com/grpc/grpc/issues/38703
+os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 
 try:
     import grpc
