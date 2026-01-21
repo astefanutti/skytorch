@@ -196,7 +196,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             # Stream the tensor data
             for chunk in serialize_tensor_to_chunks(
-                tensor_id, tensor, self.chunk_size
+                tensor_id, tensor.cpu().detach(), self.chunk_size
             ):
                 logger.debug(
                     f"Sending chunk {chunk.chunk_number}/{chunk.total_chunks} "
