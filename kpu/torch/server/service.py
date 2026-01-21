@@ -299,9 +299,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             if request.outputs:
                 # Pre-allocated outputs mode: register results with IDs from request.outputs
-                # for ref, tensor in zip(request.outputs, result_tensors):
-                #     if tensor is not None:
-                #         self.tensor_manager.register(ref.tensor_id, tensor)
+                for ref, tensor in zip(request.outputs, result_tensors):
+                    # TODO: check whether it's also an input tensor
+                    if tensor is not None:
+                        self.tensor_manager.register(ref.tensor_id, tensor)
                 return service_pb2.ExecuteAtenResponse(success=True)
             else:
                 # Server-created outputs mode: register and return references
