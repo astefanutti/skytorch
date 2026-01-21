@@ -444,15 +444,15 @@ class Compute:
         """Watch for Events related to this Compute resource and call the callback."""
         logger.debug(f"Starting event watch for Compute {self.namespace}/{self.name}")
 
-        async with aio.ApiClient() as api_client:
+        async with aio.WsApiClient() as api_client:
             core_api = CoreV1Api(api_client)
-            async with Watch(api_client). \
-                    stream(core_api.list_namespaced_event,
-                           namespace=self.namespace,
-                           field_selector=f"involvedObject.kind=Pod",
-                           send_initial_events=False,
-                           resource_version_match="NotOlderThan",
-                           ) as stream:
+            async with Stream(api_client).stream(
+                core_api.list_namespaced_event,
+                namespace=self.namespace,
+                field_selector="involvedObject.kind=Pod",
+                send_initial_events=False,
+                resource_version_match="NotOlderThan",
+            ) as stream:
                 try:
                     async for event in stream:
                         # FIXME: find a better way to only watch for owned Pods events
