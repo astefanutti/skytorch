@@ -112,6 +112,10 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
 
     client = _require_client(src_compute)
 
+    # Ensure both tensors are created on the server
+    await _ensure_tensor_created(src, client)
+    await _ensure_tensor_created(dst, client)
+
     # Use server-side copy for efficiency
     await client.copy_tensor(
         src_tensor_id=get_tensor_id(src),
