@@ -176,7 +176,12 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         try:
             tensor = self.tensor_manager.get(tensor_id)
+        except ValueError:
+            await context.abort(
+                grpc.StatusCode.NOT_FOUND, f"Tensor {tensor_id} not found"
+            )
 
+        try:
             # Create view with requested shape/stride
             if stride:
                 tensor = tensor.as_strided(shape, stride, offset)
@@ -199,10 +204,6 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 )
                 yield chunk
 
-        except ValueError:
-            await context.abort(
-                grpc.StatusCode.NOT_FOUND, f"Tensor {tensor_id} not found"
-            )
         except Exception as e:
             logger.error(f"Error sending tensor: {e}")
             await context.abort(grpc.StatusCode.INTERNAL, f"Error: {e}")
@@ -239,18 +240,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             )
 
         try:
-            # Copy bytes
-            src_bytes = src_tensor.view(torch.uint8)
-            dst_bytes = dst_tensor.view(torch.uint8)
-            num_bytes = (
-                request.num_bytes if request.num_bytes > 0 else src_bytes.numel()
-            )
-            dst_bytes[request.dst_offset : request.dst_offset + num_bytes].copy_(
-                src_bytes[request.src_offset : request.src_offset + num_bytes]
-            )
+            dst_tensor.copy_(src_tensor)
 
             logger.info(
-                f"Copied {num_bytes} bytes from tensor {request.src_tensor_id} "
+                f"Copied tensor {request.src_tensor_id} "
                 f"to tensor {request.dst_tensor_id}"
             )
 
