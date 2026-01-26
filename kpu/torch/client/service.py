@@ -318,6 +318,8 @@ class TensorClient:
             arg.scalar_string = str(value)
         elif isinstance(value, torch.dtype):
             arg.scalar_dtype = str(value)
+        elif isinstance(value, torch.memory_format):
+            arg.scalar_memory_format = str(value)
         elif isinstance(value, (list, tuple)):
             # Handle nested lists/tuples recursively
             list_arg = service_pb2.AtenArgumentList()

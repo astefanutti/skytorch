@@ -348,6 +348,13 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 dtype_name = dtype_str[6:]  # Remove "torch." prefix
                 return getattr(torch, dtype_name)
             raise ValueError(f"Invalid dtype string: {dtype_str}")
+        elif which == "scalar_memory_format":
+            # Convert memory_format string (e.g., "torch.contiguous_format") to torch.memory_format
+            format_str = arg.scalar_memory_format
+            if format_str.startswith("torch."):
+                format_name = format_str[6:]  # Remove "torch." prefix
+                return getattr(torch, format_name)
+            raise ValueError(f"Invalid memory_format string: {format_str}")
         elif which == "none_value":
             return None
         elif which == "list_value":
