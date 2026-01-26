@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from kpu.torch.backend import _async
 from kpu.torch.server import Compute
 
 
@@ -13,6 +14,8 @@ from kpu.torch.server import Compute
 def event_loop():
     """Create an event loop for the test session."""
     loop = asyncio.new_event_loop()
+    # Patch the loop BEFORE pytest starts using it for reentrant support
+    _async.apply(loop)
     yield loop
     loop.close()
 
