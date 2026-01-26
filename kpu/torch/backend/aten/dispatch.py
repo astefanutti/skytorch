@@ -9,6 +9,7 @@ output tensors on the KPU device and executes operations remotely.
 from typing import Any
 
 import torch
+import torch._dynamo  # Pre-import to avoid circular import issues during debugging
 
 from kpu.torch.backend._async import run_async
 from kpu.torch.backend import _client
