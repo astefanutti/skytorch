@@ -1,13 +1,68 @@
 import asyncio
 import os
-import subprocess
-import sys
-import time
+import socket
+import threading
 
+import grpc
 import pytest
 
 from kpu.torch.backend import _async
-from kpu.torch.server import Compute
+from kpu.torch.server import Compute, serve
+
+
+def check_port_available(port: int) -> bool:
+    """Check if a port is available for binding."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("localhost", port))
+            return True
+        except OSError:
+            return False
+
+
+class ServerThread(threading.Thread):
+    """Run gRPC server in a separate thread with its own event loop."""
+
+    def __init__(self, port: int):
+        super().__init__(daemon=True)
+        self.port = port
+        self.server: grpc.aio.Server | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.started = threading.Event()
+        self._stop_event = threading.Event()
+
+    def run(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        try:
+            self.loop.run_until_complete(self._start_server())
+        finally:
+            self.loop.close()
+
+    async def _start_server(self):
+        self.server = grpc.aio.server()
+        # Start serving in background task
+        task = asyncio.create_task(
+            serve(self.server, host="localhost", port=self.port)
+        )
+        # Wait briefly for server to bind, then signal ready
+        await asyncio.sleep(0.5)
+        self.started.set()
+        # Wait for stop signal or termination
+        await task
+
+    def stop(self):
+        if self.server and self.loop and self.loop.is_running():
+            # Schedule stop on the server's event loop
+            future = asyncio.run_coroutine_threadsafe(
+                self.server.stop(grace=0), self.loop
+            )
+            try:
+                future.result(timeout=5)
+            except TimeoutError:
+                pass  # Server stopped, loop may have exited
+        # Wait for thread to finish
+        self.join(timeout=5)
 
 
 @pytest.fixture(scope="session")
@@ -22,30 +77,28 @@ def event_loop():
 
 @pytest.fixture(scope="session")
 def kpu_server():
-    """Start KPU PyTorch server for integration tests."""
+    """Start KPU PyTorch server in-process for integration tests."""
     port = int(os.environ.get("KPU_TEST_PORT", "50052"))
 
-    # Start server subprocess
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "kpu.torch.server", "--port", str(port)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    # Pre-flight check: fail fast if port is in use
+    if not check_port_available(port):
+        pytest.fail(
+            f"Port {port} is already in use. "
+            f"Check for stale processes with: lsof -i :{port}"
+        )
+
+    # Start server in separate thread with its own event loop
+    server_thread = ServerThread(port)
+    server_thread.start()
 
     # Wait for server to be ready
-    time.sleep(2)
-
-    if proc.poll() is not None:
-        stdout, stderr = proc.communicate()
-        raise RuntimeError(
-            f"Server failed to start:\nstdout: {stdout.decode()}\nstderr: {stderr.decode()}"
-        )
+    if not server_thread.started.wait(timeout=10):
+        pytest.fail("Server failed to start within timeout")
 
     yield f"localhost:{port}"
 
-    # Cleanup
-    proc.terminate()
-    proc.wait(timeout=5)
+    # Graceful shutdown
+    server_thread.stop()
 
 
 @pytest.fixture
