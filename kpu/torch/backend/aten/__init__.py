@@ -36,6 +36,10 @@ _kpu_lib_aten.impl("_local_scalar_dense", _local_scalar_dense, dispatch_key="Pri
 # Equality comparison - returns Python bool
 _kpu_lib_aten.impl("equal", _equal, dispatch_key="PrivateUse1")
 
+# Import generated operator registrations
+# This registers all core ATen operators with the KPU fallback wrapper
+from . import ops  # noqa: F401, E402
+
 __all__ = [
     "_kpu_kernel_fallback",
     "_copy_from",
