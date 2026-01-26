@@ -120,7 +120,9 @@ class TensorAssembler:
         tensor = torch.frombuffer(bytearray(data), dtype=dtype)
 
         # Apply shape, stride, storage_offset via as_strided
-        if self.stride:
+        # Note: Use `is not None` instead of truthiness check because empty
+        # stride [] is valid for scalar tensors
+        if self.stride is not None:
             tensor = torch.as_strided(tensor, self.shape, self.stride, self.storage_offset)
         else:
             tensor = tensor.view(self.shape)
