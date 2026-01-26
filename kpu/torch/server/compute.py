@@ -1,12 +1,16 @@
 """Direct Compute for KPU gRPC server."""
 
+import asyncio
 import functools
 import inspect
+import logging
 import os
 import re
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 from kpu.client.grpc import GRPCClient
 
@@ -35,6 +39,7 @@ class Compute:
         self,
         url: str = "",
         name: str = "compute",
+        on_metrics: Optional[Callable[[object], None]] = None,
     ):
         """
         Initialize Compute.
@@ -43,10 +48,13 @@ class Compute:
             url: gRPC server URL (host:port). Defaults to KPU_SERVER_URL
                  environment variable or "localhost:50051".
             name: Name for this compute (used in error messages).
+            on_metrics: Optional callback to receive metrics from this Compute resource.
         """
         self.url = url or os.environ.get("KPU_SERVER_URL", "localhost:50051")
         self.name = name
+        self._on_metrics = on_metrics
         self._grpc_client: Optional[GRPCClient] = None
+        self._metrics_stream_task: Optional[asyncio.Task] = None
 
     def _parse_url(self) -> tuple[str, int]:
         """Parse URL into host and port."""
@@ -55,15 +63,41 @@ class Compute:
             return host, int(port_str)
         return self.url, 50051
 
+    async def _stream_metrics(self):
+        """Stream metrics from this Compute resource and call the callback."""
+        try:
+            async for snapshot in self._grpc_client.metrics.stream_metrics(
+                interval_seconds=1.0,
+            ):
+                self._on_metrics(snapshot)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error streaming metrics: {e}")
+
     async def __aenter__(self) -> "Compute":
         """Connect to the gRPC server."""
         host, port = self._parse_url()
         self._grpc_client = GRPCClient(host=host, port=port)
         await self._grpc_client.__aenter__()
+
+        # Start metrics streaming if callback is provided
+        if self._on_metrics is not None:
+            self._metrics_stream_task = asyncio.create_task(self._stream_metrics())
+
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Disconnect from the gRPC server."""
+        # Cancel metrics stream task if running
+        if self._metrics_stream_task is not None:
+            self._metrics_stream_task.cancel()
+            try:
+                await self._metrics_stream_task
+            except asyncio.CancelledError:
+                pass
+            self._metrics_stream_task = None
+
         if self._grpc_client:
             await self._grpc_client.__aexit__(exc_type, exc_val, exc_tb)
             self._grpc_client = None
@@ -120,6 +154,7 @@ def compute(
     url: str = "localhost:50051",
     *,
     name: str = "compute",
+    on_metrics: Optional[Callable[[object], None]] = None,
 ):
     """
     Decorator that automatically manages a Compute instance lifecycle.
@@ -131,6 +166,7 @@ def compute(
         url: gRPC server URL (host:port). Defaults to KPU_SERVER_URL
              environment variable or "localhost:50051".
         name: Name for this compute (used in error messages).
+        on_metrics: Optional callback to receive metrics from this Compute resource.
 
     Returns:
         Decorator function that wraps async functions.
@@ -166,7 +202,7 @@ def compute(
 
         @functools.wraps(func)
         async def wrapper(*func_args, **func_kwargs):
-            compute_instance = Compute(url=url, name=name)
+            compute_instance = Compute(url=url, name=name, on_metrics=on_metrics)
 
             async with compute_instance as c:
                 if compute_param_name:
