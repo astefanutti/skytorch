@@ -154,6 +154,17 @@ class DeviceManager:
 
         return removed_indices
 
+    def reset(self) -> None:
+        """
+        Reset all device state.
+
+        This clears all device mappings and resets the index counter.
+        Useful for testing to ensure fresh state between tests.
+        """
+        self._local_to_remote.clear()
+        self._remote_to_local.clear()
+        self._next_index = 0
+
 
 # Global device manager instance
 device_manager = DeviceManager()

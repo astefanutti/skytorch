@@ -78,6 +78,21 @@ class RuntimeManager:
         """Check if a device has a primary context."""
         return 0 <= device_index < self._device_count
 
+    def reset(self) -> None:
+        """
+        Reset runtime state.
+
+        This resets device count and clears per-thread state.
+        Useful for testing to ensure fresh state between tests.
+        """
+        self._device_count = 1
+        self._current_streams.clear()
+        self._stream_registry.clear()
+        self._next_stream_id = 1
+        self._next_event_id = 1
+        # Clear thread-local state
+        self._local = threading.local()
+
 
 # Global runtime manager singleton
 runtime_manager = RuntimeManager()

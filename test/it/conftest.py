@@ -75,6 +75,43 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def reset_kpu_state():
+    """
+    Reset KPU device and runtime state before each test.
+
+    This fixture works around a PyTorch autograd engine limitation:
+    PyTorch sizes its internal `device_ready_queues_` once during the first
+    backward() call based on deviceCount(), and never resizes it. Without
+    this reset, each test would get an incrementing device index (0, 1, 2...),
+    but the autograd queues remain sized for device 0 only, causing:
+
+        RuntimeError: 0 <= device.index() && device.index() <
+        static_cast<c10::DeviceIndex>(device_ready_queues_.size())
+        INTERNAL ASSERT FAILED
+
+    To properly reset PyTorch's autograd engine would require:
+    1. Calling Engine::reinitialize() which destroys/reconstructs the engine
+    2. This is only exposed via fork() handling (pthread_atfork)
+    3. Alternative: run tests with pytest --forked for full isolation
+
+    By resetting the device index to 0 between tests, all tests use the same
+    device index that the autograd engine already has queues for.
+    """
+    from kpu.torch.backend._device import device_manager
+    from kpu.torch.backend._runtime import runtime_manager
+
+    # Reset before test
+    device_manager.reset()
+    runtime_manager.reset()
+
+    yield
+
+    # Cleanup after test
+    device_manager.reset()
+    runtime_manager.reset()
+
+
 @pytest.fixture(scope="session")
 def kpu_server():
     """Start KPU PyTorch server in-process for integration tests."""
