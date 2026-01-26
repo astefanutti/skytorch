@@ -188,12 +188,20 @@ async def execute_aten_operation(
         process_arg, args, kwargs
     )
 
-    return await client.execute_aten_operation(
+    result = await client.execute_aten_operation(
         op_name=op_name,
         args=processed_args,
         kwargs=processed_kwargs,
         output_tensors=output_tensors,
     )
+
+    # Register output tensors
+    if output_tensors:
+        for tensor in output_tensors:
+            if tensor is not None:
+                storage_manager.register(tensor)
+
+    return result
 
 
 async def _ensure_tensor_created(
