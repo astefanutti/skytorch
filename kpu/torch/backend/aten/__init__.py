@@ -18,6 +18,7 @@ import torch
 
 from .copy import _copy_from
 from .dispatch import _kpu_kernel_fallback
+from .dynamic import _masked_select, _masked_select_out
 from .scalar import _equal, _local_scalar_dense
 
 # Register fallback for all unspecified operations
@@ -52,6 +53,10 @@ _kpu_lib_aten.impl("_local_scalar_dense", _local_scalar_dense, dispatch_key="Pri
 
 # Equality comparison - returns Python bool
 _kpu_lib_aten.impl("equal", _equal, dispatch_key="PrivateUse1")
+
+# Masked select - has data-dependent output shape
+_kpu_lib_aten.impl("masked_select", _masked_select, dispatch_key="PrivateUse1")
+_kpu_lib_aten.impl("masked_select.out", _masked_select_out, dispatch_key="PrivateUse1")
 
 # Import generated operator registrations
 # This registers all core ATen operators with the KPU fallback wrapper

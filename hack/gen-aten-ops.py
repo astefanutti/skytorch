@@ -217,8 +217,9 @@ def main():
         "slice.Tensor",
         "index.Tensor",
         "index.Tensor_out",
-        "masked_select",
-        "masked_select.out",
+        # TODO
+        # "masked_select",
+        # "masked_select.out",
         # Dropout
         "native_dropout",
         "native_dropout.out",

@@ -548,18 +548,6 @@ _kpu_lib_aten.impl(
 )
 
 _kpu_lib_aten.impl(
-    "masked_select",
-    _kpu_kernel_fallback_wrapper(torch.ops.aten.masked_select.default),
-    dispatch_key="PrivateUse1",
-)
-
-_kpu_lib_aten.impl(
-    "masked_select.out",
-    _kpu_kernel_fallback_wrapper(torch.ops.aten.masked_select.out),
-    dispatch_key="PrivateUse1",
-)
-
-_kpu_lib_aten.impl(
     "max",
     _kpu_kernel_fallback_wrapper(torch.ops.aten.max.default),
     dispatch_key="PrivateUse1",
