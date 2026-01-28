@@ -88,7 +88,8 @@ class TensorClient:
         if not response.success:
             raise RuntimeError(f"Failed to create tensor: {response.message}")
 
-        logger.info(f"Created tensor {metadata.tensor_id} on server")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Created tensor {metadata.tensor_id} on server")
 
     async def update_tensor(
         self,
@@ -107,10 +108,6 @@ class TensorClient:
         """
 
         async def stream_tensor():
-            logger.debug(
-                f"Uploading tensor to {tensor_id} "
-                f"(shape={src.shape}, offset={src.storage_offset()})"
-            )
             for chunk in serialize_tensor_to_chunks(tensor_id, src):
                 yield chunk
 
@@ -121,7 +118,8 @@ class TensorClient:
         if not response.success:
             raise RuntimeError(f"Failed to update tensor: {response.message}")
 
-        logger.info(f"Updated tensor {tensor_id} on server")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Updated tensor {tensor_id} on server")
 
     async def get_tensor(
         self,
@@ -155,24 +153,16 @@ class TensorClient:
             storage_offset=storage_offset,
         )
 
-        logger.debug(
-            f"Downloading tensor {tensor_id} (shape={shape}, dtype={dtype})"
-        )
-
         assembler = TensorAssembler()
 
         async for chunk in self.stub.GetTensor(request, metadata=self.metadata):
-            logger.debug(
-                f"Received chunk {chunk.chunk_number}/{chunk.total_chunks} "
-                f"for tensor {chunk.tensor_id}"
-            )
-
             tensor = assembler.add_chunk(chunk)
-
             if tensor is not None:
-                logger.info(
-                    f"Downloaded tensor {tensor_id} with shape {tensor.shape}"
-                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"Got tensor tensor_id={tensor_id} shape={tensor.shape} "
+                        f"data={tensor.flatten()[:8].tolist()}... from server"
+                    )
                 return tensor
 
         raise RuntimeError(f"Failed to receive tensor from storage {tensor_id}")
@@ -211,7 +201,8 @@ class TensorClient:
         if not response.success:
             raise RuntimeError(f"Failed to copy tensor: {response.message}")
 
-        logger.info(f"Copied tensor {src_tensor_id} -> {dst_tensor_id}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Copied tensor {src_tensor_id} -> {dst_tensor_id}")
 
     async def execute_aten_operation(
         self,
@@ -254,6 +245,20 @@ class TensorClient:
                         service_pb2.TensorReference(tensor_id=get_tensor_id(t))
                     )
 
+        if logger.isEnabledFor(logging.DEBUG):
+            input_tensor_ids = [
+                get_tensor_id(arg)
+                for arg in args
+                if isinstance(arg, torch.Tensor) and arg.device.type == "kpu"
+            ]
+            output_tensor_ids = [
+                get_tensor_id(t) for t in (output_tensors or []) if t is not None
+            ]
+            logger.debug(
+                f"Executing {op_name} | "
+                f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
+            )
+
         response = await self.stub.ExecuteAtenOperation(
             request, metadata=self.metadata
         )
@@ -261,7 +266,8 @@ class TensorClient:
         if not response.success:
             raise RuntimeError(f"ATen operation failed: {response.message}")
 
-        logger.info(f"Executed {op_name} on server")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Executed {op_name}")
 
         if output_tensors is None and response.output_tensors:
             return [ref.tensor_id for ref in response.output_tensors]

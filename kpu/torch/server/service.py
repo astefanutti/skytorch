@@ -88,10 +88,11 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             self.tensor_manager.register(request.tensor_id, tensor)
 
-            logger.info(
-                f"Created tensor {request.tensor_id} "
-                f"(nbytes={request.nbytes}, dtype={dtype})"
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Created tensor {request.tensor_id} "
+                    f"(nbytes={request.nbytes}, dtype={dtype})"
+                )
 
             return service_pb2.TensorResponse(
                 success=True,
@@ -110,7 +111,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         context: grpc.aio.ServicerContext,
     ) -> service_pb2.TensorResponse:
         """
-        Receive tensor data and update storage.
+        Update tensor data and storage.
 
         Args:
             request_iterator: Async iterator of tensor chunks from client
@@ -127,11 +128,6 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 if tensor_id is None:
                     tensor_id = chunk.tensor_id
 
-                logger.debug(
-                    f"Received chunk {chunk.chunk_number}/{chunk.total_chunks} "
-                    f"for tensor {tensor_id}"
-                )
-
                 tensor = assembler.add_chunk(chunk)
                 if tensor is None:
                     continue
@@ -139,7 +135,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 target = self.tensor_manager.get(tensor_id)
                 target.copy_(tensor.to(target.device))
 
-                logger.info(f"Updated tensor {tensor_id} with shape {tensor.shape}")
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Updated tensor {tensor_id} with shape {tensor.shape}")
 
             return service_pb2.TensorResponse(
                 success=True,
@@ -159,7 +156,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[service_pb2.TensorChunk]:
         """
-        Stream tensor data from storage.
+        Get tensor data from storage.
 
         Args:
             request: GetStorageDataRequest with tensor ID and shape info
@@ -182,27 +179,17 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             )
 
         try:
-            # Create view with requested shape/stride
-            if stride:
-                tensor = tensor.as_strided(shape, stride, offset)
-            elif not shape:
-                # Scalar tensor: access element at offset
-                tensor = tensor.flatten()[offset]
-            else:
-                numel = torch.Size(shape).numel()
-                tensor = tensor[offset : offset + numel].view(shape)
-
-            logger.info(f"Sending tensor {tensor_id} with shape {tensor.shape}")
-
             # Stream the tensor data
             for chunk in serialize_tensor_to_chunks(
                 tensor_id, tensor.cpu().detach(), self.chunk_size
             ):
-                logger.debug(
-                    f"Sending chunk {chunk.chunk_number}/{chunk.total_chunks} "
-                    f"for tensor {chunk.tensor_id}"
-                )
                 yield chunk
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Sent tensor tensor_id={tensor_id} shape={tensor.shape} "
+                    f"data={tensor.cpu().flatten()[:8].tolist()}..."
+                )
 
         except Exception as e:
             logger.error(f"Error sending tensor: {e}")
@@ -242,10 +229,11 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         try:
             dst_tensor.copy_(src_tensor)
 
-            logger.info(
-                f"Copied tensor {request.src_tensor_id} "
-                f"to tensor {request.dst_tensor_id}"
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Copied tensor {request.src_tensor_id} "
+                    f"to tensor {request.dst_tensor_id}"
+                )
 
             return service_pb2.TensorResponse(success=True)
 
@@ -283,10 +271,27 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             # Get the ATen op
             op = self._get_aten_op(request.op_name)
 
-            logger.info(
-                f"Executing {request.op_name} with {len(args)} args, "
-                f"{len(kwargs)} kwargs"
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                # Extract input tensor IDs for logging
+                input_tensor_ids = [
+                    arg.tensor.tensor_id
+                    for arg in request.args
+                    if arg.WhichOneof("value") == "tensor"
+                ]
+                output_tensor_ids = [ref.tensor_id for ref in request.outputs]
+                logger.debug(
+                    f"Executing {request.op_name} | "
+                    f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
+                )
+
+                # Log input tensor data for debugging
+                for i, arg in enumerate(args):
+                    if isinstance(arg, torch.Tensor):
+                        logger.debug(
+                            f"Input arg[{i}] shape={arg.shape} "
+                            f"data={arg.cpu().flatten()[:8].tolist()}..."
+                        )
+
             result = op(*args, **kwargs)
 
             # Normalize result to list
@@ -299,9 +304,14 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             if request.outputs:
                 # Pre-allocated outputs mode: register results with IDs from request.outputs
-                for ref, tensor in zip(request.outputs, result_tensors):
+                for i, (ref, tensor) in enumerate(zip(request.outputs, result_tensors)):
                     # TODO: check whether it's also an input tensor
                     if tensor is not None:
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                f"Output[{i}] tensor_id={ref.tensor_id} shape={tensor.shape} "
+                                f"data={tensor.cpu().flatten()[:8].tolist()}..."
+                            )
                         self.tensor_manager.register(ref.tensor_id, tensor)
                 return service_pb2.ExecuteAtenResponse(success=True)
             else:
