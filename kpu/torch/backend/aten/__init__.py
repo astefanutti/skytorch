@@ -12,6 +12,8 @@ then creates output tensors on the KPU device. This allows most PyTorch
 operations to work with KPU tensors automatically.
 """
 
+from typing import Any
+
 import torch
 
 from .copy import _copy_from
@@ -23,6 +25,21 @@ from .scalar import _equal, _local_scalar_dense
 # meta tensor execution to determine output shapes
 _kpu_lib = torch.library.Library("_", "IMPL")
 _kpu_lib.fallback(_kpu_kernel_fallback, dispatch_key="PrivateUse1")
+
+
+def _kpu_autograd_fallback(
+    op: torch._ops.OpOverload, *args: Any, **kwargs: Any
+) -> Any:
+    """Autograd fallback for KPU backend.
+
+    Redispatches to the PrivateUse1 implementation while properly
+    handling autograd context.
+    """
+    with torch._C._AutoDispatchBelowAutograd():
+        return op(*args, **kwargs)
+
+
+_kpu_lib.fallback(_kpu_autograd_fallback, dispatch_key="AutogradPrivateUse1")
 
 # Register specific implementations that need custom handling
 _kpu_lib_aten = torch.library.Library("aten", "IMPL")
@@ -39,10 +56,3 @@ _kpu_lib_aten.impl("equal", _equal, dispatch_key="PrivateUse1")
 # Import generated operator registrations
 # This registers all core ATen operators with the KPU fallback wrapper
 from . import ops  # noqa: F401, E402
-
-__all__ = [
-    "_kpu_kernel_fallback",
-    "_copy_from",
-    "_local_scalar_dense",
-    "_equal",
-]
