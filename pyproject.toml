@@ -53,15 +53,6 @@ test = [
     "pytest-asyncio>=0.21.0",
 ]
 
-torch = [
-    "torch>=2.1.0",
-]
-
-[tool.pip.index-urls]
-# Configure pip to use PyTorch CPU-only index
-# Install with: pip install --extra-index-url https://download.pytorch.org/whl/cpu -e ".[torch]"
-extra = "https://download.pytorch.org/whl/cpu"
-
 [tool.setuptools]
 packages = ["kpu", "kpu.client", "kpu.client.aio", "kpu.server", "kpu.server.health", "kpu.server.metrics", "kpu.server.nvidia", "kpu.torch", "kpu.torch.server", "kpu.torch.client", "kpu.torch.backend", "kpu.torch.backend.aten"]
 

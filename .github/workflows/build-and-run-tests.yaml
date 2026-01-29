@@ -39,13 +39,10 @@ jobs:
         with:
           python-version: 3.11
 
-      - name: Install KPU dependencies
+      - name: Install KPU
         run: |
-          pip install --extra-index-url https://download.pytorch.org/whl/cpu -e ".[test,torch]"
-
-      - name: Build KPU PyTorch Backend
-        run: |
-          python kpu/torch/backend/setup.py build_ext --inplace
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
+          pip install --no-build-isolation -e ".[test]"
 
       - name: Run Integration tests
         run: |
@@ -127,13 +124,10 @@ jobs:
           kubectl wait --for=condition=Available=true --timeout=60s deployment -n kpu-system kpu-operator
           kubectl wait --for=condition=Programmed --timeout=60s gateway -n kpu-system kpu-gateway
 
-      - name: Install KPU dependencies
+      - name: Install KPU
         run: |
-          pip install --extra-index-url https://download.pytorch.org/whl/cpu -e ".[test,torch]"
-
-      - name: Build KPU PyTorch Backend
-        run: |
-          python kpu/torch/backend/setup.py build_ext --inplace
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
+          pip install --no-build-isolation -e ".[test]"
 
       - name: Run E2E tests
         run: |
