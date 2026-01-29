@@ -80,9 +80,4 @@ setup(
     cmdclass={
         "build_ext": BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=True),
     },
-    entry_points={
-        "torch.backends": [
-            "kpu = kpu.torch.backend:_autoload",
-        ],
-    },
 )

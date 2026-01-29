@@ -1,9 +1,3 @@
 """
-KPU PyTorch gRPC client for tensor streaming.
+KPU PyTorch gRPC client.
 """
-
-from kpu.torch.client.service import TensorClient
-
-__all__ = [
-    "TensorClient",
-]

@@ -7,12 +7,6 @@ This package provides:
 - compute: Decorator for automatic Compute lifecycle management
 """
 
-from kpu.torch.server.serialization import (
-    serialize_tensor_to_chunks,
-    TensorAssembler,
-    DEFAULT_CHUNK_SIZE
-)
-
 from kpu.torch.server.service import TensorServicer
 from kpu.torch.server.server import serve
 from kpu.torch.server.compute import Compute, compute

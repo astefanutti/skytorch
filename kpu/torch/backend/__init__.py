@@ -28,6 +28,19 @@ from __future__ import annotations
 import types
 from typing import Optional, Union
 
+
+def _autoload():
+    """
+    Entry point for automatic backend loading via setup.py entry_points.
+
+    This function is called by PyTorch's backend discovery mechanism when
+    the 'kpu' backend is registered in setup.py entry_points.
+
+    NOTE: it must be declared before torch is imported and the 'kpu' backend is loaded.
+    """
+    pass
+
+
 import torch
 
 # Backend name constant
@@ -40,16 +53,6 @@ _has_cpp_extension = False
 # Import driver FIRST - must be available before C++ extension loads
 # The C++ extension will call driver methods via get_method()
 from kpu.torch.backend._driver import driver  # noqa: E402
-
-
-def _autoload():
-    """
-    Entry point for automatic backend loading via setup.py entry_points.
-
-    This function is called by PyTorch's backend discovery mechanism when
-    the 'kpu' backend is registered in setup.py entry_points.
-    """
-    pass  # Registration happens on import
 
 
 def _load_cpp_extension() -> bool:
@@ -527,6 +530,4 @@ from kpu.torch.backend import aten  # noqa: F401, E402
 
 __all__ = [
     "BACKEND_NAME",
-    "is_available",
-    "driver",
 ]

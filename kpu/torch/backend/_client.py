@@ -15,7 +15,7 @@ from kpu.client import Compute
 from kpu.torch.backend._device import device_manager
 from kpu.torch.backend._storage import storage_manager
 from kpu.torch.client.tensor import get_storage_id, get_tensor_id, get_tensor_metadata
-from kpu.torch.client import TensorClient
+from kpu.torch.client.service import TensorClient
 from kpu.torch.client.utils import async_map_args_kwargs
 
 
