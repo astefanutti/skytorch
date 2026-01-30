@@ -211,8 +211,8 @@ async def execute_aten_operation(
 
 
 async def _ensure_tensor_created(
-        tensor: torch.Tensor,
-        client: TensorClient,
+    tensor: torch.Tensor,
+    client: TensorClient,
 ) -> None:
     """
     Ensure a KPU tensor is created on the remote server.
@@ -328,6 +328,9 @@ def _require_client(compute: Compute) -> TensorClient:
     """
     Get the TensorClient from a Compute instance.
 
+    The GRPCClient handles loop-aware channel management internally,
+    returning the appropriate client for the current event loop.
+
     Args:
         compute: The Compute instance
 
@@ -340,7 +343,6 @@ def _require_client(compute: Compute) -> TensorClient:
     if compute._grpc_client is None:
         raise RuntimeError(
             f"Compute '{compute.name}' is not ready. "
-            "The gRPC client has not been initialized. "
-            "Ensure the Compute is ready before performing tensor operations."
+            "The gRPC client has not been initialized."
         )
     return compute._grpc_client.torch

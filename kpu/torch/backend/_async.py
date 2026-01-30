@@ -20,6 +20,11 @@ from typing import Any, Coroutine, TypeVar
 T = TypeVar("T")
 
 
+_thread_local = threading.local()
+
+_patch_lock = threading.Lock()
+
+
 def run_async(coro: Coroutine[Any, Any, T]) -> T:
     """
     Run an async coroutine from synchronous code.
@@ -37,11 +42,20 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
     Returns:
         Result of the coroutine
     """
-    loop = asyncio.get_running_loop()
-
-    # Apply nest_asyncio patch on first call for this loop
-    if not hasattr(loop, '_nest_patched'):
-        apply(loop)
+    try:
+        loop = asyncio.get_running_loop()
+        # Apply patch if needed, thread-safely
+        with _patch_lock:
+            if not hasattr(loop, '_nest_patched'):
+                apply(loop)
+    except RuntimeError:
+        # No running loop - use thread-local loop
+        loop = getattr(_thread_local, 'loop', None)
+        if loop is None:
+            loop = asyncio.new_event_loop()
+            with _patch_lock:
+                apply(loop)
+            _thread_local.loop = loop
 
     return loop.run_until_complete(coro)
 
