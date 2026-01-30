@@ -3,13 +3,17 @@
  *
  * This module implements the memory allocator for the KPU backend.
  * Storage IDs are used as data pointers, avoiding actual memory allocation.
- * The driver is called to manage remote storage.
+ *
+ * IMPORTANT: The allocator is GIL-free to avoid PyTorch 2.10's kHasPyObject
+ * flag being set during tensor creation. Storage registration is deferred
+ * to first tensor use in Python code.
  */
 
 #include <c10/core/Allocator.h>
 #include <c10/core/DeviceType.h>
 #include <pybind11/pybind11.h>
 #include <Python.h>
+#include <atomic>
 
 #include "KpuStorageImpl.h"
 
@@ -20,32 +24,37 @@ namespace kpu {
 // Forward declaration for get_method (defined in Module.cpp)
 py::object get_method(const std::string& name);
 
-// Forward declaration for current device
+// Forward declaration for current device (GIL-free in Module.cpp)
 c10::DeviceIndex current_device();
+
+// Atomic counter for storage IDs (no Python dependency)
+// Starts at 1 to reserve 0 for empty/invalid storage
+static std::atomic<storage_id_t> g_next_storage_id{1};
 
 /**
  * KPU Memory Allocator
  *
  * Uses storage IDs as data pointers instead of allocating actual memory.
- * Calls Python driver for storage creation and deletion.
+ * Storage registration is deferred to first use (lazy allocation).
+ * This keeps allocate() GIL-free to prevent kHasPyObject issues.
  */
 struct KpuAllocator final : public c10::Allocator {
 public:
     KpuAllocator() = default;
 
     c10::DataPtr allocate(size_t nbytes) override {
-        py::gil_scoped_acquire acquire;
+        // NO GIL ACQUISITION - pure C++ operation
+        // This is critical for PyTorch 2.10 compatibility to avoid
+        // the kHasPyObject flag being set during tensor creation
 
         auto curr_device_idx = current_device();
         auto curr_device = c10::Device(c10::DeviceType::PrivateUse1, curr_device_idx);
 
         storage_id_t storage_id = 0;
         if (nbytes > 0) {
-            // Create storage on remote side via driver
-            storage_id = get_method("create_storage")(
-                static_cast<int64_t>(nbytes),
-                static_cast<int>(curr_device_idx)
-            ).cast<storage_id_t>();
+            // Generate storage ID locally with atomic counter
+            // Registration with StorageManager is deferred to first tensor use
+            storage_id = g_next_storage_id.fetch_add(1);
         }
 
         // Store storage ID as data pointer
@@ -60,6 +69,8 @@ public:
     }
 
     static void ReportAndDelete(void* ptr) {
+        // Called when tensor is garbage collected
+        // Safe to call Python here since we're in the destructor path
         if (!ptr || !Py_IsInitialized()) {
             return;
         }
@@ -74,6 +85,8 @@ public:
 
         try {
             storage_id_t storage_id = reinterpret_cast<storage_id_t>(ptr);
+            // free_storage handles both registered and unregistered storage IDs
+            // If storage was never used (lazy allocation), this is a no-op
             get_method("free_storage")(storage_id);
         } catch (const std::exception& e) {
             // Log but don't throw during deletion

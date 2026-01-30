@@ -47,19 +47,14 @@ class Driver:
     # Storage operations
 
     @register(registry)
-    def create_storage(self, nbytes: int, device_index: int) -> int:
-        """Create a new storage allocation."""
-        return storage_manager.create(nbytes, device_index)
-
-    @register(registry)
     def free_storage(self, storage_id: int) -> None:
         """Free a storage allocation."""
-        storage_manager.free(storage_id)
+        storage_manager.free_storage(storage_id)
 
     @register(registry)
     def resize_storage(self, storage_id: int, new_nbytes: int) -> None:
         """Resize a storage allocation."""
-        storage_manager.resize(storage_id, new_nbytes)
+        storage_manager.resize_storage(storage_id, new_nbytes)
 
     # Device operations
 

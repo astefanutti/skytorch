@@ -276,9 +276,6 @@ def main():
         # FIXME
         # "linear",
         # "linear_backward",
-        # Other ops needed for training
-        "detach",
-        "detach_",
     ]
 
     # Filter out any C++ registered operators (safety check)

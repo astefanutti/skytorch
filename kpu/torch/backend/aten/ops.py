@@ -296,18 +296,6 @@ _kpu_lib_aten.impl(
 )
 
 _kpu_lib_aten.impl(
-    "detach",
-    _kpu_kernel_fallback_wrapper(torch.ops.aten.detach.default),
-    dispatch_key="PrivateUse1",
-)
-
-_kpu_lib_aten.impl(
-    "detach_",
-    _kpu_kernel_fallback_wrapper(torch.ops.aten.detach_.default),
-    dispatch_key="PrivateUse1",
-)
-
-_kpu_lib_aten.impl(
     "div.Scalar",
     _kpu_kernel_fallback_wrapper(torch.ops.aten.div.Scalar),
     dispatch_key="PrivateUse1",

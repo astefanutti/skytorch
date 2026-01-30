@@ -106,18 +106,27 @@ void init_driver() {
     g_driver_initialized = true;
 }
 
-// Device management functions - delegate to Python
+// Thread-local current device index (avoids GIL acquisition in current_device)
+// This is critical for PyTorch 2.10 compatibility - the allocator calls
+// current_device() and must be GIL-free to prevent kHasPyObject issues.
+static thread_local c10::DeviceIndex g_current_device = 0;
+
+// Device management functions
 c10::DeviceIndex device_count() {
     py::gil_scoped_acquire acquire;
     return get_method("device_count")().cast<c10::DeviceIndex>();
 }
 
 c10::DeviceIndex current_device() {
-    py::gil_scoped_acquire acquire;
-    return get_method("current_device")().cast<c10::DeviceIndex>();
+    // NO GIL - read from C++ thread-local
+    // This is called by the allocator and must be GIL-free
+    return g_current_device;
 }
 
 void set_device(c10::DeviceIndex device) {
+    // Update C++ thread-local first (GIL-free)
+    g_current_device = device;
+    // Then sync to Python for consistency
     py::gil_scoped_acquire acquire;
     get_method("set_device")(device);
 }
@@ -128,8 +137,13 @@ void set_device_count(c10::DeviceIndex count) {
 }
 
 c10::DeviceIndex exchange_device(c10::DeviceIndex device) {
+    // Exchange in C++ thread-local first
+    auto old = g_current_device;
+    g_current_device = device;
+    // Sync to Python
     py::gil_scoped_acquire acquire;
-    return get_method("exchange_device")(device).cast<c10::DeviceIndex>();
+    get_method("exchange_device")(device);
+    return old;
 }
 
 // Initialization function
