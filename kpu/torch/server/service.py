@@ -89,10 +89,16 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             self.tensor_manager.register(request.tensor_id, tensor)
 
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    f"Created tensor {request.tensor_id} "
-                    f"(nbytes={request.nbytes}, dtype={dtype})"
-                )
+                if request.HasField("tensor_ref"):
+                    logger.debug(
+                        f"Created tensor {request.tensor_id} "
+                        f"(view of {request.tensor_ref}, shape={shape}, dtype={dtype})"
+                    )
+                else:
+                    logger.debug(
+                        f"Created tensor {request.tensor_id} "
+                        f"(nbytes={request.nbytes}, dtype={dtype})"
+                    )
 
             return service_pb2.TensorResponse(
                 success=True,
