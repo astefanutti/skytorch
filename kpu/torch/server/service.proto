@@ -33,6 +33,9 @@ message TensorChunk {
   repeated int64 stride = 8;
   int64 storage_offset = 9;
   string dtype = 10;
+
+  // Total serialized size in bytes (set in first chunk, for pre-allocation)
+  uint64 total_bytes = 11;
 }
 
 // Response after receiving tensors

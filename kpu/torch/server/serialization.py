@@ -2,6 +2,7 @@
 Utilities for serializing and deserializing PyTorch tensors for streaming.
 """
 
+import ctypes
 from typing import Iterator, Optional
 
 from kpu.torch.server.service_pb2 import TensorChunk
@@ -10,6 +11,10 @@ try:
     import torch
 except ImportError:
     raise ImportError("PyTorch is required. Install with: pip install torch")
+
+
+# dtypes that numpy doesn't support
+_NUMPY_UNSUPPORTED_DTYPES = {torch.bfloat16}
 
 
 # Default chunk size for streaming (1MB)
@@ -34,13 +39,25 @@ def serialize_tensor_to_chunks(
     Yields:
         TensorChunk proto messages
     """
-    # Get raw bytes from storage
-    storage = tensor.untyped_storage()
-    serialized_data = bytes(storage)
+    # Make tensor contiguous and serialize efficiently
+    # Detach is needed for tensors that require grad (e.g., nn.Parameter)
+    tensor_contig = tensor.detach().contiguous()
+
+    if tensor.dtype in _NUMPY_UNSUPPORTED_DTYPES:
+        # Use ctypes for dtypes numpy doesn't support (e.g., bfloat16)
+        storage = tensor_contig.untyped_storage()
+        serialized_data = ctypes.string_at(storage.data_ptr(), storage.nbytes())
+    else:
+        # Use numpy for fast memcpy-based serialization
+        serialized_data = tensor_contig.numpy().tobytes()
+
     total_size = len(serialized_data)
 
     # Calculate total number of chunks
     total_chunks = (total_size + chunk_size - 1) // chunk_size
+
+    # Use memoryview for zero-copy slicing
+    mv = memoryview(serialized_data)
 
     # Stream chunks
     offset = 0
@@ -49,7 +66,8 @@ def serialize_tensor_to_chunks(
 
     while offset < total_size:
         end_offset = min(offset + chunk_size, total_size)
-        chunk_data = serialized_data[offset:end_offset]
+        # Zero-copy slice via memoryview, then copy to bytes for protobuf
+        chunk_data = bytes(mv[offset:end_offset])
 
         chunk = TensorChunk(
             tensor_id=tensor_id,
@@ -60,10 +78,11 @@ def serialize_tensor_to_chunks(
 
         # Set tensor metadata on first chunk
         if first_chunk:
-            chunk.shape.extend(tensor.shape)
-            chunk.stride.extend(tensor.stride())
-            chunk.storage_offset = tensor.storage_offset()
-            chunk.dtype = str(tensor.dtype)
+            chunk.total_bytes = total_size
+            chunk.shape.extend(tensor_contig.shape)
+            chunk.stride.extend(tensor_contig.stride())
+            chunk.storage_offset = tensor_contig.storage_offset()
+            chunk.dtype = str(tensor_contig.dtype)
             first_chunk = False
 
         yield chunk
@@ -76,7 +95,9 @@ class TensorAssembler:
     """Assembles tensor chunks back into a complete tensor."""
 
     def __init__(self):
-        self.chunks: dict[int, bytes] = {}
+        self._buffer: bytearray | None = None
+        self._chunks_received: int = 0
+        self._chunk_size: int = 0
         self.total_chunks: int | None = None
         self.shape: list[int] | None = None
         self.stride: list[int] | None = None
@@ -93,31 +114,34 @@ class TensorAssembler:
         Returns:
             Complete tensor if all chunks received, None otherwise
         """
-        # On first chunk, capture metadata
-        if self.total_chunks is None:
+        if self._buffer is None:
+            # Pre-allocate buffer on first chunk
+            self._buffer = bytearray(chunk.total_bytes)
+            self._chunk_size = len(chunk.data)
             self.total_chunks = chunk.total_chunks
             self.shape = list(chunk.shape)
             self.stride = list(chunk.stride)
             self.storage_offset = chunk.storage_offset
             self.dtype = chunk.dtype
 
-        self.chunks[chunk.chunk_number] = chunk.data
+        # Write directly into buffer at correct offset
+        start = chunk.chunk_number * self._chunk_size
+        end = start + len(chunk.data)
+        self._buffer[start:end] = chunk.data
 
-        if len(self.chunks) == self.total_chunks:
+        self._chunks_received += 1
+        if self._chunks_received == self.total_chunks:
             return self._assemble_tensor()
 
         return None
 
     def _assemble_tensor(self) -> torch.Tensor:
         """Assemble all chunks into a complete tensor."""
-        # Reconstruct serialized data in correct order
-        data = b''.join(self.chunks[i] for i in sorted(self.chunks.keys()))
-
         # Get metadata
         dtype = eval(self.dtype)  # "torch.float32" -> torch.float32
 
-        # Create tensor from raw bytes
-        tensor = torch.frombuffer(bytearray(data), dtype=dtype)
+        # Zero-copy tensor from pre-allocated buffer
+        tensor = torch.frombuffer(self._buffer, dtype=dtype)
 
         # Apply shape, stride, storage_offset via as_strided
         # Note: Use `is not None` instead of truthiness check because empty

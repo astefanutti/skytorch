@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "grpcio>=1.60.0",
     "kubernetes>=33.0.0",
+    "numpy>=2.0.0",
     "protobuf>=6.31.0",
     "aiohttp>=3.9.0,<4.0.0",
     "pydantic>=2.10.0",

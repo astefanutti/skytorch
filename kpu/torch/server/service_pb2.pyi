@@ -7,7 +7,7 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class TensorChunk(_message.Message):
-    __slots__ = ("tensor_id", "chunk_number", "data", "total_chunks", "shape", "stride", "storage_offset", "dtype")
+    __slots__ = ("tensor_id", "chunk_number", "data", "total_chunks", "shape", "stride", "storage_offset", "dtype", "total_bytes")
     TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
     CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
     DATA_FIELD_NUMBER: _ClassVar[int]
@@ -16,6 +16,7 @@ class TensorChunk(_message.Message):
     STRIDE_FIELD_NUMBER: _ClassVar[int]
     STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
     DTYPE_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
     tensor_id: int
     chunk_number: int
     data: bytes
@@ -24,7 +25,8 @@ class TensorChunk(_message.Message):
     stride: _containers.RepeatedScalarFieldContainer[int]
     storage_offset: int
     dtype: str
-    def __init__(self, tensor_id: _Optional[int] = ..., chunk_number: _Optional[int] = ..., data: _Optional[bytes] = ..., total_chunks: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., dtype: _Optional[str] = ...) -> None: ...
+    total_bytes: int
+    def __init__(self, tensor_id: _Optional[int] = ..., chunk_number: _Optional[int] = ..., data: _Optional[bytes] = ..., total_chunks: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., dtype: _Optional[str] = ..., total_bytes: _Optional[int] = ...) -> None: ...
 
 class TensorResponse(_message.Message):
     __slots__ = ("success", "message")
