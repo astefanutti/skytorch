@@ -2,7 +2,11 @@
 Unified gRPC client that manages a single channel shared by multiple service clients.
 
 This module provides a GRPCClient class that encapsulates all gRPC service clients
-(TensorClient, MetricsClient, etc.) and manages a single shared channel for efficiency.
+(TensorClient, MetricsClient, etc.) and manages channels with thread-safe isolation.
+
+gRPC async channels have thread affinity - they must be used from the thread where
+they were created. This module handles multi-threaded access (e.g., PyTorch autograd,
+DataLoader workers, debuggers) by maintaining thread-local channels.
 """
 
 import asyncio
@@ -25,67 +29,20 @@ from grpc.aio._typing import MetadataType
 
 logger = logging.getLogger(__name__)
 
-
-class LoopAwareClientPool:
-    """
-    Manages gRPC channels across multiple event loops/threads.
-
-    gRPC async channels are bound to the event loop they were created on.
-    When accessed from a different loop (e.g., DataLoader worker threads),
-    we need separate channels for each loop.
-    """
-
-    def __init__(self, address: str, metadata: Optional[MetadataType] = None):
-        self._address = address
-        self._metadata = metadata
-        self._primary_channel: Optional[grpc.aio.Channel] = None
-        self._primary_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._secondary_channels: dict[int, grpc.aio.Channel] = {}
-        self._lock = threading.Lock()
-
-    async def connect(self) -> None:
-        """Initialize the primary channel on the current event loop."""
-        self._primary_channel = grpc.aio.insecure_channel(self._address)
-        self._primary_loop = asyncio.get_running_loop()
-
-    def get_channel(self) -> grpc.aio.Channel:
-        """Get a channel for the current event loop."""
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return self._primary_channel
-
-        if current_loop is self._primary_loop:
-            return self._primary_channel
-
-        loop_id = id(current_loop)
-        with self._lock:
-            if loop_id not in self._secondary_channels:
-                self._secondary_channels[loop_id] = grpc.aio.insecure_channel(
-                    self._address
-                )
-            return self._secondary_channels[loop_id]
-
-    async def close(self) -> None:
-        """Close all channels (primary and secondary)."""
-        if self._primary_channel is not None:
-            await self._primary_channel.close()
-            self._primary_channel = None
-            self._primary_loop = None
-
-        with self._lock:
-            for channel in self._secondary_channels.values():
-                await channel.close()
-            self._secondary_channels.clear()
+# Suppress asyncio errors from gRPC poller during debugging
+# (BlockingIOError when debugger pauses the event loop)
+logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 
 
 class GRPCClient:
     """
-    Unified gRPC client that manages a single channel shared by all service clients.
+    Thread-safe gRPC client with automatic thread-local channel isolation.
 
     This class provides access to different gRPC service clients (tensor, metrics, etc.)
-    while reusing the same underlying gRPC channel for efficiency. Handles multi-threaded
-    access by maintaining separate channels per event loop.
+    while handling multi-threaded access safely. When accessed from the same event loop
+    where the client was created, it uses the primary channel. When accessed from other
+    threads (e.g., PyTorch autograd, DataLoader workers), it automatically creates
+    thread-local channels to avoid contention.
 
     Example:
         >>> async with GRPCClient(host="localhost", port=50051) as client:
@@ -112,22 +69,40 @@ class GRPCClient:
         """
         self.address = f'{host}:{port}'
         self.metadata = metadata
-        self._pool: Optional[LoopAwareClientPool] = None
-        self._tensor_clients: dict[int, object] = {}
-        self._metrics_clients: dict[int, object] = {}
-        self._lock = threading.Lock()
 
-    def _get_loop_id(self) -> int:
-        """Get the current event loop ID, or 0 if no loop is running."""
+        # Primary channel (created in __aenter__, used by main thread/loop)
+        self._primary_channel: Optional[grpc.aio.Channel] = None
+        self._primary_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._primary_tensor_client = None
+        self._primary_metrics_client = None
+
+        # Thread-local storage for secondary channels (worker threads)
+        self._thread_local = threading.local()
+
+    def _is_primary_loop(self) -> bool:
+        """Check if we're on the primary event loop where the client was created."""
+        if self._primary_loop is None:
+            return False
         try:
-            return id(asyncio.get_running_loop())
+            return asyncio.get_running_loop() is self._primary_loop
         except RuntimeError:
-            return 0
+            return False
+
+    def _get_thread_local_channel(self) -> grpc.aio.Channel:
+        """Get or create a thread-local channel for the current thread."""
+        channel = getattr(self._thread_local, 'channel', None)
+        if channel is None:
+            channel = grpc.aio.insecure_channel(self.address)
+            self._thread_local.channel = channel
+        return channel
 
     @property
     def channel(self) -> grpc.aio.Channel:
         """
-        Get the gRPC channel for the current event loop.
+        Get a gRPC channel appropriate for the current thread.
+
+        Returns the primary channel when on the main event loop, or a
+        thread-local channel when called from other threads.
 
         Returns:
             The gRPC channel
@@ -135,78 +110,115 @@ class GRPCClient:
         Raises:
             RuntimeError: If the client is not connected
         """
-        if self._pool is None:
+        if self._primary_channel is None:
             raise RuntimeError(
                 "GRPCClient is not connected. Use 'async with GRPCClient(...)' "
                 "or call __aenter__() first."
             )
-        return self._pool.get_channel()
+
+        if self._is_primary_loop():
+            return self._primary_channel
+
+        return self._get_thread_local_channel()
 
     @property
     def torch(self):
         """
-        Get the PyTorch tensor service client for the current event loop.
+        Get the PyTorch tensor service client for the current thread.
 
         Returns:
-            TensorClient instance using the loop-appropriate channel
+            TensorClient instance using a thread-appropriate channel
 
         Raises:
             RuntimeError: If the client is not connected
         """
-        loop_id = self._get_loop_id()
-        with self._lock:
-            if loop_id not in self._tensor_clients:
-                # Lazy import to avoid circular dependencies
-                from kpu.torch.client.service import TensorClient
+        if self._primary_channel is None:
+            raise RuntimeError(
+                "GRPCClient is not connected. Use 'async with GRPCClient(...)' "
+                "or call __aenter__() first."
+            )
 
-                self._tensor_clients[loop_id] = TensorClient(
-                    channel=self.channel,
+        if self._is_primary_loop():
+            if self._primary_tensor_client is None:
+                from kpu.torch.client.service import TensorClient
+                self._primary_tensor_client = TensorClient(
+                    channel=self._primary_channel,
                     metadata=self.metadata
                 )
-            return self._tensor_clients[loop_id]
+            return self._primary_tensor_client
+
+        # Thread-local client
+        client = getattr(self._thread_local, 'tensor_client', None)
+        if client is None:
+            from kpu.torch.client.service import TensorClient
+            client = TensorClient(
+                channel=self._get_thread_local_channel(),
+                metadata=self.metadata
+            )
+            self._thread_local.tensor_client = client
+        return client
 
     @property
     def metrics(self):
         """
-        Get the metrics service client for the current event loop.
+        Get the metrics service client for the current thread.
 
         Returns:
-            MetricsClient instance using the loop-appropriate channel
+            MetricsClient instance using a thread-appropriate channel
 
         Raises:
             RuntimeError: If the client is not connected
         """
-        loop_id = self._get_loop_id()
-        with self._lock:
-            if loop_id not in self._metrics_clients:
-                # Lazy import to avoid circular dependencies
-                from kpu.client.metrics import MetricsClient
+        if self._primary_channel is None:
+            raise RuntimeError(
+                "GRPCClient is not connected. Use 'async with GRPCClient(...)' "
+                "or call __aenter__() first."
+            )
 
-                self._metrics_clients[loop_id] = MetricsClient(
-                    channel=self.channel,
+        if self._is_primary_loop():
+            if self._primary_metrics_client is None:
+                from kpu.client.metrics import MetricsClient
+                self._primary_metrics_client = MetricsClient(
+                    channel=self._primary_channel,
                     metadata=self.metadata
                 )
-            return self._metrics_clients[loop_id]
+            return self._primary_metrics_client
+
+        # Thread-local client
+        client = getattr(self._thread_local, 'metrics_client', None)
+        if client is None:
+            from kpu.client.metrics import MetricsClient
+            client = MetricsClient(
+                channel=self._get_thread_local_channel(),
+                metadata=self.metadata
+            )
+            self._thread_local.metrics_client = client
+        return client
 
     async def __aenter__(self):
         """
-        Async context manager entry: create the gRPC channel pool.
+        Async context manager entry: create the primary gRPC channel.
 
         Returns:
             Self
         """
         logger.debug(f"Connecting to gRPC server at {self.address}")
-        self._pool = LoopAwareClientPool(self.address, self.metadata)
-        await self._pool.connect()
+        self._primary_channel = grpc.aio.insecure_channel(self.address)
+        self._primary_loop = asyncio.get_running_loop()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """
-        Async context manager exit: close all gRPC channels.
+        Async context manager exit: close the primary gRPC channel.
+
+        Note: Thread-local channels are not explicitly closed as they are
+        managed by their respective threads and will be cleaned up when
+        the threads terminate.
         """
-        if self._pool is not None:
+        if self._primary_channel is not None:
             logger.debug(f"Closing gRPC connection to {self.address}")
-            await self._pool.close()
-            self._pool = None
-            self._tensor_clients.clear()
-            self._metrics_clients.clear()
+            await self._primary_channel.close()
+            self._primary_channel = None
+            self._primary_loop = None
+            self._primary_tensor_client = None
+            self._primary_metrics_client = None

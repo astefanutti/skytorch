@@ -328,8 +328,8 @@ def _require_client(compute: Compute) -> TensorClient:
     """
     Get the TensorClient from a Compute instance.
 
-    The GRPCClient handles loop-aware channel management internally,
-    returning the appropriate client for the current event loop.
+    The GRPCClient handles thread-local channel management internally,
+    returning the appropriate client for the current thread.
 
     Args:
         compute: The Compute instance
