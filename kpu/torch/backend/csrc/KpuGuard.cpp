@@ -21,6 +21,7 @@ py::object get_method(const std::string& name);
 c10::DeviceIndex device_count();
 c10::DeviceIndex current_device();
 void set_device(c10::DeviceIndex device);
+c10::DeviceIndex exchange_device(c10::DeviceIndex device);
 
 /**
  * KPU Device Guard Implementation
@@ -37,15 +38,16 @@ struct KpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
         TORCH_INTERNAL_ASSERT(t == static_type);
     }
 
+    // Device management
+
     c10::DeviceType type() const override {
         return c10::DeviceType::PrivateUse1;
     }
 
     c10::Device exchangeDevice(c10::Device d) const override {
         TORCH_INTERNAL_ASSERT(d.is_privateuseone());
-        py::gil_scoped_acquire acquire;
-        auto old_device_index =
-            get_method("exchange_device")(d.index()).cast<c10::DeviceIndex>();
+        // Use C++ exchange_device() to update both C++ thread-local and Python
+        auto old_device_index = exchange_device(d.index());
         return c10::Device(static_type, old_device_index);
     }
 
@@ -55,20 +57,26 @@ struct KpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
 
     void setDevice(c10::Device d) const override {
         TORCH_INTERNAL_ASSERT(d.is_privateuseone());
-        py::gil_scoped_acquire acquire;
-        get_method("set_device")(d.index());
+        // Use C++ set_device() to update both C++ thread-local and Python
+        set_device(d.index());
     }
 
     void uncheckedSetDevice(c10::Device d) const noexcept override {
         if (d.index() >= 0 && d.index() < device_count()) {
-            py::gil_scoped_acquire acquire;
             try {
-                get_method("set_device")(d.index());
+                // Use C++ set_device() to update both C++ thread-local and Python
+                set_device(d.index());
             } catch (...) {
                 // Ignore errors in unchecked version
             }
         }
     }
+
+    c10::DeviceIndex deviceCount() const noexcept override {
+        return device_count();
+    }
+
+    // stream management
 
     c10::Stream getStream(c10::Device d) const noexcept override {
         py::gil_scoped_acquire acquire;
@@ -108,17 +116,12 @@ struct KpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
         }
     }
 
-    c10::DeviceIndex deviceCount() const noexcept override {
-        return device_count();
-    }
-
-    // Synchronize stream
     void synchronizeStream(const c10::Stream& stream) const override {
         py::gil_scoped_acquire acquire;
         get_method("synchronize_stream")(stream.id(), stream.device().index());
     }
 
-    // Event handling
+    // Event management
 
     void createEvent(
         void** event,
