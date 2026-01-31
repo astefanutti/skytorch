@@ -1,0 +1,4 @@
+include VERSION.md
+include README.md
+include setup.py
+recursive-include kpu/torch/backend/csrc *.cpp *.h
