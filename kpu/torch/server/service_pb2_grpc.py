@@ -55,6 +55,11 @@ class ServiceStub(object):
                 request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.CopyTensorRequest.SerializeToString,
                 response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
                 _registered_method=True)
+        self.DeleteTensors = channel.unary_unary(
+                '/kpu.torch.Service/DeleteTensors',
+                request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.DeleteTensorsRequest.SerializeToString,
+                response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
+                _registered_method=True)
         self.ExecuteAtenOperation = channel.unary_unary(
                 '/kpu.torch.Service/ExecuteAtenOperation',
                 request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.ExecuteAtenRequest.SerializeToString,
@@ -91,6 +96,12 @@ class ServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DeleteTensors(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ExecuteAtenOperation(self, request, context):
         """ATen operation execution
         """
@@ -119,6 +130,11 @@ def add_ServiceServicer_to_server(servicer, server):
             'CopyTensor': grpc.unary_unary_rpc_method_handler(
                     servicer.CopyTensor,
                     request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.CopyTensorRequest.FromString,
+                    response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.SerializeToString,
+            ),
+            'DeleteTensors': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteTensors,
+                    request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.DeleteTensorsRequest.FromString,
                     response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.SerializeToString,
             ),
             'ExecuteAtenOperation': grpc.unary_unary_rpc_method_handler(
@@ -235,6 +251,33 @@ class Service(object):
             target,
             '/kpu.torch.Service/CopyTensor',
             kpu_dot_torch_dot_server_dot_service__pb2.CopyTensorRequest.SerializeToString,
+            kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteTensors(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/kpu.torch.Service/DeleteTensors',
+            kpu_dot_torch_dot_server_dot_service__pb2.DeleteTensorsRequest.SerializeToString,
             kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
             options,
             channel_credentials,

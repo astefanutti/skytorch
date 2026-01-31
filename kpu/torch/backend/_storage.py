@@ -96,14 +96,20 @@ class StorageManager:
 
         Handles both registered and unregistered storage IDs.
         If the storage was never used (lazy allocation), this is a no-op.
+        Notifies the server to delete associated tensors.
 
         Args:
             storage_id: ID of the storage to free
         """
-        # Handle both registered and unregistered storage IDs
-        # If not registered, the tensor was never used (lazy allocation)
-        if storage_id in self._storages:
-            del self._storages[storage_id]
+        tensor_ids = list(self._storage_to_tensors.pop(storage_id, set()))
+        info = self._storages.pop(storage_id, None)
+        if info is None or not tensor_ids:
+            return
+
+        from kpu.torch.backend._async import run_async
+        from kpu.torch.backend._client import delete_tensors
+
+        run_async(delete_tensors(info.compute, tensor_ids))
 
     def resize_storage(self, storage_id: int, new_nbytes: int) -> None:
         """

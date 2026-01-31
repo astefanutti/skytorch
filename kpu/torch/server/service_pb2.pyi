@@ -6,6 +6,12 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class DeleteTensorsRequest(_message.Message):
+    __slots__ = ("tensor_ids",)
+    TENSOR_IDS_FIELD_NUMBER: _ClassVar[int]
+    tensor_ids: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, tensor_ids: _Optional[_Iterable[int]] = ...) -> None: ...
+
 class TensorChunk(_message.Message):
     __slots__ = ("tensor_id", "chunk_number", "data", "total_chunks", "shape", "stride", "storage_offset", "dtype", "total_bytes")
     TENSOR_ID_FIELD_NUMBER: _ClassVar[int]

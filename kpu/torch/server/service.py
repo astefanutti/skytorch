@@ -250,6 +250,34 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 message=str(e),
             )
 
+    async def DeleteTensors(
+        self,
+        request: service_pb2.DeleteTensorsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> service_pb2.TensorResponse:
+        """
+        Delete tensors by ID.
+
+        Args:
+            request: DeleteTensorsRequest with tensor IDs to delete
+            context: gRPC context
+
+        Returns:
+            TensorResponse with success status
+        """
+        deleted = 0
+        for tensor_id in request.tensor_ids:
+            if self.tensor_manager.delete(tensor_id):
+                deleted += 1
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Deleted {deleted} tensors")
+
+        return service_pb2.TensorResponse(
+            success=True,
+            message=f"Deleted {deleted} tensors",
+        )
+
     async def ExecuteAtenOperation(
         self,
         request: service_pb2.ExecuteAtenRequest,

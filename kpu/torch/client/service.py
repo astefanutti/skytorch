@@ -167,6 +167,25 @@ class TensorClient:
 
         raise RuntimeError(f"Failed to receive tensor from storage {tensor_id}")
 
+    async def delete_tensors(self, tensor_ids: list[int]) -> None:
+        """
+        Delete tensors on the server.
+
+        Args:
+            tensor_ids: List of tensor IDs to delete
+
+        Raises:
+            RuntimeError: If deletion fails
+        """
+        request = service_pb2.DeleteTensorsRequest(tensor_ids=tensor_ids)
+        response = await self.stub.DeleteTensors(request, metadata=self.metadata)
+
+        if not response.success:
+            raise RuntimeError(f"Failed to delete tensors: {response.message}")
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Deleted {len(tensor_ids)} tensors on server")
+
     async def copy_tensor(
         self,
         src_tensor_id: int,

@@ -45,18 +45,19 @@ class TensorManager:
             logger.warning(f"Tensor {tensor_id} already exists!")
         self._tensors[tensor_id] = tensor
 
-    def delete(self, tensor_id: int) -> None:
+    def delete(self, tensor_id: int) -> bool:
         """Delete tensor by tensor_id.
 
         Args:
             tensor_id: Unique identifier for the tensor to delete
 
-        Raises:
-            ValueError: If tensor does not exist
+        Returns:
+            True if tensor was deleted, False if it didn't exist
         """
-        if tensor_id not in self._tensors:
-            raise ValueError(f"Tensor {tensor_id} does not exist")
-        del self._tensors[tensor_id]
+        if tensor_id in self._tensors:
+            del self._tensors[tensor_id]
+            return True
+        return False
 
     def __contains__(self, tensor_id: int) -> bool:
         """Check if tensor exists."""

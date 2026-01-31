@@ -126,6 +126,18 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
     )
 
 
+async def delete_tensors(compute: Compute, tensor_ids: list[int]) -> None:
+    """
+    Delete tensors on the remote server.
+
+    Args:
+        compute: The Compute instance
+        tensor_ids: List of tensor IDs to delete
+    """
+    client = _require_client(compute)
+    await client.delete_tensors(tensor_ids)
+
+
 async def execute_aten_operation(
     kpu_device: torch.device,
     op_name: str,

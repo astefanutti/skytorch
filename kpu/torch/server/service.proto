@@ -9,9 +9,15 @@ service Service {
   rpc UpdateTensor(stream TensorChunk) returns (TensorResponse);
   rpc GetTensor(GetTensorRequest) returns (stream TensorChunk);
   rpc CopyTensor(CopyTensorRequest) returns (TensorResponse);
+  rpc DeleteTensors(DeleteTensorsRequest) returns (TensorResponse);
 
   // ATen operation execution
   rpc ExecuteAtenOperation(ExecuteAtenRequest) returns (ExecuteAtenResponse);
+}
+
+// Request to delete tensors by ID
+message DeleteTensorsRequest {
+  repeated uint64 tensor_ids = 1;
 }
 
 // Represents a chunk of serialized tensor data
