@@ -46,7 +46,7 @@ jobs:
 
       - name: Run Integration tests
         run: |
-          pytest test/it -v -m it
+          pytest tests/it -v -m it
 
   e2e-tests:
     name: Run E2E Tests
@@ -81,7 +81,7 @@ jobs:
         with:
           cluster_name: kpu
           version: v0.30.0
-          config: test/e2e/kind.yaml
+          config: tests/e2e/kind.yaml
           registry: true
           registry_name: registry
           registry_port: 5001
@@ -133,7 +133,7 @@ jobs:
         run: |
           TEST_IMAGE="kpu-torch-server:test"
           echo "Using test image: ${TEST_IMAGE}"
-          KPU_TEST_IMAGE="${TEST_IMAGE}" pytest test/e2e -v -m e2e
+          KPU_TEST_IMAGE="${TEST_IMAGE}" pytest tests/e2e -v -m e2e
 
       - name: Print operator logs
         if: always() && steps.deploy.outcome == 'success'
