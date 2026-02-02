@@ -8,6 +8,8 @@ allocator, avoiding actual memory allocation on the client side.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import weakref
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -20,6 +22,8 @@ from kpu.torch.client.tensor import get_storage_id, get_tensor_id
 
 if TYPE_CHECKING:
     from kpu.client.compute import Compute
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,6 +38,42 @@ class StorageInfo:
     def compute(self) -> Optional[Compute]:
         """Get the associated Compute, or None if garbage collected."""
         return self._compute_ref()
+
+
+def _delete_tensors_after_gc(
+    loop: asyncio.AbstractEventLoop,
+    compute: "Compute",
+    tensor_ids: list[int],
+) -> None:
+    """
+    Schedule the deletion coroutine on the event loop.
+
+    This function schedules tensor deletion asynchronously rather than blocking.
+    This is critical to avoid a deadlock when garbage collection triggers during
+    an async operation:
+
+    1. Main thread is in `run_async()` -> `run_until_complete()` -> `_run_once()`
+       -> `selector.select()` waiting for I/O
+    2. During this wait, garbage collection triggers and finalizes tensor storage
+    3. GC calls `free_storage()` which previously called `run_async(delete_tensors(...))`
+    4. The nested `run_async()` also tries to enter `selector.select()`
+    5. Deadlock: Both calls are blocked on `selector.select()` on the same selector
+
+    By using `call_soon_threadsafe()` + `ensure_future()`, we add the deletion to
+    the event loop's callback queue and return immediately. The deletion runs when
+    the loop is ready, not during `selector.select()`, avoiding the deadlock.
+    """
+    from kpu.torch.backend._client import delete_tensors
+
+    async def do_delete():
+        try:
+            await delete_tensors(compute, tensor_ids)
+        except Exception as e:
+            logger.warning(
+                f"Failed to delete tensor(s) {tensor_ids} after GC: {e}"
+            )
+
+    asyncio.ensure_future(do_delete(), loop=loop)
 
 
 class StorageManager:
@@ -96,7 +136,7 @@ class StorageManager:
 
         Handles both registered and unregistered storage IDs.
         If the storage was never used (lazy allocation), this is a no-op.
-        Notifies the server to delete associated tensors.
+        Schedules tensor deletion on the Compute's event loop (non-blocking).
 
         Args:
             storage_id: ID of the storage to free
@@ -106,10 +146,41 @@ class StorageManager:
         if info is None or not tensor_ids:
             return
 
-        from kpu.torch.backend._async import run_async
-        from kpu.torch.backend._client import delete_tensors
+        # Get the Compute (may be None if garbage collected)
+        compute = info.compute
+        if compute is None:
+            logger.warning(
+                f"Compute was garbage collected, skipping deletion of tensor(s) "
+                f"{tensor_ids}"
+            )
+            return
 
-        run_async(delete_tensors(info.compute, tensor_ids))
+        # Get the gRPC client's primary loop (if available)
+        grpc_client = getattr(compute, '_grpc_client', None)
+        if grpc_client is None:
+            logger.warning(
+                f"No gRPC client available, skipping deletion of tensor(s) "
+                f"{tensor_ids}"
+            )
+            return
+
+        loop = getattr(grpc_client, '_primary_loop', None)
+        if loop is None or loop.is_closed():
+            logger.warning(
+                f"Event loop is closed or unavailable, skipping deletion of "
+                f"tensor(s) {tensor_ids}"
+            )
+            return
+
+        # Schedule deletion on the primary loop - non-blocking, fire-and-forget
+        try:
+            loop.call_soon_threadsafe(
+                _delete_tensors_after_gc, loop, compute, tensor_ids
+            )
+        except RuntimeError as e:
+            logger.warning(
+                f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}"
+            )
 
     def resize_storage(self, storage_id: int, new_nbytes: int) -> None:
         """
