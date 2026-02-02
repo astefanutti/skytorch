@@ -64,6 +64,12 @@ class DeviceManager:
         Returns:
             torch.device object with type "kpu" and the mapped local index
         """
+        # Ensure backend is initialized before first device use
+        # This is lazy to avoid interfering with MPS/CUDA (PyTorch bug #161129)
+        from kpu.torch.backend import _ensure_initialized
+
+        _ensure_initialized()
+
         # Use id(compute) as part of the key for object identity
         remote_key = (id(compute), device_type, device_index)
 

@@ -517,16 +517,34 @@ def is_available() -> bool:
     return _is_registered
 
 
-# Load C++ extension FIRST (registers allocator, guard, hooks, etc.)
-# This must happen before backend registration so PyTorch knows about our types
-_load_cpp_extension()
+def _ensure_initialized() -> None:
+    """
+    Ensure the KPU backend is fully initialized.
 
-# Register backend with PyTorch
-_register_backend()
+    This function lazily loads the C++ extension and registers the backend
+    with PyTorch. It should be called before any KPU device operations.
 
-# Import ATen operations module to register Python-based operations
-# This must happen AFTER backend registration
-from kpu.torch.backend import aten  # noqa: F401, E402
+    The lazy initialization is necessary to avoid interfering with other
+    PyTorch backends (MPS, CUDA) due to a PyTorch bug (#161129) where
+    registering a PrivateUse1 backend causes at::getAccelerator() to
+    incorrectly return PrivateUse1 for all accelerator queries.
+    """
+    global _is_registered
+
+    if _is_registered:
+        return
+
+    # Load C++ extension FIRST (registers allocator, guard, hooks, etc.)
+    # This must happen before backend registration so PyTorch knows about our types
+    _load_cpp_extension()
+
+    # Register backend with PyTorch
+    _register_backend()
+
+    # Import ATen operations module to register Python-based operations
+    # This must happen AFTER backend registration
+    from kpu.torch.backend import aten  # noqa: F401
+
 
 __all__ = [
     "BACKEND_NAME",
