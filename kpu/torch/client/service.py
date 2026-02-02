@@ -57,58 +57,37 @@ class TensorClient:
         self.metadata = metadata
         self.stub = service_pb2_grpc.ServiceStub(self.channel)
 
-    async def create_tensor(
-        self, metadata: TensorMetadata, tensor_ref: Optional[int] = None
-    ) -> None:
-        """
-        Create a tensor on the server.
-
-        Args:
-            metadata: TensorMetadata with tensor configuration
-            tensor_ref: Optional reference to base tensor for view creation
-
-        Raises:
-            RuntimeError: If tensor creation fails
-        """
-        request = service_pb2.CreateTensorRequest(
-            tensor_id=metadata.tensor_id,
-            shape=list(metadata.shape),
-            dtype=str(metadata.dtype),
-            nbytes=metadata.nbytes,
-            device_type=metadata.device_type,
-            stride=list(metadata.stride) if metadata.stride else [],
-            storage_offset=metadata.storage_offset,
-            device_index=metadata.device_index,
-        )
-        if tensor_ref is not None:
-            request.tensor_ref = tensor_ref
-
-        response = await self.stub.CreateTensor(request, metadata=self.metadata)
-
-        if not response.success:
-            raise RuntimeError(f"Failed to create tensor: {response.message}")
-
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Created tensor {metadata.tensor_id} on server")
-
     async def update_tensor(
         self,
         src: torch.Tensor,
         tensor_id: int,
+        tensor_metadata: Optional[TensorMetadata] = None,
     ) -> None:
         """
-        Upload tensor data to server storage.
+        Upload tensor data to server.
+
+        If tensor_metadata is provided, the server will auto-create the tensor
+        if it doesn't exist, making this a single operation.
 
         Args:
             src: Source CPU tensor with data to upload
             tensor_id: Destination tensor ID on the server
+            tensor_metadata: Optional metadata for auto-creating the tensor
 
         Raises:
             RuntimeError: If update fails
         """
 
         async def stream_tensor():
+            first_chunk = True
             for chunk in serialize_tensor_to_chunks(tensor_id, src):
+                # Attach sequence number and metadata to first chunk
+                if first_chunk:
+                    if tensor_metadata is not None:
+                        chunk.metadata.CopyFrom(
+                            self._tensor_metadata_to_proto(tensor_metadata)
+                        )
+                    first_chunk = False
                 yield chunk
 
         response = await self.stub.UpdateTensor(
@@ -193,9 +172,14 @@ class TensorClient:
         src_offset: int = 0,
         dst_offset: int = 0,
         num_bytes: int = -1,
+        src_metadata: Optional[TensorMetadata] = None,
+        dst_metadata: Optional[TensorMetadata] = None,
     ) -> None:
         """
         Copy data between tensors on the server.
+
+        If metadata is provided for source/destination, the server will
+        auto-create those tensors if they don't exist, making this atomic.
 
         Args:
             src_tensor_id: Source tensor ID
@@ -203,6 +187,8 @@ class TensorClient:
             src_offset: Byte offset in source storage
             dst_offset: Byte offset in destination storage
             num_bytes: Number of bytes to copy (-1 for all)
+            src_metadata: Optional metadata for auto-creating source tensor
+            dst_metadata: Optional metadata for auto-creating destination tensor
 
         Raises:
             RuntimeError: If copy fails
@@ -214,6 +200,15 @@ class TensorClient:
             dst_offset=dst_offset,
             num_bytes=num_bytes,
         )
+
+        if src_metadata is not None:
+            request.src_metadata.CopyFrom(
+                self._tensor_metadata_to_proto(src_metadata)
+            )
+        if dst_metadata is not None:
+            request.dst_metadata.CopyFrom(
+                self._tensor_metadata_to_proto(dst_metadata)
+            )
 
         response = await self.stub.CopyTensor(request, metadata=self.metadata)
 
@@ -229,6 +224,8 @@ class TensorClient:
         args: tuple,
         kwargs: dict,
         output_tensors: list[torch.Tensor] | None,
+        tensor_metadata: Optional[list[TensorMetadata]] = None,
+        output_metadata: Optional[list[TensorMetadata]] = None,
     ) -> list[int] | None:
         """
         Execute an ATen operation on the server.
@@ -237,11 +234,16 @@ class TensorClient:
         - Pre-allocated outputs: output_tensors provided, writes to them, returns None
         - Server-created outputs: output_tensors is None, returns list[int] (tensor_ids)
 
+        If metadata lists are provided, the server will auto-create those tensors
+        if they don't exist, making this a single atomic operation.
+
         Args:
             op_name: ATen operation name (e.g., "aten::add.Tensor")
             args: Positional arguments (may contain KPU tensors)
             kwargs: Keyword arguments (may contain KPU tensors)
             output_tensors: Pre-allocated output tensors, or None for server-created
+            tensor_metadata: Optional list of input tensor metadata for auto-creation
+            output_metadata: Optional list of output tensor metadata for auto-creation
 
         Returns:
             None if output_tensors provided, list[int] of tensor_ids if server created outputs
@@ -263,6 +265,14 @@ class TensorClient:
                     request.outputs.append(
                         service_pb2.TensorReference(tensor_id=get_tensor_id(t))
                     )
+
+        # Add tensor metadata for auto-creation
+        if tensor_metadata is not None:
+            for meta in tensor_metadata:
+                request.tensor_metadata.append(self._tensor_metadata_to_proto(meta))
+        if output_metadata is not None:
+            for meta in output_metadata:
+                request.output_metadata.append(self._tensor_metadata_to_proto(meta))
 
         if logger.isEnabledFor(logging.DEBUG):
             input_tensor_ids = [
@@ -356,3 +366,21 @@ class TensorClient:
             raise ValueError(f"Unsupported ATen argument type: {type(value)}")
 
         return arg
+
+    def _tensor_metadata_to_proto(
+        self, metadata: TensorMetadata
+    ) -> service_pb2.TensorMetadata:
+        """Convert TensorMetadata to proto message."""
+        proto = service_pb2.TensorMetadata(
+            tensor_id=metadata.tensor_id,
+            shape=list(metadata.shape),
+            dtype=str(metadata.dtype),
+            nbytes=metadata.nbytes,
+            device_type=metadata.device_type,
+            stride=list(metadata.stride) if metadata.stride else [],
+            storage_offset=metadata.storage_offset,
+            device_index=metadata.device_index,
+        )
+        if metadata.tensor_ref is not None:
+            proto.tensor_ref = metadata.tensor_ref
+        return proto

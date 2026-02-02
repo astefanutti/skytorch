@@ -50,66 +50,61 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         self.chunk_size = chunk_size
         self.tensor_manager = TensorManager()
 
-    async def CreateTensor(
-        self,
-        request: service_pb2.CreateTensorRequest,
-        context: grpc.aio.ServicerContext,
-    ) -> service_pb2.TensorResponse:
+    def _ensure_tensor_exists(
+        self, metadata: service_pb2.TensorMetadata
+    ) -> torch.Tensor:
         """
-        Create a tensor on the server.
+        Create tensor from metadata if it doesn't exist, or return existing.
+
+        If the tensor already exists in the tensor_manager, returns it.
+        Otherwise, creates a new tensor from the metadata (either a view
+        if tensor_ref is set, or a fresh storage tensor).
 
         Args:
-            request: CreateTensorRequest with tensor metadata
-            context: gRPC context
+            metadata: TensorMetadata proto with tensor configuration
 
         Returns:
-            TensorResponse with success status
+            The existing or newly created tensor
         """
-        try:
-            dtype = eval(request.dtype)  # "torch.float32" -> torch.float32
-            shape = list(request.shape)
-            stride = list(request.stride) if request.stride else None
-            storage_offset = request.storage_offset
+        tensor_id = metadata.tensor_id
+        if tensor_id in self.tensor_manager:
+            return self.tensor_manager.get(tensor_id)
 
-            if request.HasField("tensor_ref"):
-                # Create view from existing tensor's storage
-                base_tensor = self.tensor_manager.get(request.tensor_ref)
-                storage = base_tensor.untyped_storage()
-                tensor = torch.empty(0, dtype=dtype, device=base_tensor.device).set_(
-                    storage, storage_offset, shape, stride
+        dtype = eval(metadata.dtype)  # "torch.float32" -> torch.float32
+        shape = list(metadata.shape)
+        stride = list(metadata.stride) if metadata.stride else None
+        storage_offset = metadata.storage_offset
+
+        if metadata.HasField("tensor_ref"):
+            # Create view from existing tensor's storage
+            base_tensor = self.tensor_manager.get(metadata.tensor_ref)
+            storage = base_tensor.untyped_storage()
+            tensor = torch.empty(0, dtype=dtype, device=base_tensor.device).set_(
+                storage, storage_offset, shape, stride
+            )
+        else:
+            # Create new tensor with fresh storage
+            device = torch.device(metadata.device_type, metadata.device_index)
+            storage = torch.UntypedStorage(metadata.nbytes, device=device)
+            tensor = torch.empty(0, dtype=dtype, device=device).set_(
+                storage, storage_offset, shape, stride
+            )
+
+        self.tensor_manager.register(tensor_id, tensor)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            if metadata.HasField("tensor_ref"):
+                logger.debug(
+                    f"Auto-created tensor {tensor_id} "
+                    f"(view of {metadata.tensor_ref}, shape={shape}, dtype={dtype})"
                 )
             else:
-                # Create new tensor with fresh storage
-                device = torch.device(request.device_type, request.device_index)
-                storage = torch.UntypedStorage(request.nbytes, device=device)
-                tensor = torch.empty(0, dtype=dtype, device=device).set_(
-                    storage, storage_offset, shape, stride
+                logger.debug(
+                    f"Auto-created tensor {tensor_id} "
+                    f"(nbytes={metadata.nbytes}, dtype={dtype})"
                 )
 
-            self.tensor_manager.register(request.tensor_id, tensor)
-
-            if logger.isEnabledFor(logging.DEBUG):
-                if request.HasField("tensor_ref"):
-                    logger.debug(
-                        f"Created tensor {request.tensor_id} "
-                        f"(view of {request.tensor_ref}, shape={shape}, dtype={dtype})"
-                    )
-                else:
-                    logger.debug(
-                        f"Created tensor {request.tensor_id} "
-                        f"(nbytes={request.nbytes}, dtype={dtype})"
-                    )
-
-            return service_pb2.TensorResponse(
-                success=True,
-                message=f"Created tensor {request.tensor_id}",
-            )
-        except Exception as e:
-            logger.error(f"Failed to create tensor: {e}")
-            return service_pb2.TensorResponse(
-                success=False,
-                message=str(e),
-            )
+        return tensor
 
     async def UpdateTensor(
         self,
@@ -128,11 +123,20 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         assembler = TensorAssembler()
         tensor_id = None
+        metadata_processed = False
 
         try:
             async for chunk in request_iterator:
                 if tensor_id is None:
                     tensor_id = chunk.tensor_id
+
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Updating tensor {tensor_id}")
+
+                # Auto-create tensor from metadata on first chunk if provided
+                if not metadata_processed and chunk.HasField("metadata"):
+                    self._ensure_tensor_exists(chunk.metadata)
+                    metadata_processed = True
 
                 tensor = assembler.add_chunk(chunk)
                 if tensor is None:
@@ -209,6 +213,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         Copy data between tensors on the server.
 
+        Auto-creates source and/or destination tensors from metadata if provided.
+
         Args:
             request: CopyTensorRequest with source and destination info
             context: gRPC context
@@ -217,6 +223,12 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             TensorResponse with success status
         """
         try:
+            # Auto-create tensors from metadata if provided
+            if request.HasField("src_metadata"):
+                self._ensure_tensor_exists(request.src_metadata)
+            if request.HasField("dst_metadata"):
+                self._ensure_tensor_exists(request.dst_metadata)
+
             src_tensor = self.tensor_manager.get(request.src_tensor_id)
         except ValueError:
             return service_pb2.TensorResponse(
@@ -298,12 +310,23 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             ExecuteAtenResponse with success status and optionally output metadata
         """
         try:
+            # Auto-create input tensors from metadata if provided
+            for metadata in request.tensor_metadata:
+                self._ensure_tensor_exists(metadata)
+
+            # Auto-create output tensors from metadata if provided
+            for metadata in request.output_metadata:
+                self._ensure_tensor_exists(metadata)
+
             # Resolve args - replace tensor refs with actual tensors
             args = tuple(self._resolve_aten_arg(arg) for arg in request.args)
             kwargs = self._resolve_kwargs(dict(request.kwargs))
 
             # Get the ATen op
             op = self._get_aten_op(request.op_name)
+
+            input_tensor_ids = []
+            output_tensor_ids = []
 
             if logger.isEnabledFor(logging.DEBUG):
                 # Extract input tensor IDs for logging
@@ -347,12 +370,24 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                                 f"data={tensor.cpu().flatten()[:8].tolist()}..."
                             )
                         self.tensor_manager.register(ref.tensor_id, tensor)
+
+                logger.debug(
+                    f"Executed {request.op_name} | "
+                    f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
+                )
+
                 return service_pb2.ExecuteAtenResponse(success=True)
             else:
                 # Server-created outputs mode: register and return references
                 output_refs = []
                 for tensor in result_tensors:
                     output_refs.append(self._tensor_to_ref(tensor))
+
+                logger.debug(
+                    f"Executed {request.op_name} | "
+                    f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
+                )
+
                 return service_pb2.ExecuteAtenResponse(
                     success=True,
                     output_tensors=output_refs,

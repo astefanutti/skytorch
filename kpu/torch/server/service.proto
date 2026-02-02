@@ -5,7 +5,6 @@ package kpu.torch;
 // Tensor management service for KPU PyTorch backend
 service Service {
   // Tensor lifecycle management
-  rpc CreateTensor(CreateTensorRequest) returns (TensorResponse);
   rpc UpdateTensor(stream TensorChunk) returns (TensorResponse);
   rpc GetTensor(GetTensorRequest) returns (stream TensorChunk);
   rpc CopyTensor(CopyTensorRequest) returns (TensorResponse);
@@ -18,6 +17,19 @@ service Service {
 // Request to delete tensors by ID
 message DeleteTensorsRequest {
   repeated uint64 tensor_ids = 1;
+}
+
+// Tensor metadata for auto-creation on the server
+message TensorMetadata {
+  uint64 tensor_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  int64 nbytes = 4;
+  string device_type = 5;
+  repeated int64 stride = 6;
+  int64 storage_offset = 7;
+  int32 device_index = 8;
+  optional uint64 tensor_ref = 9;  // Reference to base tensor for views
 }
 
 // Represents a chunk of serialized tensor data
@@ -42,6 +54,9 @@ message TensorChunk {
 
   // Total serialized size in bytes (set in first chunk, for pre-allocation)
   uint64 total_bytes = 11;
+
+  // Tensor metadata for auto-creation on first chunk
+  TensorMetadata metadata = 12;
 }
 
 // Response after receiving tensors
@@ -79,6 +94,8 @@ message CopyTensorRequest {
   int64 src_offset = 3;
   int64 dst_offset = 4;
   int64 num_bytes = 5;
+  TensorMetadata src_metadata = 6;  // For auto-creation of source tensor
+  TensorMetadata dst_metadata = 7;  // For auto-creation of destination tensor
 }
 
 // Reference to a tensor on the server
@@ -113,6 +130,8 @@ message ExecuteAtenRequest {
   repeated AtenArgument args = 2;  // Positional arguments (preserves order)
   repeated TensorReference outputs = 3;
   map<string, AtenArgument> kwargs = 4;
+  repeated TensorMetadata tensor_metadata = 5;   // Input tensors to auto-create
+  repeated TensorMetadata output_metadata = 6;   // Output tensors to auto-create
 }
 
 // Response after executing an ATen operation

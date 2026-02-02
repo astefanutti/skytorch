@@ -15,8 +15,9 @@ from kpu.client import Compute
 from kpu.torch.backend._device import device_manager
 from kpu.torch.backend._storage import storage_manager
 from kpu.torch.client.tensor import get_storage_id, get_tensor_id, get_tensor_metadata
+from kpu.torch.client.metadata import TensorMetadata
 from kpu.torch.client.service import TensorClient
-from kpu.torch.client.utils import async_map_args_kwargs
+from kpu.torch.client.utils import map_args_kwargs
 
 
 async def copy_kpu_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
@@ -52,9 +53,8 @@ async def copy_cpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
     """
     Copy data from a CPU tensor to a KPU tensor.
 
-    Uses update_tensor to upload tensor to the server.
-    If the destination tensor is not registered,
-    creates it first before updating.
+    Uses a single update_tensor call with metadata for auto-creation.
+    The server will create the tensor if it doesn't exist.
 
     Args:
         src: Source CPU tensor
@@ -71,8 +71,19 @@ async def copy_cpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
     compute = _require_compute(dst)
     client = _require_client(compute)
 
-    await _ensure_tensor_created(dst, client)
-    await client.update_tensor(src=src, tensor_id=get_tensor_id(dst))
+    # Get metadata for auto-creation if tensor is not registered
+    metadata = _get_tensor_metadata_if_new(dst)
+
+    # Single call - server will auto-create tensor from metadata
+    await client.update_tensor(
+        src=src,
+        tensor_id=get_tensor_id(dst),
+        tensor_metadata=metadata,
+    )
+
+    # Register locally after RPC
+    if metadata is not None:
+        _register_tensor_locally(dst)
 
     return dst
 
@@ -81,7 +92,8 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
     """
     Copy data between KPU tensors on the same Compute.
 
-    Uses server-side copy_tensor for efficiency (no data round-trip).
+    Uses a single copy_tensor call with metadata for auto-creation.
+    The server will create tensors if they don't exist.
 
     Args:
         src: Source KPU tensor
@@ -112,18 +124,26 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
 
     client = _require_client(src_compute)
 
-    # Ensure both tensors are created on the server
-    await _ensure_tensor_created(src, client)
-    await _ensure_tensor_created(dst, client)
+    # Get metadata for auto-creation if tensors are not registered
+    src_meta = _get_tensor_metadata_if_new(src)
+    dst_meta = _get_tensor_metadata_if_new(dst)
 
-    # Use server-side copy for efficiency
+    # Single call - server will auto-create tensors from metadata
     await client.copy_tensor(
         src_tensor_id=get_tensor_id(src),
         dst_tensor_id=get_tensor_id(dst),
         src_offset=src.storage_offset() * src.element_size(),
         dst_offset=dst.storage_offset() * dst.element_size(),
         num_bytes=src.numel() * src.element_size(),
+        src_metadata=src_meta,
+        dst_metadata=dst_meta,
     )
+
+    # Register locally after RPC
+    if src_meta is not None:
+        _register_tensor_locally(src)
+    if dst_meta is not None:
+        _register_tensor_locally(dst)
 
 
 async def delete_tensors(compute: Compute, tensor_ids: list[int]) -> None:
@@ -147,6 +167,9 @@ async def execute_aten_operation(
 ) -> list[int] | None:
     """
     Execute an ATen operation on the remote Compute.
+
+    Uses a single execute_aten_operation call with metadata for auto-creation.
+    The server will create tensors if they don't exist.
 
     Supports two modes:
     - Pre-allocated outputs: output_tensors provided, writes to them, returns None
@@ -174,11 +197,19 @@ async def execute_aten_operation(
 
     client = _require_client(compute)
 
-    async def process_arg(obj):
-        """Process an argument: register tensors and map devices."""
+    # Collect metadata for all unregistered input tensors
+    tensor_metadata_list: list[TensorMetadata] = []
+    tensors_to_register: list[torch.Tensor] = []
+
+    def process_arg(obj):
+        """Process an argument: collect metadata and map devices."""
         if isinstance(obj, torch.Tensor):
             if obj.device.type == "kpu":
-                await _ensure_tensor_created(obj, client)
+                # Collect metadata for auto-creation if not registered
+                meta = _get_tensor_metadata_if_new(obj)
+                if meta is not None:
+                    tensor_metadata_list.append(meta)
+                    tensors_to_register.append(obj)
                 return obj
             elif obj.device.type == "cpu" and obj.dim() == 0:
                 return obj  # CPU scalar tensors are valid
@@ -195,85 +226,89 @@ async def execute_aten_operation(
             return obj
         return obj
 
-    # Process args/kwargs: register tensors and map devices
-    processed_args, processed_kwargs = await async_map_args_kwargs(
-        process_arg, args, kwargs
-    )
+    # Process args/kwargs: collect metadata and map devices (synchronously)
+    processed_args, processed_kwargs = map_args_kwargs(process_arg, args, kwargs)
 
+    # Collect metadata for output tensors
+    output_metadata_list: list[TensorMetadata] = []
+    output_tensors_to_register: list[torch.Tensor] = []
+    if output_tensors:
+        for tensor in output_tensors:
+            if tensor is not None:
+                meta = _get_tensor_metadata_if_new(tensor)
+                if meta is not None:
+                    output_metadata_list.append(meta)
+                    output_tensors_to_register.append(tensor)
+
+    # Single call - server will auto-create tensors from metadata
     result = await client.execute_aten_operation(
         op_name=op_name,
         args=processed_args,
         kwargs=processed_kwargs,
         output_tensors=output_tensors,
+        tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
+        output_metadata=output_metadata_list if output_metadata_list else None,
     )
 
-    # Register output tensors
-    if output_tensors:
-        for tensor in output_tensors:
-            if tensor is not None:
-                storage_id = get_storage_id(tensor)
-                storage_manager.register_storage(
-                    storage_id=storage_id,
-                    nbytes=tensor.untyped_storage().nbytes(),
-                    device_index=tensor.device.index or 0,
-                )
-                storage_manager.register_tensor(tensor)
+    # Register tensors locally after RPC
+    for tensor in tensors_to_register:
+        _register_tensor_locally(tensor)
+    for tensor in output_tensors_to_register:
+        _register_tensor_locally(tensor)
 
     return result
 
 
-async def _ensure_tensor_created(
-    tensor: torch.Tensor,
-    client: TensorClient,
-) -> None:
+def _get_tensor_metadata_if_new(tensor: torch.Tensor) -> Optional[TensorMetadata]:
     """
-    Ensure a KPU tensor is created on the remote server.
+    Return metadata for a tensor if it's not yet registered, else None.
 
-    If the tensor is not already registered, creates it on the server
-    with the appropriate remote device mapping and registers it locally.
-    If the tensor is a view of an already-registered tensor, creates
-    a view on the server referencing the base tensor's storage.
-
-    Also handles lazy storage registration - storage IDs are generated by
-    the C++ allocator (GIL-free) and registered here at first tensor use.
+    Checks if the tensor is already registered on the server. If not,
+    creates metadata with the appropriate remote device mapping and
+    tensor_ref if it's a view.
 
     Args:
-        tensor: KPU tensor to create
-        client: TensorClient for gRPC operations
+        tensor: KPU tensor to check
+
+    Returns:
+        TensorMetadata if tensor needs to be created, None if already registered
     """
     tensor_id = get_tensor_id(tensor)
     ref = storage_manager.tensor_ref(tensor)
 
     if ref == tensor_id:
         # Tensor already registered with this exact tensor_id
-        return
+        return None
 
-    # Ensure storage is registered (lazy registration from C++ allocator)
-    # This is where we associate the storage with its Compute context
+    # Create metadata for the tensor
+    metadata = get_tensor_metadata(tensor)
+    remote_info = device_manager.get_remote_device_info(tensor.device.index)
+    metadata.device_type = remote_info.device_type
+    metadata.device_index = remote_info.device_index
+
+    if ref is not None:
+        # ref is different tensor_id → this tensor is a view of base tensor
+        metadata.tensor_ref = ref
+
+    return metadata
+
+
+def _register_tensor_locally(tensor: torch.Tensor) -> None:
+    """
+    Register a tensor locally after it has been created on the server.
+
+    Handles lazy storage registration (storage IDs are generated by
+    the C++ allocator) and tensor registration.
+
+    Args:
+        tensor: KPU tensor to register
+    """
     storage_id = get_storage_id(tensor)
     storage_manager.register_storage(
         storage_id=storage_id,
         nbytes=tensor.untyped_storage().nbytes(),
         device_index=tensor.device.index or 0,
     )
-
-    if ref is not None:
-        # ref is different tensor_id → this tensor is a view of base tensor
-        # Create view on server referencing the base tensor
-        metadata = get_tensor_metadata(tensor)
-        remote_info = device_manager.get_remote_device_info(tensor.device.index)
-        metadata.device_type = remote_info.device_type
-        metadata.device_index = remote_info.device_index
-        await client.create_tensor(metadata, tensor_ref=ref)
-        storage_manager.register_tensor(tensor)
-        return
-
-    # No reference found → create new tensor with fresh storage
-    metadata = get_tensor_metadata(tensor)
-    remote_info = device_manager.get_remote_device_info(tensor.device.index)
-    metadata.device_type = remote_info.device_type
-    metadata.device_index = remote_info.device_index
-    await client.create_tensor(metadata)
     storage_manager.register_tensor(tensor)
 
 

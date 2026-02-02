@@ -35,11 +35,6 @@ class ServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.CreateTensor = channel.unary_unary(
-                '/kpu.torch.Service/CreateTensor',
-                request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorRequest.SerializeToString,
-                response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
-                _registered_method=True)
         self.UpdateTensor = channel.stream_unary(
                 '/kpu.torch.Service/UpdateTensor',
                 request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorChunk.SerializeToString,
@@ -71,15 +66,9 @@ class ServiceServicer(object):
     """Tensor management service for KPU PyTorch backend
     """
 
-    def CreateTensor(self, request, context):
+    def UpdateTensor(self, request_iterator, context):
         """Tensor lifecycle management
         """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def UpdateTensor(self, request_iterator, context):
-        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -112,11 +101,6 @@ class ServiceServicer(object):
 
 def add_ServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'CreateTensor': grpc.unary_unary_rpc_method_handler(
-                    servicer.CreateTensor,
-                    request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorRequest.FromString,
-                    response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.SerializeToString,
-            ),
             'UpdateTensor': grpc.stream_unary_rpc_method_handler(
                     servicer.UpdateTensor,
                     request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.TensorChunk.FromString,
@@ -153,33 +137,6 @@ def add_ServiceServicer_to_server(servicer, server):
 class Service(object):
     """Tensor management service for KPU PyTorch backend
     """
-
-    @staticmethod
-    def CreateTensor(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/kpu.torch.Service/CreateTensor',
-            kpu_dot_torch_dot_server_dot_service__pb2.CreateTensorRequest.SerializeToString,
-            kpu_dot_torch_dot_server_dot_service__pb2.TensorResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
 
     @staticmethod
     def UpdateTensor(request_iterator,

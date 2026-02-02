@@ -12,8 +12,30 @@ class DeleteTensorsRequest(_message.Message):
     tensor_ids: _containers.RepeatedScalarFieldContainer[int]
     def __init__(self, tensor_ids: _Optional[_Iterable[int]] = ...) -> None: ...
 
+class TensorMetadata(_message.Message):
+    __slots__ = ("tensor_id", "shape", "dtype", "nbytes", "device_type", "stride", "storage_offset", "device_index", "tensor_ref")
+    TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
+    NBYTES_FIELD_NUMBER: _ClassVar[int]
+    DEVICE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    STRIDE_FIELD_NUMBER: _ClassVar[int]
+    STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
+    DEVICE_INDEX_FIELD_NUMBER: _ClassVar[int]
+    TENSOR_REF_FIELD_NUMBER: _ClassVar[int]
+    tensor_id: int
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    dtype: str
+    nbytes: int
+    device_type: str
+    stride: _containers.RepeatedScalarFieldContainer[int]
+    storage_offset: int
+    device_index: int
+    tensor_ref: int
+    def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., device_index: _Optional[int] = ..., tensor_ref: _Optional[int] = ...) -> None: ...
+
 class TensorChunk(_message.Message):
-    __slots__ = ("tensor_id", "chunk_number", "data", "total_chunks", "shape", "stride", "storage_offset", "dtype", "total_bytes")
+    __slots__ = ("tensor_id", "chunk_number", "data", "total_chunks", "shape", "stride", "storage_offset", "dtype", "total_bytes", "metadata")
     TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
     CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
     DATA_FIELD_NUMBER: _ClassVar[int]
@@ -23,6 +45,7 @@ class TensorChunk(_message.Message):
     STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
     DTYPE_FIELD_NUMBER: _ClassVar[int]
     TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
     tensor_id: int
     chunk_number: int
     data: bytes
@@ -32,7 +55,8 @@ class TensorChunk(_message.Message):
     storage_offset: int
     dtype: str
     total_bytes: int
-    def __init__(self, tensor_id: _Optional[int] = ..., chunk_number: _Optional[int] = ..., data: _Optional[bytes] = ..., total_chunks: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., dtype: _Optional[str] = ..., total_bytes: _Optional[int] = ...) -> None: ...
+    metadata: TensorMetadata
+    def __init__(self, tensor_id: _Optional[int] = ..., chunk_number: _Optional[int] = ..., data: _Optional[bytes] = ..., total_chunks: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., dtype: _Optional[str] = ..., total_bytes: _Optional[int] = ..., metadata: _Optional[_Union[TensorMetadata, _Mapping]] = ...) -> None: ...
 
 class TensorResponse(_message.Message):
     __slots__ = ("success", "message")
@@ -79,18 +103,22 @@ class GetTensorRequest(_message.Message):
     def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ...) -> None: ...
 
 class CopyTensorRequest(_message.Message):
-    __slots__ = ("src_tensor_id", "dst_tensor_id", "src_offset", "dst_offset", "num_bytes")
+    __slots__ = ("src_tensor_id", "dst_tensor_id", "src_offset", "dst_offset", "num_bytes", "src_metadata", "dst_metadata")
     SRC_TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
     DST_TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
     SRC_OFFSET_FIELD_NUMBER: _ClassVar[int]
     DST_OFFSET_FIELD_NUMBER: _ClassVar[int]
     NUM_BYTES_FIELD_NUMBER: _ClassVar[int]
+    SRC_METADATA_FIELD_NUMBER: _ClassVar[int]
+    DST_METADATA_FIELD_NUMBER: _ClassVar[int]
     src_tensor_id: int
     dst_tensor_id: int
     src_offset: int
     dst_offset: int
     num_bytes: int
-    def __init__(self, src_tensor_id: _Optional[int] = ..., dst_tensor_id: _Optional[int] = ..., src_offset: _Optional[int] = ..., dst_offset: _Optional[int] = ..., num_bytes: _Optional[int] = ...) -> None: ...
+    src_metadata: TensorMetadata
+    dst_metadata: TensorMetadata
+    def __init__(self, src_tensor_id: _Optional[int] = ..., dst_tensor_id: _Optional[int] = ..., src_offset: _Optional[int] = ..., dst_offset: _Optional[int] = ..., num_bytes: _Optional[int] = ..., src_metadata: _Optional[_Union[TensorMetadata, _Mapping]] = ..., dst_metadata: _Optional[_Union[TensorMetadata, _Mapping]] = ...) -> None: ...
 
 class TensorReference(_message.Message):
     __slots__ = ("tensor_id",)
@@ -129,7 +157,7 @@ class AtenArgumentList(_message.Message):
     def __init__(self, values: _Optional[_Iterable[_Union[AtenArgument, _Mapping]]] = ..., is_tuple: bool = ...) -> None: ...
 
 class ExecuteAtenRequest(_message.Message):
-    __slots__ = ("op_name", "args", "outputs", "kwargs")
+    __slots__ = ("op_name", "args", "outputs", "kwargs", "tensor_metadata", "output_metadata")
     class KwargsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -141,11 +169,15 @@ class ExecuteAtenRequest(_message.Message):
     ARGS_FIELD_NUMBER: _ClassVar[int]
     OUTPUTS_FIELD_NUMBER: _ClassVar[int]
     KWARGS_FIELD_NUMBER: _ClassVar[int]
+    TENSOR_METADATA_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_METADATA_FIELD_NUMBER: _ClassVar[int]
     op_name: str
     args: _containers.RepeatedCompositeFieldContainer[AtenArgument]
     outputs: _containers.RepeatedCompositeFieldContainer[TensorReference]
     kwargs: _containers.MessageMap[str, AtenArgument]
-    def __init__(self, op_name: _Optional[str] = ..., args: _Optional[_Iterable[_Union[AtenArgument, _Mapping]]] = ..., outputs: _Optional[_Iterable[_Union[TensorReference, _Mapping]]] = ..., kwargs: _Optional[_Mapping[str, AtenArgument]] = ...) -> None: ...
+    tensor_metadata: _containers.RepeatedCompositeFieldContainer[TensorMetadata]
+    output_metadata: _containers.RepeatedCompositeFieldContainer[TensorMetadata]
+    def __init__(self, op_name: _Optional[str] = ..., args: _Optional[_Iterable[_Union[AtenArgument, _Mapping]]] = ..., outputs: _Optional[_Iterable[_Union[TensorReference, _Mapping]]] = ..., kwargs: _Optional[_Mapping[str, AtenArgument]] = ..., tensor_metadata: _Optional[_Iterable[_Union[TensorMetadata, _Mapping]]] = ..., output_metadata: _Optional[_Iterable[_Union[TensorMetadata, _Mapping]]] = ...) -> None: ...
 
 class ExecuteAtenResponse(_message.Message):
     __slots__ = ("success", "message", "output_tensors")

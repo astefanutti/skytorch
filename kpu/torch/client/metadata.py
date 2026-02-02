@@ -23,6 +23,7 @@ class TensorMetadata:
     stride: Optional[tuple[int, ...]] = None
     storage_offset: int = 0
     device_index: int = 0
+    tensor_ref: Optional[int] = None  # Reference to base tensor for views
 
     def to_proto_dict(self) -> dict[str, str]:
         """Convert to proto-compatible string dict."""
