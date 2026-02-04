@@ -29,6 +29,8 @@ from kpu.torch.server.serialization import (
     serialize_tensor_to_chunks,
     TensorAssembler,
     DEFAULT_CHUNK_SIZE,
+    tensor_from_bytes,
+    tensor_to_bytes,
 )
 from kpu.torch.server.tensor import TensorManager
 
@@ -464,3 +466,287 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         for part in parts:
             op = getattr(op, part)
         return op
+
+    async def _handle_update_tensor(
+        self, request: service_pb2.UpdateTensorRequest
+    ) -> service_pb2.TensorResponse:
+        """Handle update_tensor request in streaming context.
+
+        Deserializes tensor data and stores it on the server.
+
+        Args:
+            request: UpdateTensorRequest with tensor data
+
+        Returns:
+            TensorResponse with success status
+        """
+        try:
+            # Get or create tensor
+            if request.HasField("metadata"):
+                tensor = self._ensure_tensor_exists(request.metadata)
+            else:
+                tensor = self.tensor_manager.get(request.tensor_id)
+
+            # Deserialize tensor data
+            dtype = eval(request.dtype)  # "torch.float32" -> torch.float32
+            shape = list(request.shape)
+
+            # Copy data from bytes to tensor
+            src_tensor = tensor_from_bytes(request.data, dtype, shape)
+            tensor.copy_(src_tensor)
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Updated tensor {request.tensor_id} via stream")
+
+            return service_pb2.TensorResponse(success=True)
+
+        except Exception as e:
+            logger.error(f"Error updating tensor via stream: {e}")
+            return service_pb2.TensorResponse(success=False, message=str(e))
+
+    async def _handle_get_tensor(
+        self, request: service_pb2.GetTensorRequest
+    ) -> service_pb2.GetTensorResponse:
+        """Handle get_tensor request in streaming context.
+
+        Serializes tensor data for download.
+
+        Args:
+            request: GetTensorRequest with tensor ID
+
+        Returns:
+            GetTensorResponse with serialized tensor data
+        """
+        try:
+            tensor = self.tensor_manager.get(request.tensor_id)
+
+            # Apply view parameters if provided
+            shape = list(request.shape) if request.shape else list(tensor.shape)
+            stride = list(request.stride) if request.stride else list(tensor.stride())
+            storage_offset = request.storage_offset
+
+            # Create view with requested parameters
+            view_tensor = tensor.as_strided(shape, stride, storage_offset)
+
+            # Serialize tensor data to bytes
+            data = tensor_to_bytes(view_tensor)
+
+            if logger.isEnabledFor(logging.DEBUG):
+                flat_data = view_tensor.contiguous().cpu().flatten()[:8].tolist()
+                logger.debug(f"Sent tensor {request.tensor_id} via stream data={flat_data}...")
+
+            return service_pb2.GetTensorResponse(
+                success=True,
+                data=data,
+                shape=shape,
+                dtype=str(tensor.dtype),
+                stride=stride,
+                storage_offset=storage_offset,
+            )
+
+        except Exception as e:
+            logger.error(f"Error getting tensor via stream: {e}")
+            return service_pb2.GetTensorResponse(success=False, message=str(e))
+
+    async def StreamOperations(
+        self,
+        request_iterator: AsyncIterator[service_pb2.StreamRequest],
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[service_pb2.StreamResponse]:
+        """
+        Bidirectional streaming handler for low-latency operations.
+
+        Processes StreamRequest messages and yields StreamResponse messages
+        in FIFO order. All operations go through this single channel to
+        ensure proper sequencing.
+
+        Supports chunked requests for large payloads (>1MB). Intermediate
+        chunks are buffered; only the final chunk triggers processing and
+        generates a response.
+
+        Args:
+            request_iterator: Async iterator of StreamRequest messages
+            context: gRPC context
+
+        Yields:
+            StreamResponse messages with operation results (in request order)
+        """
+        # Per-stream state for the current chunked request being assembled
+        # Only one chunked request can be in-flight at a time per stream (FIFO)
+        current_chunk_state: list = [None]  # [buffer, first_request, chunk_size] or None
+
+        async for request in request_iterator:
+            total_chunks = request.total_chunks
+
+            if total_chunks <= 1:
+                # Single message (existing behavior)
+                response = await self._handle_single_request(request, context)
+                yield response
+            else:
+                # Chunked request
+                response = await self._handle_chunked_request(request, context, current_chunk_state)
+                if response is not None:
+                    yield response
+
+    async def _handle_single_request(
+        self,
+        request: service_pb2.StreamRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> service_pb2.StreamResponse:
+        """Handle a single (non-chunked) stream request."""
+        response = service_pb2.StreamResponse()
+
+        try:
+            request_type = request.WhichOneof("request")
+
+            if request_type == "execute_aten":
+                result = await self.ExecuteAtenOperation(
+                    request.execute_aten, context
+                )
+                response.success = result.success
+                if not result.success:
+                    response.error_message = result.message
+                response.execute_aten.CopyFrom(result)
+
+            elif request_type == "delete_tensors":
+                result = await self.DeleteTensors(request.delete_tensors, context)
+                response.success = result.success
+                if not result.success:
+                    response.error_message = result.message
+                response.delete_tensors.CopyFrom(result)
+
+            elif request_type == "copy_tensor":
+                result = await self.CopyTensor(request.copy_tensor, context)
+                response.success = result.success
+                if not result.success:
+                    response.error_message = result.message
+                response.copy_tensor.CopyFrom(result)
+
+            elif request_type == "update_tensor":
+                result = await self._handle_update_tensor(request.update_tensor)
+                response.success = result.success
+                if not result.success:
+                    response.error_message = result.message
+                response.update_tensor.CopyFrom(result)
+
+            elif request_type == "get_tensor":
+                result = await self._handle_get_tensor(request.get_tensor)
+                response.success = result.success
+                if not result.success:
+                    response.error_message = result.message
+                response.get_tensor.CopyFrom(result)
+
+            else:
+                response.success = False
+                response.error_message = f"Unknown request type: {request_type}"
+
+        except Exception as e:
+            logger.error(f"Error in StreamOperations: {e}")
+            response.success = False
+            response.error_message = str(e)
+
+        return response
+
+    async def _handle_chunked_request(
+        self,
+        request: service_pb2.StreamRequest,
+        context: grpc.aio.ServicerContext,
+        chunk_state: list,
+    ) -> service_pb2.StreamResponse | None:
+        """
+        Handle a chunked stream request.
+
+        Buffers intermediate chunks and returns None. When the final chunk
+        is received, processes the assembled request and returns the response.
+
+        Only one chunked request can be in-flight at a time per stream (FIFO).
+
+        Args:
+            request: StreamRequest with chunking metadata
+            context: gRPC context
+            chunk_state: Mutable list holding [buffer, first_request, chunk_size] or [None]
+
+        Returns:
+            StreamResponse for final chunk, None for intermediate chunks
+        """
+        chunk_number = request.chunk_number
+        total_chunks = request.total_chunks
+        update_req = request.update_tensor
+
+        if chunk_number == 0:
+            # First chunk: initialize buffer
+            buffer = bytearray(request.total_bytes)
+            chunk_size = len(update_req.data)
+            chunk_state[0] = (buffer, request, chunk_size)
+
+        if chunk_state[0] is None:
+            return service_pb2.StreamResponse(
+                success=False,
+                error_message="Missing first chunk for chunked request"
+            )
+
+        buffer, first_request, chunk_size = chunk_state[0]
+
+        # Write chunk to buffer at correct offset
+        start = chunk_number * chunk_size
+        buffer[start:start + len(update_req.data)] = update_req.data
+
+        if chunk_number < total_chunks - 1:
+            # Intermediate chunk: buffer and continue (no response)
+            return None
+
+        # Last chunk: clear state and process complete request
+        chunk_state[0] = None
+
+        return await self._process_assembled_update_tensor(first_request, buffer, context)
+
+    async def _process_assembled_update_tensor(
+        self,
+        first_request: service_pb2.StreamRequest,
+        buffer: bytearray,
+        context: grpc.aio.ServicerContext,
+    ) -> service_pb2.StreamResponse:
+        """
+        Process an assembled update_tensor request from chunked data.
+
+        Args:
+            first_request: The first StreamRequest containing metadata
+            buffer: Assembled data buffer from all chunks
+            context: gRPC context
+
+        Returns:
+            StreamResponse with operation result
+        """
+        response = service_pb2.StreamResponse()
+        try:
+            update_req = first_request.update_tensor
+
+            # Auto-create tensor from metadata if provided
+            if update_req.HasField("metadata"):
+                self._ensure_tensor_exists(update_req.metadata)
+
+            # Deserialize from assembled buffer
+            dtype = eval(update_req.dtype)
+            shape = list(update_req.shape)
+
+            src_tensor = tensor_from_bytes(bytes(buffer), dtype, shape)
+
+            # Copy to target tensor
+            target = self.tensor_manager.get(update_req.tensor_id)
+            target.copy_(src_tensor.to(target.device))
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Updated tensor {update_req.tensor_id} from chunked stream "
+                    f"(shape={shape}, {len(buffer)} bytes)"
+                )
+
+            response.success = True
+            response.update_tensor.CopyFrom(service_pb2.TensorResponse(success=True))
+
+        except Exception as e:
+            logger.error(f"Error processing chunked update_tensor: {e}")
+            response.success = False
+            response.error_message = str(e)
+
+        return response

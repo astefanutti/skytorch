@@ -21,6 +21,28 @@ _NUMPY_UNSUPPORTED_DTYPES = {torch.bfloat16}
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 
 
+def tensor_from_bytes(data: bytes, dtype: torch.dtype, shape: list[int]) -> torch.Tensor:
+    """Create tensor from bytes, handling numpy-unsupported dtypes like bfloat16."""
+    if dtype in _NUMPY_UNSUPPORTED_DTYPES:
+        # Use UntypedStorage for dtypes numpy doesn't support
+        storage = torch.UntypedStorage.from_buffer(data, dtype=torch.uint8)
+        tensor = torch.empty(shape, dtype=dtype)
+        tensor.untyped_storage().copy_(storage)
+        return tensor
+    else:
+        return torch.frombuffer(bytearray(data), dtype=dtype).reshape(shape)
+
+
+def tensor_to_bytes(tensor: torch.Tensor) -> bytes:
+    """Serialize tensor to bytes, handling numpy-unsupported dtypes like bfloat16."""
+    tensor_contig = tensor.detach().contiguous().cpu()
+    if tensor.dtype in _NUMPY_UNSUPPORTED_DTYPES:
+        storage = tensor_contig.untyped_storage()
+        return ctypes.string_at(storage.data_ptr(), storage.nbytes())
+    else:
+        return tensor_contig.numpy().tobytes()
+
+
 def serialize_tensor_to_chunks(
     tensor_id: int,
     tensor: torch.Tensor,

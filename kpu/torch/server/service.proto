@@ -12,6 +12,9 @@ service Service {
 
   // ATen operation execution
   rpc ExecuteAtenOperation(ExecuteAtenRequest) returns (ExecuteAtenResponse);
+
+  // Bidirectional streaming for low-latency operations
+  rpc StreamOperations(stream StreamRequest) returns (stream StreamResponse);
 }
 
 // Request to delete tensors by ID
@@ -139,4 +142,61 @@ message ExecuteAtenResponse {
   bool success = 1;
   string message = 2;
   repeated TensorReference output_tensors = 3;
+}
+
+// Request to update tensor data (upload from client)
+message UpdateTensorRequest {
+  uint64 tensor_id = 1;
+  bytes data = 2;  // Serialized tensor data
+  repeated int64 shape = 3;
+  string dtype = 4;
+  repeated int64 stride = 5;
+  int64 storage_offset = 6;
+  TensorMetadata metadata = 7;  // For auto-creation
+}
+
+// Response for GetTensor containing tensor data
+message GetTensorResponse {
+  bool success = 1;
+  string message = 2;
+  bytes data = 3;  // Serialized tensor data
+  repeated int64 shape = 4;
+  string dtype = 5;
+  repeated int64 stride = 6;
+  int64 storage_offset = 7;
+}
+
+// Request wrapper for bidirectional streaming
+// All operations go through this single channel to ensure ordering
+message StreamRequest {
+  oneof request {
+    ExecuteAtenRequest execute_aten = 1;
+    DeleteTensorsRequest delete_tensors = 2;
+    CopyTensorRequest copy_tensor = 3;
+    UpdateTensorRequest update_tensor = 4;
+    GetTensorRequest get_tensor = 5;
+  }
+
+  // Chunking support for large payloads
+  uint32 chunk_number = 10;      // 0-indexed chunk sequence
+  uint32 total_chunks = 11;      // Total chunks (0 or 1 = single message)
+  uint64 total_bytes = 13;       // Total data size (set on first chunk)
+}
+
+// Response wrapper for bidirectional streaming
+message StreamResponse {
+  bool success = 1;
+  string error_message = 2;
+
+  oneof response {
+    ExecuteAtenResponse execute_aten = 3;
+    TensorResponse delete_tensors = 4;
+    TensorResponse copy_tensor = 5;
+    TensorResponse update_tensor = 6;
+    GetTensorResponse get_tensor = 7;
+  }
+
+  // Chunking support for large responses (get_tensor)
+  uint32 chunk_number = 10;
+  uint32 total_chunks = 11;
 }

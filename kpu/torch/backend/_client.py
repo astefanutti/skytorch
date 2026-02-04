@@ -7,9 +7,18 @@ remote ATen operation execution via gRPC, and Compute resolution.
 
 from __future__ import annotations
 
-from typing import Optional
+import os
+from typing import Any, Callable, Optional
 
 import torch
+
+# Feature flags
+ENABLE_STREAMING = os.environ.get("KPU_ENABLE_STREAMING", "1") == "1"
+
+from kpu.torch.server.serialization import (
+    tensor_from_bytes,
+    tensor_to_bytes,
+)
 
 from kpu.client import Compute
 from kpu.torch.backend._device import device_manager
@@ -17,14 +26,18 @@ from kpu.torch.backend._storage import storage_manager
 from kpu.torch.client.tensor import get_storage_id, get_tensor_id, get_tensor_metadata
 from kpu.torch.client.metadata import TensorMetadata
 from kpu.torch.client.service import TensorClient
-from kpu.torch.client.utils import map_args_kwargs
+from kpu.torch.client.request import (
+    tensor_metadata_to_proto,
+    build_copy_tensor_request,
+    build_execute_aten_request,
+)
 
 
 async def copy_kpu_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     """
     Copy data from a KPU tensor to a CPU tensor.
 
-    Uses get_tensor to download tensor data from the server.
+    Uses streaming get_tensor to download tensor data from the server.
 
     Args:
         tensor: Source KPU tensor
@@ -32,28 +45,59 @@ async def copy_kpu_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     Returns:
         CPU tensor with copied data
     """
+    from kpu.torch.server import service_pb2
+
     if tensor.device.type != "kpu":
         raise ValueError("copy_kpu_to_cpu requires a KPU tensor")
 
     compute = _require_compute(tensor)
-    client = _require_client(compute)
 
-    cpu_tensor = await client.get_tensor(
-        tensor_id=get_tensor_id(tensor),
-        shape=tuple(tensor.shape),
-        dtype=tensor.dtype,
-        stride=tuple(tensor.stride()),
-        storage_offset=tensor.storage_offset(),
-    )
+    if ENABLE_STREAMING:
+        stream_manager = compute._grpc_client.stream
 
-    return cpu_tensor
+        tensor_id = get_tensor_id(tensor)
+
+        request = service_pb2.GetTensorRequest(
+            tensor_id=tensor_id,
+            shape=list(tensor.shape),
+            dtype=str(tensor.dtype),
+            stride=list(tensor.stride()),
+            storage_offset=tensor.storage_offset(),
+        )
+
+        future = stream_manager.submit_get_tensor(request)
+
+        # Await the future - it's on the global loop which we're running on
+        response = await future
+
+        if not response.success:
+            raise RuntimeError(f"Failed to get tensor: {response.error_message}")
+
+        # Deserialize tensor data
+        dtype = eval(response.get_tensor.dtype)
+        shape = list(response.get_tensor.shape)
+        data = response.get_tensor.data
+
+        return tensor_from_bytes(data, dtype, shape)
+
+    else:
+        # Use unary RPC
+        client = _require_client(compute)
+        cpu_tensor = await client.get_tensor(
+            tensor_id=get_tensor_id(tensor),
+            shape=tuple(tensor.shape),
+            dtype=tensor.dtype,
+            stride=tuple(tensor.stride()),
+            storage_offset=tensor.storage_offset(),
+        )
+        return cpu_tensor
 
 
-async def copy_cpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
+async def copy_cpu_to_kpu(src: torch.Tensor, dst: torch.Tensor):
     """
     Copy data from a CPU tensor to a KPU tensor.
 
-    Uses a single update_tensor call with metadata for auto-creation.
+    Uses streaming update_tensor call with metadata for auto-creation.
     The server will create the tensor if it doesn't exist.
 
     Args:
@@ -63,37 +107,63 @@ async def copy_cpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
     Returns:
         Destination tensor (same as dst)
     """
+    from kpu.torch.server import service_pb2
+
     if dst.device.type != "kpu":
         raise ValueError("copy_cpu_to_kpu requires a KPU target tensor")
     if src.device.type != "cpu":
         raise ValueError("copy_cpu_to_kpu requires a CPU source tensor")
 
     compute = _require_compute(dst)
-    client = _require_client(compute)
 
     # Get metadata for auto-creation if tensor is not registered
-    metadata = _get_tensor_metadata_if_new(dst)
+    meta = _get_tensor_metadata_if_new(dst)
 
-    # Single call - server will auto-create tensor from metadata
-    await client.update_tensor(
-        src=src,
-        tensor_id=get_tensor_id(dst),
-        tensor_metadata=metadata,
-    )
+    if ENABLE_STREAMING:
+        # Use streaming channel for proper ordering
+        stream_manager = compute._grpc_client.stream
+
+        # Serialize tensor data (detach in case it requires grad)
+        data = tensor_to_bytes(src)
+
+        # Build metadata proto if needed
+        metadata_proto = None
+        if meta is not None:
+            metadata_proto = tensor_metadata_to_proto(meta)
+
+        request = service_pb2.UpdateTensorRequest(
+            tensor_id=get_tensor_id(dst),
+            data=data,
+            shape=list(dst.shape),
+            dtype=str(dst.dtype),
+            stride=list(dst.stride()),
+            storage_offset=dst.storage_offset(),
+        )
+        if metadata_proto is not None:
+            request.metadata.CopyFrom(metadata_proto)
+
+        # FIXME: error handling
+        future = stream_manager.submit_update_tensor(request)
+    else:
+        # Use unary RPC
+        client = _require_client(compute)
+        await client.update_tensor(
+            src=src,
+            tensor_id=get_tensor_id(dst),
+            tensor_metadata=meta,
+        )
 
     # Register locally after RPC
-    if metadata is not None:
+    if meta is not None:
         _register_tensor_locally(dst)
-
-    return dst
 
 
 async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
     """
     Copy data between KPU tensors on the same Compute.
 
-    Uses a single copy_tensor call with metadata for auto-creation.
-    The server will create tensors if they don't exist.
+    Uses streaming mode (fire-and-forget) when ENABLE_STREAMING is True,
+    otherwise uses synchronous unary RPC.
 
     Args:
         src: Source KPU tensor
@@ -122,22 +192,43 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
             "Both tensors must be on the same Compute resource."
         )
 
-    client = _require_client(src_compute)
-
     # Get metadata for auto-creation if tensors are not registered
     src_meta = _get_tensor_metadata_if_new(src)
     dst_meta = _get_tensor_metadata_if_new(dst)
 
-    # Single call - server will auto-create tensors from metadata
-    await client.copy_tensor(
-        src_tensor_id=get_tensor_id(src),
-        dst_tensor_id=get_tensor_id(dst),
-        src_offset=src.storage_offset() * src.element_size(),
-        dst_offset=dst.storage_offset() * dst.element_size(),
-        num_bytes=src.numel() * src.element_size(),
-        src_metadata=src_meta,
-        dst_metadata=dst_meta,
-    )
+    if ENABLE_STREAMING:
+        stream_manager = src_compute._grpc_client.stream
+
+        # Always send metadata in streaming mode to handle tensor ID changes
+        src_meta_streaming = _get_tensor_metadata_always(src)
+        dst_meta_streaming = _get_tensor_metadata_always(dst)
+
+        # Build request
+        request = build_copy_tensor_request(
+            src_tensor_id=get_tensor_id(src),
+            dst_tensor_id=get_tensor_id(dst),
+            src_offset=src.storage_offset() * src.element_size(),
+            dst_offset=dst.storage_offset() * dst.element_size(),
+            num_bytes=src.numel() * src.element_size(),
+            src_metadata=src_meta_streaming,
+            dst_metadata=dst_meta_streaming,
+        )
+
+        # FIXME: error handling
+        future = stream_manager.submit_copy_tensor(request)
+        # Fire-and-forget: don't await in streaming mode
+    else:
+        # Unary mode: wait for operation to complete
+        client = _require_client(src_compute)
+        await client.copy_tensor(
+            src_tensor_id=get_tensor_id(src),
+            dst_tensor_id=get_tensor_id(dst),
+            src_offset=src.storage_offset() * src.element_size(),
+            dst_offset=dst.storage_offset() * dst.element_size(),
+            num_bytes=src.numel() * src.element_size(),
+            src_metadata=src_meta,
+            dst_metadata=dst_meta,
+        )
 
     # Register locally after RPC
     if src_meta is not None:
@@ -150,12 +241,26 @@ async def delete_tensors(compute: Compute, tensor_ids: list[int]) -> None:
     """
     Delete tensors on the remote server.
 
+    When streaming is enabled, routes through the stream to maintain
+    ordering with other operations. Otherwise uses unary RPC.
+
     Args:
         compute: The Compute instance
         tensor_ids: List of tensor IDs to delete
     """
-    client = _require_client(compute)
-    await client.delete_tensors(tensor_ids)
+    from kpu.torch.server import service_pb2
+
+    if ENABLE_STREAMING:
+        # Use streaming channel to maintain ordering with other ops
+        stream_manager = compute._grpc_client.stream
+        request = service_pb2.DeleteTensorsRequest(tensor_ids=tensor_ids)
+        # FIXME: error handling
+        future = stream_manager.submit_delete_tensors(request)
+        # Fire-and-forget: don't wait for response
+        # The stream ordering ensures deletes happen after prior ops complete
+    else:
+        client = _require_client(compute)
+        await client.delete_tensors(tensor_ids)
 
 
 async def execute_aten_operation(
@@ -259,6 +364,136 @@ async def execute_aten_operation(
     return result
 
 
+async def execute_aten_operation_streaming(
+        kpu_device: torch.device,
+        op_name: str,
+        args: tuple,
+        kwargs: dict,
+        output_tensors: list[torch.Tensor] | None,
+) -> None:
+    """
+    Execute an ATen operation via streaming (fire-and-forget).
+
+    Submits the operation to the stream and tracks the future for later sync.
+    Does not wait for the response - use sync() to wait for completion.
+
+    Args:
+        kpu_device: KPU device to execute on
+        op_name: ATen operation name
+        args: Positional arguments
+        kwargs: Keyword arguments
+        output_tensors: Pre-allocated output tensors
+    """
+    compute = device_manager.get_compute(kpu_device.index)
+    if compute is None:
+        raise RuntimeError(
+            "No Compute context available for ATen operation. "
+            "Ensure you are within an 'async with Compute(...):' block."
+        )
+
+    if compute._grpc_client is None:
+        raise RuntimeError(
+            f"Compute '{compute.name}' is not ready. "
+            "The gRPC client has not been initialized."
+        )
+
+    stream_manager = compute._grpc_client.stream
+
+    # Collect metadata for ALL input tensors (not just unregistered ones)
+    # In streaming mode, we always send metadata because the server may not
+    # have processed prior operations that created these tensors yet.
+    tensor_metadata_list: list[TensorMetadata] = []
+    tensors_to_register: list[torch.Tensor] = []
+
+    def process_arg(obj):
+        """Process an argument: collect metadata and map devices."""
+        if isinstance(obj, torch.Tensor):
+            if obj.device.type == "kpu":
+                # Always send metadata in streaming mode
+                meta = _get_tensor_metadata_always(obj)
+                tensor_metadata_list.append(meta)
+                # Track for local registration (if not already registered)
+                if _get_tensor_metadata_if_new(obj) is not None:
+                    tensors_to_register.append(obj)
+                return obj
+            elif obj.device.type == "cpu" and obj.dim() == 0:
+                return obj
+            else:
+                raise ValueError(
+                    f"Unsupported tensor: {obj.device.type} with dim {obj.dim()}. "
+                    f"Only KPU tensors and 0-dim CPU scalar tensors are allowed."
+                )
+        elif isinstance(obj, torch.device):
+            if obj.type == "kpu":
+                info = device_manager.get_remote_device_info(obj.index or 0)
+                return torch.device(info.device_type, info.device_index)
+            return obj
+        return obj
+
+    processed_args, processed_kwargs = map_args_kwargs(process_arg, args, kwargs)
+
+    # Collect metadata for ALL output tensors
+    output_metadata_list: list[TensorMetadata] = []
+    output_tensors_to_register: list[torch.Tensor] = []
+    if output_tensors:
+        for i, tensor in enumerate(output_tensors):
+            if tensor is not None:
+                # Always send metadata in streaming mode
+                meta = _get_tensor_metadata_always(tensor)
+                output_metadata_list.append(meta)
+                if _get_tensor_metadata_if_new(tensor) is not None:
+                    output_tensors_to_register.append(tensor)
+
+    # Build the request
+    request = build_execute_aten_request(
+        op_name=op_name,
+        args=processed_args,
+        kwargs=processed_kwargs,
+        output_tensors=output_tensors,
+        tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
+        output_metadata=output_metadata_list if output_metadata_list else None,
+    )
+
+    future = stream_manager.submit_execute_aten(request)
+
+    # Register tensors locally immediately (optimistic)
+    for tensor in tensors_to_register:
+        _register_tensor_locally(tensor)
+    for tensor in output_tensors_to_register:
+        _register_tensor_locally(tensor)
+
+
+def map_args_kwargs(
+        func: Callable[[Any], Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """
+    Apply func to all elements in args/kwargs, recursing into lists/tuples.
+
+    The func should handle leaf values (non-containers). Recursion into
+    lists and tuples is handled by this function.
+
+    Args:
+        func: Transformer function for leaf values
+        args: Positional arguments to transform
+        kwargs: Keyword arguments to transform
+
+    Returns:
+        Transformed (args, kwargs) tuple
+    """
+
+    def transform(obj: Any) -> Any:
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(transform(item) for item in obj)
+        return func(obj)
+
+    return (
+        tuple(transform(arg) for arg in args),
+        {k: transform(v) for k, v in kwargs.items()},
+    )
+
+
 def _get_tensor_metadata_if_new(tensor: torch.Tensor) -> Optional[TensorMetadata]:
     """
     Return metadata for a tensor if it's not yet registered, else None.
@@ -288,6 +523,35 @@ def _get_tensor_metadata_if_new(tensor: torch.Tensor) -> Optional[TensorMetadata
 
     if ref is not None:
         # ref is different tensor_id → this tensor is a view of base tensor
+        metadata.tensor_ref = ref
+
+    return metadata
+
+
+def _get_tensor_metadata_always(tensor: torch.Tensor) -> TensorMetadata:
+    """
+    Always return metadata for a tensor, regardless of registration status.
+
+    Used for streaming copy operations where we need to ensure the tensor
+    exists on the server even if it was created by a prior streaming
+    operation that hasn't been processed yet.
+
+    Args:
+        tensor: KPU tensor
+
+    Returns:
+        TensorMetadata for the tensor
+    """
+    tensor_id = get_tensor_id(tensor)
+    ref = storage_manager.tensor_ref(tensor)
+
+    metadata = get_tensor_metadata(tensor)
+    remote_info = device_manager.get_remote_device_info(tensor.device.index)
+    metadata.device_type = remote_info.device_type
+    metadata.device_index = remote_info.device_index
+
+    if ref is not None and ref != tensor_id:
+        # This tensor is a view of a base tensor
         metadata.tensor_ref = ref
 
     return metadata

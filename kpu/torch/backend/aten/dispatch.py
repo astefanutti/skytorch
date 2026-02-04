@@ -4,6 +4,10 @@ KPU ATen Dispatch - Meta tensor execution for shape inference.
 This module provides the fallback mechanism for ATen operations on KPU devices.
 It uses meta tensors to infer output shapes without moving data, then creates
 output tensors on the KPU device and executes operations remotely.
+
+Environment variables:
+    KPU_ENABLE_STREAMING: Set to "1" to enable bidirectional streaming for
+        pipelined operations (reduces per-op latency).
 """
 
 from typing import Any
@@ -13,7 +17,7 @@ import torch._dynamo  # Pre-import to avoid circular import issues during debugg
 
 from kpu.torch.backend._async import run_async
 from kpu.torch.backend import _client
-from kpu.torch.client.utils import map_args_kwargs
+from kpu.torch.backend._client import map_args_kwargs, ENABLE_STREAMING
 
 
 def _create_meta_tensor_from_kpu(
@@ -161,15 +165,29 @@ def _execute_with_static_outputs(
     )
 
     # Execute operation remotely via gRPC
-    run_async(
-        _client.execute_aten_operation(
-            kpu_device=kpu_device,
-            op_name=str(op),
-            args=args,
-            kwargs=kwargs,
-            output_tensors=output_tensors,
+    # Each thread gets its own stream, so streaming is always safe
+    if ENABLE_STREAMING:
+        # Streaming mode: fire-and-forget with deferred sync
+        run_async(
+            _client.execute_aten_operation_streaming(
+                kpu_device=kpu_device,
+                op_name=str(op),
+                args=args,
+                kwargs=kwargs,
+                output_tensors=output_tensors,
+            )
         )
-    )
+    else:
+        # Unary mode: wait for each operation
+        run_async(
+            _client.execute_aten_operation(
+                kpu_device=kpu_device,
+                op_name=str(op),
+                args=args,
+                kwargs=kwargs,
+                output_tensors=output_tensors,
+            )
+        ).result()
 
     # Return results
     if len(output_tensors) > 1:
