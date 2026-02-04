@@ -14,6 +14,7 @@ import torch
 
 from kpu.torch.backend._async import run_async
 from kpu.torch.backend import _client
+from kpu.torch.backend._client import ENABLE_STREAMING
 
 
 def _copy_from_device(tensor: torch.Tensor) -> torch.Tensor:
@@ -25,11 +26,14 @@ def _copy_from_device(tensor: torch.Tensor) -> torch.Tensor:
     Returns:
         CPU tensor with copied data
     """
-    return run_async(_client.copy_kpu_to_cpu(tensor))
+    return run_async(_client.copy_kpu_to_cpu(tensor)).result()
 
 
-def _copy_to_device(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
+def _copy_to_device(src: torch.Tensor, dst: torch.Tensor) -> None:
     """Copy data from CPU tensor to KPU tensor.
+
+    When streaming is enabled, the update_tensor goes through the stream
+    ensuring proper ordering with other operations.
 
     Args:
         src: Source CPU tensor
@@ -38,7 +42,9 @@ def _copy_to_device(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
     Returns:
         Destination tensor (same as dst)
     """
-    return run_async(_client.copy_cpu_to_kpu(src, dst))
+    future = run_async(_client.copy_cpu_to_kpu(src, dst))
+    if not ENABLE_STREAMING:
+        future.result()
 
 
 def _copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
@@ -48,7 +54,9 @@ def _copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
         src: Source KPU tensor
         dst: Destination KPU tensor
     """
-    run_async(_client.copy_kpu_to_kpu(src, dst))
+    future = run_async(_client.copy_kpu_to_kpu(src, dst))
+    if not ENABLE_STREAMING:
+        future.result()
 
 
 def _copy_from(
@@ -79,7 +87,8 @@ def _copy_from(
 
     elif from_.device.type == "cpu" and to_.device.type == "kpu":
         # CPU to KPU
-        return _copy_to_device(from_, to_)
+        _copy_to_device(from_, to_)
+        return to_
 
     elif from_.device.type == "kpu" and to_.device.type == "kpu":
         # KPU to KPU

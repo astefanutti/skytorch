@@ -38,13 +38,14 @@ def _handle_masked_select(
 
     # Execute the operation with the pre-allocated output
     run_async(
-        _client.execute_aten_operation(
+        _client.execute_aten_operation_streaming(
             kpu_device=self_tensor.device,
             op_name=str(op),
             args=args,
             kwargs=kwargs,
             output_tensors=[output],
         )
+    # ).result()
     )
 
     return output

@@ -24,6 +24,11 @@ except ImportError:
 
 from kpu.torch.client.tensor import get_tensor_id
 from kpu.torch.client.metadata import TensorMetadata
+from kpu.torch.client.request import (
+    tensor_metadata_to_proto,
+    build_copy_tensor_request,
+    build_execute_aten_request,
+)
 from kpu.torch.server.serialization import serialize_tensor_to_chunks, TensorAssembler
 from grpc.aio._typing import MetadataType
 
@@ -85,7 +90,7 @@ class TensorClient:
                 if first_chunk:
                     if tensor_metadata is not None:
                         chunk.metadata.CopyFrom(
-                            self._tensor_metadata_to_proto(tensor_metadata)
+                            tensor_metadata_to_proto(tensor_metadata)
                         )
                     first_chunk = False
                 yield chunk
@@ -193,22 +198,15 @@ class TensorClient:
         Raises:
             RuntimeError: If copy fails
         """
-        request = service_pb2.CopyTensorRequest(
+        request = build_copy_tensor_request(
             src_tensor_id=src_tensor_id,
             dst_tensor_id=dst_tensor_id,
             src_offset=src_offset,
             dst_offset=dst_offset,
             num_bytes=num_bytes,
+            src_metadata=src_metadata,
+            dst_metadata=dst_metadata,
         )
-
-        if src_metadata is not None:
-            request.src_metadata.CopyFrom(
-                self._tensor_metadata_to_proto(src_metadata)
-            )
-        if dst_metadata is not None:
-            request.dst_metadata.CopyFrom(
-                self._tensor_metadata_to_proto(dst_metadata)
-            )
 
         response = await self.stub.CopyTensor(request, metadata=self.metadata)
 
@@ -251,28 +249,14 @@ class TensorClient:
         Raises:
             RuntimeError: If operation execution fails
         """
-        request = service_pb2.ExecuteAtenRequest(
+        request = build_execute_aten_request(
             op_name=op_name,
-            args=[self._to_aten_arg(arg) for arg in args],
+            args=args,
+            kwargs=kwargs,
+            output_tensors=output_tensors,
+            tensor_metadata=tensor_metadata,
+            output_metadata=output_metadata,
         )
-
-        for k, v in kwargs.items():
-            request.kwargs[k].CopyFrom(self._to_aten_arg(v))
-
-        if output_tensors is not None:
-            for t in output_tensors:
-                if t is not None:
-                    request.outputs.append(
-                        service_pb2.TensorReference(tensor_id=get_tensor_id(t))
-                    )
-
-        # Add tensor metadata for auto-creation
-        if tensor_metadata is not None:
-            for meta in tensor_metadata:
-                request.tensor_metadata.append(self._tensor_metadata_to_proto(meta))
-        if output_metadata is not None:
-            for meta in output_metadata:
-                request.output_metadata.append(self._tensor_metadata_to_proto(meta))
 
         if logger.isEnabledFor(logging.DEBUG):
             input_tensor_ids = [
@@ -302,85 +286,3 @@ class TensorClient:
             return [ref.tensor_id for ref in response.output_tensors]
 
         return None
-
-    def _to_aten_arg(self, value) -> service_pb2.AtenArgument:
-        """Convert a value to AtenArgument proto.
-
-        Handles:
-        - None → none_value
-        - torch.Tensor (KPU) → TensorReference with tensor_id
-        - torch.Tensor (CPU, scalar) → scalar value
-        - bool/int/float/str → scalar values
-        - torch.device → string
-        - torch.dtype → scalar_dtype
-        - list/tuple → recursive AtenArgumentList
-        """
-        arg = service_pb2.AtenArgument()
-
-        if value is None:
-            arg.none_value = True
-        elif isinstance(value, torch.Tensor):
-            if value.device.type == "kpu":
-                arg.tensor.CopyFrom(
-                    service_pb2.TensorReference(tensor_id=get_tensor_id(value))
-                )
-            elif value.device.type == "cpu" and value.dim() == 0:
-                # CPU scalar tensor → convert to Python scalar
-                scalar = value.item()
-                if isinstance(scalar, bool):
-                    arg.scalar_bool = scalar
-                elif isinstance(scalar, int):
-                    arg.scalar_int = scalar
-                elif isinstance(scalar, float):
-                    arg.scalar_float = scalar
-                else:
-                    arg.scalar_string = str(scalar)
-            else:
-                raise ValueError(
-                    f"Unsupported tensor device: {value.device.type}. "
-                    f"Only KPU tensors and 0-dim CPU scalars are allowed."
-                )
-        elif isinstance(value, bool):
-            # Must check bool before int since bool is subclass of int
-            arg.scalar_bool = value
-        elif isinstance(value, int):
-            arg.scalar_int = value
-        elif isinstance(value, float):
-            arg.scalar_float = value
-        elif isinstance(value, str):
-            arg.scalar_string = value
-        elif isinstance(value, torch.device):
-            arg.scalar_string = str(value)
-        elif isinstance(value, torch.dtype):
-            arg.scalar_dtype = str(value)
-        elif isinstance(value, torch.memory_format):
-            arg.scalar_memory_format = str(value)
-        elif isinstance(value, (list, tuple)):
-            # Handle nested lists/tuples recursively
-            list_arg = service_pb2.AtenArgumentList()
-            list_arg.is_tuple = isinstance(value, tuple)
-            for item in value:
-                list_arg.values.append(self._to_aten_arg(item))
-            arg.list_value.CopyFrom(list_arg)
-        else:
-            raise ValueError(f"Unsupported ATen argument type: {type(value)}")
-
-        return arg
-
-    def _tensor_metadata_to_proto(
-        self, metadata: TensorMetadata
-    ) -> service_pb2.TensorMetadata:
-        """Convert TensorMetadata to proto message."""
-        proto = service_pb2.TensorMetadata(
-            tensor_id=metadata.tensor_id,
-            shape=list(metadata.shape),
-            dtype=str(metadata.dtype),
-            nbytes=metadata.nbytes,
-            device_type=metadata.device_type,
-            stride=list(metadata.stride) if metadata.stride else [],
-            storage_offset=metadata.storage_offset,
-            device_index=metadata.device_index,
-        )
-        if metadata.tensor_ref is not None:
-            proto.tensor_ref = metadata.tensor_ref
-        return proto

@@ -188,3 +188,81 @@ class ExecuteAtenResponse(_message.Message):
     message: str
     output_tensors: _containers.RepeatedCompositeFieldContainer[TensorReference]
     def __init__(self, success: bool = ..., message: _Optional[str] = ..., output_tensors: _Optional[_Iterable[_Union[TensorReference, _Mapping]]] = ...) -> None: ...
+
+class UpdateTensorRequest(_message.Message):
+    __slots__ = ("tensor_id", "data", "shape", "dtype", "stride", "storage_offset", "metadata")
+    TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
+    STRIDE_FIELD_NUMBER: _ClassVar[int]
+    STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
+    tensor_id: int
+    data: bytes
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    dtype: str
+    stride: _containers.RepeatedScalarFieldContainer[int]
+    storage_offset: int
+    metadata: TensorMetadata
+    def __init__(self, tensor_id: _Optional[int] = ..., data: _Optional[bytes] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., metadata: _Optional[_Union[TensorMetadata, _Mapping]] = ...) -> None: ...
+
+class GetTensorResponse(_message.Message):
+    __slots__ = ("success", "message", "data", "shape", "dtype", "stride", "storage_offset")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
+    STRIDE_FIELD_NUMBER: _ClassVar[int]
+    STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    message: str
+    data: bytes
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    dtype: str
+    stride: _containers.RepeatedScalarFieldContainer[int]
+    storage_offset: int
+    def __init__(self, success: bool = ..., message: _Optional[str] = ..., data: _Optional[bytes] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ...) -> None: ...
+
+class StreamRequest(_message.Message):
+    __slots__ = ("execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "chunk_number", "total_chunks", "total_bytes")
+    EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
+    DELETE_TENSORS_FIELD_NUMBER: _ClassVar[int]
+    COPY_TENSOR_FIELD_NUMBER: _ClassVar[int]
+    UPDATE_TENSOR_FIELD_NUMBER: _ClassVar[int]
+    GET_TENSOR_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
+    execute_aten: ExecuteAtenRequest
+    delete_tensors: DeleteTensorsRequest
+    copy_tensor: CopyTensorRequest
+    update_tensor: UpdateTensorRequest
+    get_tensor: GetTensorRequest
+    chunk_number: int
+    total_chunks: int
+    total_bytes: int
+    def __init__(self, execute_aten: _Optional[_Union[ExecuteAtenRequest, _Mapping]] = ..., delete_tensors: _Optional[_Union[DeleteTensorsRequest, _Mapping]] = ..., copy_tensor: _Optional[_Union[CopyTensorRequest, _Mapping]] = ..., update_tensor: _Optional[_Union[UpdateTensorRequest, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorRequest, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., total_bytes: _Optional[int] = ...) -> None: ...
+
+class StreamResponse(_message.Message):
+    __slots__ = ("success", "error_message", "execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "chunk_number", "total_chunks")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
+    DELETE_TENSORS_FIELD_NUMBER: _ClassVar[int]
+    COPY_TENSOR_FIELD_NUMBER: _ClassVar[int]
+    UPDATE_TENSOR_FIELD_NUMBER: _ClassVar[int]
+    GET_TENSOR_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    error_message: str
+    execute_aten: ExecuteAtenResponse
+    delete_tensors: TensorResponse
+    copy_tensor: TensorResponse
+    update_tensor: TensorResponse
+    get_tensor: GetTensorResponse
+    chunk_number: int
+    total_chunks: int
+    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., execute_aten: _Optional[_Union[ExecuteAtenResponse, _Mapping]] = ..., delete_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., copy_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., update_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorResponse, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ...) -> None: ...

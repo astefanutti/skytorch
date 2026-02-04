@@ -18,6 +18,7 @@ from weakref import WeakValueDictionary
 
 import torch
 
+from kpu.torch.backend._async import get_event_loop
 from kpu.torch.client.tensor import get_storage_id, get_tensor_id
 
 if TYPE_CHECKING:
@@ -155,22 +156,24 @@ class StorageManager:
             )
             return
 
-        # Get the gRPC client's primary loop (if available)
-        grpc_client = getattr(compute, '_grpc_client', None)
-        if grpc_client is None:
-            logger.warning(
-                f"No gRPC client available, skipping deletion of tensor(s) "
-                f"{tensor_ids}"
-            )
-            return
+        # # Get the gRPC client's primary loop (if available)
+        # grpc_client = getattr(compute, '_grpc_client', None)
+        # if grpc_client is None:
+        #     logger.warning(
+        #         f"No gRPC client available, skipping deletion of tensor(s) "
+        #         f"{tensor_ids}"
+        #     )
+        #     return
+        #
+        # loop = getattr(grpc_client, '_primary_loop', None)
+        # if loop is None or loop.is_closed():
+        #     logger.warning(
+        #         f"Event loop is closed or unavailable, skipping deletion of "
+        #         f"tensor(s) {tensor_ids}"
+        #     )
+        #     return
 
-        loop = getattr(grpc_client, '_primary_loop', None)
-        if loop is None or loop.is_closed():
-            logger.warning(
-                f"Event loop is closed or unavailable, skipping deletion of "
-                f"tensor(s) {tensor_ids}"
-            )
-            return
+        loop = get_event_loop()
 
         # Schedule deletion on the primary loop - non-blocking, fire-and-forget
         try:

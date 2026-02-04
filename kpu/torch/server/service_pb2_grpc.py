@@ -60,6 +60,11 @@ class ServiceStub(object):
                 request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.ExecuteAtenRequest.SerializeToString,
                 response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.ExecuteAtenResponse.FromString,
                 _registered_method=True)
+        self.StreamOperations = channel.stream_stream(
+                '/kpu.torch.Service/StreamOperations',
+                request_serializer=kpu_dot_torch_dot_server_dot_service__pb2.StreamRequest.SerializeToString,
+                response_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.StreamResponse.FromString,
+                _registered_method=True)
 
 
 class ServiceServicer(object):
@@ -98,6 +103,13 @@ class ServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def StreamOperations(self, request_iterator, context):
+        """Bidirectional streaming for low-latency operations
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -125,6 +137,11 @@ def add_ServiceServicer_to_server(servicer, server):
                     servicer.ExecuteAtenOperation,
                     request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.ExecuteAtenRequest.FromString,
                     response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.ExecuteAtenResponse.SerializeToString,
+            ),
+            'StreamOperations': grpc.stream_stream_rpc_method_handler(
+                    servicer.StreamOperations,
+                    request_deserializer=kpu_dot_torch_dot_server_dot_service__pb2.StreamRequest.FromString,
+                    response_serializer=kpu_dot_torch_dot_server_dot_service__pb2.StreamResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -263,6 +280,33 @@ class Service(object):
             '/kpu.torch.Service/ExecuteAtenOperation',
             kpu_dot_torch_dot_server_dot_service__pb2.ExecuteAtenRequest.SerializeToString,
             kpu_dot_torch_dot_server_dot_service__pb2.ExecuteAtenResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamOperations(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/kpu.torch.Service/StreamOperations',
+            kpu_dot_torch_dot_server_dot_service__pb2.StreamRequest.SerializeToString,
+            kpu_dot_torch_dot_server_dot_service__pb2.StreamResponse.FromString,
             options,
             channel_credentials,
             insecure,
