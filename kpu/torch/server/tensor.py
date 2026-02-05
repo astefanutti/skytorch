@@ -40,9 +40,22 @@ class TensorManager:
             tensor_id: Unique identifier for the tensor
             tensor: The tensor to register
         """
-        if tensor_id in self._tensors:
-            # FIXME: decide how to sync client state on re-runs
-            logger.warning(f"Tensor {tensor_id} already exists!")
+        if logger.isEnabledFor(logging.DEBUG):
+            if tensor_id in self._tensors:
+                existing = self._tensors[tensor_id]
+                if existing is tensor:
+                    # Same tensor object - this is fine (e.g., in-place op)
+                    logger.debug(f"Tensor {tensor_id} re-registered (same object)")
+                elif existing.data_ptr() == tensor.data_ptr():
+                    # Same storage - likely a view, this is fine
+                    logger.debug(f"Tensor {tensor_id} re-registered (same storage)")
+                else:
+                    # Different tensor - this is a collision!
+                    logger.debug(
+                        f"Tensor ID collision! ID={tensor_id} "
+                        f"existing: shape={existing.shape}, data_ptr={existing.data_ptr()}, "
+                        f"new: shape={tensor.shape}, data_ptr={tensor.data_ptr()}"
+                    )
         self._tensors[tensor_id] = tensor
 
     def delete(self, tensor_id: int) -> bool:
