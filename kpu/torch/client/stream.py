@@ -92,6 +92,9 @@ class StreamManager:
         # Sync support
         self._last_error: Optional[Exception] = None
 
+        # Shutdown signaling
+        self._shutdown_event: Optional[asyncio.Event] = None
+
     async def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """
         Start the bidirectional stream.
@@ -104,6 +107,7 @@ class StreamManager:
 
         self._loop = loop
         self._request_queue = asyncio.Queue()
+        self._shutdown_event = asyncio.Event()
 
         # Start sender and receiver tasks
         self._sender_task = asyncio.create_task(self._sender_loop())
@@ -120,7 +124,6 @@ class StreamManager:
                     if request is None:
                         # Shutdown signal
                         break
-                    request_type = request.WhichOneof('request')
                     yield request
 
             # Start the bidirectional stream
@@ -128,9 +131,8 @@ class StreamManager:
                 request_generator(), metadata=self._metadata
             )
 
-            # Keep the sender task alive until closing
-            while not self._closing:
-                await asyncio.sleep(0.01)
+            # Wait for shutdown signal
+            await self._shutdown_event.wait()
 
         except grpc.RpcError as e:
             logger.error(f"Stream sender error: {e}")
@@ -359,6 +361,10 @@ class StreamManager:
             return
 
         self._closing = True
+
+        # Wake up sender loop
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
 
         # Signal sender to stop
         if self._request_queue is not None:
