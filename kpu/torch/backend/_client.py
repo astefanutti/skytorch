@@ -199,10 +199,6 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
     if ENABLE_STREAMING:
         stream_manager = src_compute._grpc_client.stream
 
-        # Always send metadata in streaming mode to handle tensor ID changes
-        src_meta_streaming = _get_tensor_metadata_always(src)
-        dst_meta_streaming = _get_tensor_metadata_always(dst)
-
         # Build request
         request = build_copy_tensor_request(
             src_tensor_id=get_tensor_id(src),
@@ -210,8 +206,8 @@ async def copy_kpu_to_kpu(src: torch.Tensor, dst: torch.Tensor) -> None:
             src_offset=src.storage_offset() * src.element_size(),
             dst_offset=dst.storage_offset() * dst.element_size(),
             num_bytes=src.numel() * src.element_size(),
-            src_metadata=src_meta_streaming,
-            dst_metadata=dst_meta_streaming,
+            src_metadata=src_meta,
+            dst_metadata=dst_meta,
         )
 
         # FIXME: error handling
@@ -273,12 +269,8 @@ async def execute_aten_operation(
     """
     Execute an ATen operation on the remote Compute.
 
-    Uses a single execute_aten_operation call with metadata for auto-creation.
-    The server will create tensors if they don't exist.
-
-    Supports two modes:
-    - Pre-allocated outputs: output_tensors provided, writes to them, returns None
-    - Server-created outputs: output_tensors is None, returns list[int] (tensor_ids)
+    Uses streaming (fire-and-forget) when ENABLE_STREAMING is True,
+    otherwise uses unary RPC and waits for completion.
 
     Args:
         kpu_device: KPU device to execute on
@@ -288,101 +280,7 @@ async def execute_aten_operation(
         output_tensors: Pre-allocated output tensors, or None for server-created
 
     Returns:
-        None if output_tensors provided, list[int] of tensor_ids if server created outputs
-
-    Raises:
-        RuntimeError: If no Compute registered for the device
-    """
-    compute = device_manager.get_compute(kpu_device.index)
-    if compute is None:
-        raise RuntimeError(
-            "No Compute context available for ATen operation. "
-            "Ensure you are within an 'async with Compute(...):' block."
-        )
-
-    client = _require_client(compute)
-
-    # Collect metadata for all unregistered input tensors
-    tensor_metadata_list: list[TensorMetadata] = []
-    tensors_to_register: list[torch.Tensor] = []
-
-    def process_arg(obj):
-        """Process an argument: collect metadata and map devices."""
-        if isinstance(obj, torch.Tensor):
-            if obj.device.type == "kpu":
-                # Collect metadata for auto-creation if not registered
-                meta = _get_tensor_metadata_if_new(obj)
-                if meta is not None:
-                    tensor_metadata_list.append(meta)
-                    tensors_to_register.append(obj)
-                return obj
-            elif obj.device.type == "cpu" and obj.dim() == 0:
-                return obj  # CPU scalar tensors are valid
-            else:
-                raise ValueError(
-                    f"Unsupported tensor: {obj.device.type} with dim {obj.dim()}. "
-                    f"Only KPU tensors and 0-dim CPU scalar tensors are allowed."
-                )
-        elif isinstance(obj, torch.device):
-            if obj.type == "kpu":
-                # Map KPU device to remote device
-                info = device_manager.get_remote_device_info(obj.index or 0)
-                return torch.device(info.device_type, info.device_index)
-            return obj
-        return obj
-
-    # Process args/kwargs: collect metadata and map devices (synchronously)
-    processed_args, processed_kwargs = map_args_kwargs(process_arg, args, kwargs)
-
-    # Collect metadata for output tensors
-    output_metadata_list: list[TensorMetadata] = []
-    output_tensors_to_register: list[torch.Tensor] = []
-    if output_tensors:
-        for tensor in output_tensors:
-            if tensor is not None:
-                meta = _get_tensor_metadata_if_new(tensor)
-                if meta is not None:
-                    output_metadata_list.append(meta)
-                    output_tensors_to_register.append(tensor)
-
-    # Single call - server will auto-create tensors from metadata
-    result = await client.execute_aten_operation(
-        op_name=op_name,
-        args=processed_args,
-        kwargs=processed_kwargs,
-        output_tensors=output_tensors,
-        tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
-        output_metadata=output_metadata_list if output_metadata_list else None,
-    )
-
-    # Register tensors locally after RPC
-    for tensor in tensors_to_register:
-        _register_tensor_locally(tensor)
-    for tensor in output_tensors_to_register:
-        _register_tensor_locally(tensor)
-
-    return result
-
-
-async def execute_aten_operation_streaming(
-        kpu_device: torch.device,
-        op_name: str,
-        args: tuple,
-        kwargs: dict,
-        output_tensors: list[torch.Tensor] | None,
-) -> None:
-    """
-    Execute an ATen operation via streaming (fire-and-forget).
-
-    Submits the operation to the stream and tracks the future for later sync.
-    Does not wait for the response - use sync() to wait for completion.
-
-    Args:
-        kpu_device: KPU device to execute on
-        op_name: ATen operation name
-        args: Positional arguments
-        kwargs: Keyword arguments
-        output_tensors: Pre-allocated output tensors
+        None in streaming mode, list[int] of tensor_ids in unary mode if server created outputs
     """
     compute = device_manager.get_compute(kpu_device.index)
     if compute is None:
@@ -397,11 +295,7 @@ async def execute_aten_operation_streaming(
             "The gRPC client has not been initialized."
         )
 
-    stream_manager = compute._grpc_client.stream
-
-    # Collect metadata for ALL input tensors (not just unregistered ones)
-    # In streaming mode, we always send metadata because the server may not
-    # have processed prior operations that created these tensors yet.
+    # Collect metadata for unregistered input tensors
     tensor_metadata_list: list[TensorMetadata] = []
     tensors_to_register: list[torch.Tensor] = []
 
@@ -409,11 +303,9 @@ async def execute_aten_operation_streaming(
         """Process an argument: collect metadata and map devices."""
         if isinstance(obj, torch.Tensor):
             if obj.device.type == "kpu":
-                # Always send metadata in streaming mode
-                meta = _get_tensor_metadata_always(obj)
-                tensor_metadata_list.append(meta)
-                # Track for local registration (if not already registered)
-                if _get_tensor_metadata_if_new(obj) is not None:
+                meta = _get_tensor_metadata_if_new(obj)
+                if meta is not None:
+                    tensor_metadata_list.append(meta)
                     tensors_to_register.append(obj)
                 return obj
             elif obj.device.type == "cpu" and obj.dim() == 0:
@@ -432,35 +324,58 @@ async def execute_aten_operation_streaming(
 
     processed_args, processed_kwargs = map_args_kwargs(process_arg, args, kwargs)
 
-    # Collect metadata for ALL output tensors
+    # Collect metadata for unregistered output tensors
     output_metadata_list: list[TensorMetadata] = []
     output_tensors_to_register: list[torch.Tensor] = []
     if output_tensors:
-        for i, tensor in enumerate(output_tensors):
+        for tensor in output_tensors:
             if tensor is not None:
-                # Always send metadata in streaming mode
-                meta = _get_tensor_metadata_always(tensor)
-                output_metadata_list.append(meta)
-                if _get_tensor_metadata_if_new(tensor) is not None:
+                meta = _get_tensor_metadata_if_new(tensor)
+                if meta is not None:
+                    output_metadata_list.append(meta)
                     output_tensors_to_register.append(tensor)
 
-    # Build the request
-    request = build_execute_aten_request(
-        op_name=op_name,
-        args=processed_args,
-        kwargs=processed_kwargs,
-        output_tensors=output_tensors,
-        tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
-        output_metadata=output_metadata_list if output_metadata_list else None,
-    )
+    if ENABLE_STREAMING:
+        stream_manager = compute._grpc_client.stream
 
-    future = stream_manager.submit_execute_aten(request)
+        request = build_execute_aten_request(
+            op_name=op_name,
+            args=processed_args,
+            kwargs=processed_kwargs,
+            output_tensors=output_tensors,
+            tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
+            output_metadata=output_metadata_list if output_metadata_list else None,
+        )
 
-    # Register tensors locally immediately (optimistic)
-    for tensor in tensors_to_register:
-        _register_tensor_locally(tensor)
-    for tensor in output_tensors_to_register:
-        _register_tensor_locally(tensor)
+        # FIXME: error handling
+        future = stream_manager.submit_execute_aten(request)
+
+        # Register tensors locally immediately (optimistic)
+        for tensor in tensors_to_register:
+            _register_tensor_locally(tensor)
+        for tensor in output_tensors_to_register:
+            _register_tensor_locally(tensor)
+
+        return None  # Fire-and-forget
+    else:
+        client = compute._grpc_client.torch
+
+        result = await client.execute_aten_operation(
+            op_name=op_name,
+            args=processed_args,
+            kwargs=processed_kwargs,
+            output_tensors=output_tensors,
+            tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
+            output_metadata=output_metadata_list if output_metadata_list else None,
+        )
+
+        # Register tensors locally after RPC
+        for tensor in tensors_to_register:
+            _register_tensor_locally(tensor)
+        for tensor in output_tensors_to_register:
+            _register_tensor_locally(tensor)
+
+        return result
 
 
 def map_args_kwargs(
@@ -523,35 +438,6 @@ def _get_tensor_metadata_if_new(tensor: torch.Tensor) -> Optional[TensorMetadata
 
     if ref is not None:
         # ref is different tensor_id → this tensor is a view of base tensor
-        metadata.tensor_ref = ref
-
-    return metadata
-
-
-def _get_tensor_metadata_always(tensor: torch.Tensor) -> TensorMetadata:
-    """
-    Always return metadata for a tensor, regardless of registration status.
-
-    Used for streaming copy operations where we need to ensure the tensor
-    exists on the server even if it was created by a prior streaming
-    operation that hasn't been processed yet.
-
-    Args:
-        tensor: KPU tensor
-
-    Returns:
-        TensorMetadata for the tensor
-    """
-    tensor_id = get_tensor_id(tensor)
-    ref = storage_manager.tensor_ref(tensor)
-
-    metadata = get_tensor_metadata(tensor)
-    remote_info = device_manager.get_remote_device_info(tensor.device.index)
-    metadata.device_type = remote_info.device_type
-    metadata.device_index = remote_info.device_index
-
-    if ref is not None and ref != tensor_id:
-        # This tensor is a view of a base tensor
         metadata.tensor_ref = ref
 
     return metadata

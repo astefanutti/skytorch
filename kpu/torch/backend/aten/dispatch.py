@@ -165,29 +165,17 @@ def _execute_with_static_outputs(
     )
 
     # Execute operation remotely via gRPC
-    # Each thread gets its own stream, so streaming is always safe
-    if ENABLE_STREAMING:
-        # Streaming mode: fire-and-forget with deferred sync
-        run_async(
-            _client.execute_aten_operation_streaming(
-                kpu_device=kpu_device,
-                op_name=str(op),
-                args=args,
-                kwargs=kwargs,
-                output_tensors=output_tensors,
-            )
+    future = run_async(
+        _client.execute_aten_operation(
+            kpu_device=kpu_device,
+            op_name=str(op),
+            args=args,
+            kwargs=kwargs,
+            output_tensors=output_tensors,
         )
-    else:
-        # Unary mode: wait for each operation
-        run_async(
-            _client.execute_aten_operation(
-                kpu_device=kpu_device,
-                op_name=str(op),
-                args=args,
-                kwargs=kwargs,
-                output_tensors=output_tensors,
-            )
-        ).result()
+    )
+    if not ENABLE_STREAMING:
+        future.result()
 
     # Return results
     if len(output_tensors) > 1:
