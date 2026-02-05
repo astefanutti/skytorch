@@ -54,6 +54,12 @@ test = [
     "pytest-asyncio>=0.21.0",
 ]
 
+demo = [
+    "pip-system-certs",
+    "torchvision",
+    "tqdm",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["kpu*"]
