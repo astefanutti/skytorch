@@ -31,6 +31,7 @@ from kpu.torch.server.serialization import (
     DEFAULT_CHUNK_SIZE,
     tensor_from_bytes,
     tensor_to_bytes,
+    parse_dtype,
 )
 from kpu.torch.server.tensor import TensorManager
 
@@ -72,7 +73,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         if tensor_id in self.tensor_manager:
             return self.tensor_manager.get(tensor_id)
 
-        dtype = eval(metadata.dtype)  # "torch.float32" -> torch.float32
+        dtype = parse_dtype(metadata.dtype)
         shape = list(metadata.shape)
         stride = list(metadata.stride) if metadata.stride else None
         storage_offset = metadata.storage_offset
@@ -179,7 +180,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         tensor_id = request.tensor_id
         shape = tuple(request.shape)
-        dtype = eval(request.dtype)
+        dtype = parse_dtype(request.dtype)
         stride = tuple(request.stride) if request.stride else None
         offset = request.storage_offset
 
@@ -198,9 +199,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 yield chunk
 
             if logger.isEnabledFor(logging.DEBUG):
+                data_preview = tensor.cpu().flatten()[:8].tolist()
                 logger.debug(
                     f"Sent tensor tensor_id={tensor_id} shape={tensor.shape} "
-                    f"data={tensor.cpu().flatten()[:8].tolist()}..."
+                    f"data={data_preview}..."
                 )
 
         except Exception as e:
@@ -346,9 +348,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 # Log input tensor data for debugging
                 for i, arg in enumerate(args):
                     if isinstance(arg, torch.Tensor):
+                        data_preview = arg.cpu().flatten()[:8].tolist()
                         logger.debug(
                             f"Input arg[{i}] shape={arg.shape} "
-                            f"data={arg.cpu().flatten()[:8].tolist()}..."
+                            f"data={data_preview}..."
                         )
 
             result = op(*args, **kwargs)
@@ -367,9 +370,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     # TODO: check whether it's also an input tensor
                     if tensor is not None:
                         if logger.isEnabledFor(logging.DEBUG):
+                            data_preview = tensor.cpu().flatten()[:8].tolist()
                             logger.debug(
                                 f"Output[{i}] tensor_id={ref.tensor_id} shape={tensor.shape} "
-                                f"data={tensor.cpu().flatten()[:8].tolist()}..."
+                                f"data={data_preview}..."
                             )
                         self.tensor_manager.register(ref.tensor_id, tensor)
 
@@ -488,7 +492,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 tensor = self.tensor_manager.get(request.tensor_id)
 
             # Deserialize tensor data
-            dtype = eval(request.dtype)  # "torch.float32" -> torch.float32
+            dtype = parse_dtype(request.dtype)
             shape = list(request.shape)
 
             # Copy data from bytes to tensor
@@ -532,8 +536,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             data = tensor_to_bytes(view_tensor)
 
             if logger.isEnabledFor(logging.DEBUG):
-                flat_data = view_tensor.contiguous().cpu().flatten()[:8].tolist()
-                logger.debug(f"Sent tensor {request.tensor_id} via stream data={flat_data}...")
+                data_preview = view_tensor.contiguous().cpu().flatten()[:8].tolist()
+                logger.debug(f"Sent tensor {request.tensor_id} via stream data={data_preview}...")
 
             return service_pb2.GetTensorResponse(
                 success=True,
@@ -726,7 +730,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 self._ensure_tensor_exists(update_req.metadata)
 
             # Deserialize from assembled buffer
-            dtype = eval(update_req.dtype)
+            dtype = parse_dtype(update_req.dtype)
             shape = list(update_req.shape)
 
             src_tensor = tensor_from_bytes(bytes(buffer), dtype, shape)

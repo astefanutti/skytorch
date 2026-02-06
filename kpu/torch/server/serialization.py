@@ -13,6 +13,31 @@ except ImportError:
     raise ImportError("PyTorch is required. Install with: pip install torch")
 
 
+# Dtype string to torch.dtype lookup for fast parsing (replaces eval())
+_DTYPE_MAP = {
+    "torch.float32": torch.float32,
+    "torch.float64": torch.float64,
+    "torch.float16": torch.float16,
+    "torch.bfloat16": torch.bfloat16,
+    "torch.int32": torch.int32,
+    "torch.int64": torch.int64,
+    "torch.int16": torch.int16,
+    "torch.int8": torch.int8,
+    "torch.uint8": torch.uint8,
+    "torch.bool": torch.bool,
+    "torch.complex64": torch.complex64,
+    "torch.complex128": torch.complex128,
+}
+
+
+def parse_dtype(dtype_str: str) -> torch.dtype:
+    """Parse dtype string to torch.dtype."""
+    if dtype_str in _DTYPE_MAP:
+        return _DTYPE_MAP[dtype_str]
+    # Fallback for unknown dtypes
+    return eval(dtype_str)
+
+
 # dtypes that numpy doesn't support
 _NUMPY_UNSUPPORTED_DTYPES = {torch.bfloat16}
 
@@ -160,7 +185,7 @@ class TensorAssembler:
     def _assemble_tensor(self) -> torch.Tensor:
         """Assemble all chunks into a complete tensor."""
         # Get metadata
-        dtype = eval(self.dtype)  # "torch.float32" -> torch.float32
+        dtype = parse_dtype(self.dtype)
 
         # Zero-copy tensor from pre-allocated buffer
         tensor = torch.frombuffer(self._buffer, dtype=dtype)
