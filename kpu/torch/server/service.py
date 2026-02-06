@@ -5,6 +5,7 @@ This module implements the gRPC service for tensor management and
 ATen operation execution.
 """
 
+import functools
 import logging
 from typing import AsyncIterator
 
@@ -460,6 +461,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """Resolve kwargs from proto format to Python values."""
         return {key: self._resolve_aten_arg(arg) for key, arg in kwargs.items()}
 
+    @functools.lru_cache(maxsize=1024)
     def _get_aten_op(self, op_name: str):
         """Get ATen operator by name.
 
