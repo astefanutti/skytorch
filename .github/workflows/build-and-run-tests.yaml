@@ -40,7 +40,7 @@ jobs:
         with:
           python-version: 3.11
 
-      - name: Install KPU
+      - name: Install SkyTorch
         run: |
           pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
           pip install --no-build-isolation -e ".[test]"
@@ -81,7 +81,7 @@ jobs:
         id: kind
         uses: helm/kind-action@v1.13.0
         with:
-          cluster_name: kpu
+          cluster_name: skytorch
           version: v0.30.0
           config: tests/e2e/kind.yaml
           registry: true
@@ -106,49 +106,49 @@ jobs:
           kubectl wait --for=condition=Established --timeout=60s crd/contourdeployments.projectcontour.io
           kubectl wait --for=condition=Available=true --timeout=60s deployment -n projectcontour contour-gateway-provisioner
 
-      - name: Build and push KPU operator image
+      - name: Build and push SkyTorch operator image
         run: |
           IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
           make build-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
           make push-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
 
-      - name: Build and load KPU PyTorch server image
+      - name: Build and load SkyTorch server image
         run: |
-          IMAGE_TAG="kpu-torch-server:test"
+          IMAGE_TAG="skytorch-server:test"
           docker build -f cmd/server/torch/Containerfile -t "${IMAGE_TAG}" .
-          kind load docker-image "${IMAGE_TAG}" --name kpu
+          kind load docker-image "${IMAGE_TAG}" --name skytorch
 
-      - name: Deploy KPU operator
+      - name: Deploy SkyTorch operator
         id: deploy
         run: |
           IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
           make deploy-operator -e IMAGE_BASE="${IMAGE_BASE}" -e ENV="e2e"
-          kubectl wait --for=condition=Available=true --timeout=60s deployment -n kpu-system kpu-operator
-          kubectl wait --for=condition=Programmed --timeout=60s gateway -n kpu-system kpu-gateway
+          kubectl wait --for=condition=Available=true --timeout=60s deployment -n skytorch-system skytorch-operator
+          kubectl wait --for=condition=Programmed --timeout=60s gateway -n skytorch-system skytorch-gateway
 
-      - name: Install KPU
+      - name: Install SkyTorch
         run: |
           pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
           pip install --no-build-isolation -e ".[test]"
 
       - name: Run E2E tests
         run: |
-          TEST_IMAGE="kpu-torch-server:test"
+          TEST_IMAGE="skytorch-server:test"
           echo "Using test image: ${TEST_IMAGE}"
-          KPU_TEST_IMAGE="${TEST_IMAGE}" pytest tests/e2e -v -m e2e
+          SKYTORCH_TEST_IMAGE="${TEST_IMAGE}" pytest tests/e2e -v -m e2e
 
       - name: Print operator logs
         if: always() && steps.deploy.outcome == 'success'
         run: |
-          kubectl logs --tail -1 -n kpu-system -l app.kubernetes.io/name=operator -f | tee ${RUNNER_TEMP}/kpu-operator.log &
-          kubectl scale deployment -n kpu-system kpu-operator --replicas 0
-          kubectl wait --for=delete pods --timeout=60s -n kpu-system -l app.kubernetes.io/name=operator
+          kubectl logs --tail -1 -n skytorch-system -l app.kubernetes.io/name=operator -f | tee ${RUNNER_TEMP}/skytorch-operator.log &
+          kubectl scale deployment -n skytorch-system skytorch-operator --replicas 0
+          kubectl wait --for=delete pods --timeout=60s -n skytorch-system -l app.kubernetes.io/name=operator
           wait
 
       - name: Export KinD logs
         if: always() && steps.kind.outcome == 'success'
         run: |
-          kind export logs ${RUNNER_TEMP} --name kpu
+          kind export logs ${RUNNER_TEMP} --name skytorch
 
       - name: Upload KinD logs
         uses: actions/upload-artifact@v5

@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for KPU E2E tests.
+Pytest configuration and shared fixtures for SkyTorch E2E tests.
 """
 
 import asyncio
@@ -12,8 +12,8 @@ import pytest
 def test_image():
     """Get the test image for Compute resources."""
     return os.getenv(
-        "KPU_TEST_IMAGE",
-        "ghcr.io/astefanutti/kpu-torch-server"
+        "SKYTORCH_TEST_IMAGE",
+        "ghcr.io/astefanutti/skytorch-server"
     )
 
 

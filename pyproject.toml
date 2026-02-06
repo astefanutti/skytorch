@@ -3,8 +3,8 @@ requires = ["setuptools>=75.0", "wheel", "ninja"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kpu-dev"
-description = "Kubernetes Processing Unit"
+name = "skytorch"
+description = "PyTorch with Cloud GPUs"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
@@ -35,9 +35,9 @@ dependencies = [
 dynamic = ["version", "readme"]
 
 [project.urls]
-Homepage = "https://github.com/astefanutti/kpu"
-Repository = "https://github.com/astefanutti/kpu"
-Issues = "https://github.com/astefanutti/kpu/issues"
+Homepage = "https://github.com/astefanutti/skytorch"
+Repository = "https://github.com/astefanutti/skytorch"
+Issues = "https://github.com/astefanutti/skytorch/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -62,21 +62,21 @@ demo = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["kpu*"]
-exclude = ["kpu.torch.backend.csrc"]
+include = ["skytorch*"]
+exclude = ["skytorch.torch.backend.csrc"]
 
 [tool.setuptools.dynamic]
 version = { file = ["VERSION.md"] }
 readme = { file = ["README.md"], content-type = "text/markdown" }
 
 [tool.setuptools.package-data]
-"kpu.server.health" = ["*.proto"]
-"kpu.server.metrics" = ["*.proto"]
-"kpu.torch.server" = ["*.proto"]
-"kpu.torch.backend" = ["csrc/*.cpp", "csrc/*.h"]
+"skytorch.server.health" = ["*.proto"]
+"skytorch.server.metrics" = ["*.proto"]
+"skytorch.torch.server" = ["*.proto"]
+"skytorch.torch.backend" = ["csrc/*.cpp", "csrc/*.h"]
 
 [project.entry-points."torch.backends"]
-kpu = "kpu.torch.backend:_autoload"
+sky = "skytorch.torch.backend:_autoload"
 
 [tool.black]
 line-length = 100
@@ -138,6 +138,6 @@ addopts = [
 ]
 markers = [
     "slow: slow tests (deselect with '-m \"not slow\"')",
-    "e2e: end-to-end tests (requires a Kubernetes cluster with KPU installed)",
-    "it: integration tests (uses KPU PyTorch server)",
+    "e2e: end-to-end tests (requires a Kubernetes cluster with SkyTorch installed)",
+    "it: integration tests (uses SkyTorch server)",
 ]

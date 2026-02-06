@@ -1,1 +1,1 @@
-"""KPU E2E tests."""
+"""SkyTorch E2E tests."""

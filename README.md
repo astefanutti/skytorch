@@ -1,2 +1,3 @@
-# kpu
-Kubernetes Processing Unit
+# SkyTorch
+
+PyTorch with Cloud GPUs.

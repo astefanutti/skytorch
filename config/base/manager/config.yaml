@@ -1,4 +1,4 @@
-apiVersion: config.kpu.dev/v1alpha1
+apiVersion: config.skytorch.dev/v1alpha1
 kind: Configuration
 # Health configuration
 health:
@@ -19,7 +19,7 @@ webhook:
 # Leader election configuration
 leaderElection:
   leaderElect: false
-  resourceName: kpu.dev
+  resourceName: skytorch.dev
   resourceNamespace: ""
   leaseDuration: 15s
   renewDeadline: 10s
@@ -28,13 +28,13 @@ leaderElection:
 # Controller configuration
 controller:
   groupKindConcurrency:
-    Compute.compute.kpu.dev: 5
+    Compute.compute.skytorch.dev: 5
 
 # Certificate management configuration
 certManagement:
   enable: false
-  webhookServiceName: kpu-controller-manager
-  webhookSecretName: kpu-webhook-cert
+  webhookServiceName: skytorch-controller-manager
+  webhookSecretName: skytorch-webhook-cert
 
 # Client connection configuration
 clientConnection:

@@ -1,9 +1,9 @@
-module github.com/astefanutti/kpu/internal/tools
+module github.com/astefanutti/skytorch/internal/tools
 
 go 1.24.0
 
 require (
-	github.com/astefanutti/kpu v0.0.0-00010101000000-000000000000
+	github.com/astefanutti/skytorch v0.0.0-00010101000000-000000000000
 	github.com/golangci/golangci-lint/v2 v2.7.2
 	k8s.io/code-generator v0.34.1
 	k8s.io/klog/v2 v2.130.1
@@ -12,7 +12,7 @@ require (
 	sigs.k8s.io/kustomize/kustomize/v5 v5.8.0
 )
 
-replace github.com/astefanutti/kpu => ..
+replace github.com/astefanutti/skytorch => ..
 
 require (
 	4d63.com/gocheckcompilerdirectives v1.3.0 // indirect

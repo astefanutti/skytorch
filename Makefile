@@ -40,7 +40,7 @@ CONTAINER_RUNTIME ?= $(shell hack/container-runtime.sh)
 ARCH ?= $(shell $(GO_CMD) env GOARCH)
 VERSION ?= v0.0.0-dev
 IMAGE_BASE ?= ghcr.io/astefanutti
-OPERATOR_IMG ?= ${IMAGE_BASE}/kpu-operator:${VERSION}
+OPERATOR_IMG ?= ${IMAGE_BASE}/skytorch-operator:${VERSION}
 
 ##@ General
 
@@ -64,8 +64,8 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate manifests.
-	$(CONTROLLER_GEN) "crd:generateEmbeddedObjectMeta=true" rbac:roleName=kpu-operator webhook \
-		paths="./cmd/...;./pkg/apis/kpu/v1alpha1/...;./pkg/controllers/...;./pkg/webhooks/...;./pkg/util/cert/..." \
+	$(CONTROLLER_GEN) "crd:generateEmbeddedObjectMeta=true" rbac:roleName=skytorch-operator webhook \
+		paths="./cmd/...;./pkg/apis/compute/v1alpha1/...;./pkg/controllers/...;./pkg/webhooks/...;./pkg/util/cert/..." \
 		output:crd:artifacts:config=config/base/crds \
 		output:rbac:artifacts:config=config/base/rbac \
 		output:webhook:artifacts:config=config/base/webhook
@@ -120,7 +120,7 @@ test-integration: ginkgo envtest ## Run Go integration test.
 
 .PHONY: deploy-operator
 deploy-operator: kustomize ## Deploy operator.
-	cd config/${ENV} && $(KUSTOMIZE) edit set image ghcr.io/astefanutti/kpu-operator=${OPERATOR_IMG}
+	cd config/${ENV} && $(KUSTOMIZE) edit set image ghcr.io/astefanutti/skytorch-operator=${OPERATOR_IMG}
 	$(KUSTOMIZE) build config/${ENV} | kubectl apply --server-side -f -
 
 # Instructions to download tools for development.

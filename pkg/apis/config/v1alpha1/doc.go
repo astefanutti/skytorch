@@ -18,7 +18,7 @@ limitations under the License.
 // +k8s:openapi-gen=true
 // +k8s:deepcopy-gen=package
 
-// Package v1alpha1 contains API Schema definitions for the config.kpu.dev v1alpha1 API group
-// +groupName=config.kpu.dev
+// Package v1alpha1 contains API Schema definitions for the config.skytorch.dev v1alpha1 API group
+// +groupName=config.skytorch.dev
 
 package v1alpha1

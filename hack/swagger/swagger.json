@@ -1,12 +1,378 @@
 {
   "openapi": "3.0.0",
   "info": {
-    "title": "KPU OpenAPI Spec",
+    "title": "SkyTorch OpenAPI Spec",
     "version": "unversioned"
   },
   "paths": {},
   "components": {
     "schemas": {
+      "compute.v1alpha1.Compute": {
+        "description": "Compute represents the configuration of a compute environment.",
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "description": "metadata of the Compute.",
+            "default": {},
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
+              }
+            ]
+          },
+          "spec": {
+            "description": "spec of the Compute.",
+            "default": {},
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/compute.v1alpha1.ComputeSpec"
+              }
+            ]
+          },
+          "status": {
+            "description": "status of the Compute.",
+            "default": {},
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/compute.v1alpha1.ComputeStatus"
+              }
+            ]
+          }
+        }
+      },
+      "compute.v1alpha1.ComputeAddress": {
+        "description": "ComputeAddress describes a network address that can be used to access the Compute.",
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "type": {
+            "description": "type of the address.",
+            "type": "string"
+          },
+          "value": {
+            "description": "value of the address. The validity of the values will depend on the type.\n\nExamples: `1.2.3.4`, `128::1`, `my-hostname.example.com`.",
+            "type": "string"
+          }
+        }
+      },
+      "compute.v1alpha1.ComputeList": {
+        "description": "ComputeList is a collection of computes.",
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "apiVersion": {
+            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+            "type": "string"
+          },
+          "items": {
+            "description": "List of Computes.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/compute.v1alpha1.Compute"
+                }
+              ]
+            }
+          },
+          "kind": {
+            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+            "type": "string"
+          },
+          "metadata": {
+            "description": "Standard list metadata.",
+            "default": {},
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"
+              }
+            ]
+          }
+        }
+      },
+      "compute.v1alpha1.ComputeSpec": {
+        "description": "ComputeSpec represents the specification of the Compute.",
+        "type": "object",
+        "properties": {
+          "annotations": {
+            "description": "annotations to apply to the Compute resources.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "default": ""
+            }
+          },
+          "args": {
+            "description": "args for the entrypoint for the Compute runtime.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "default": ""
+            },
+            "x-kubernetes-list-type": "atomic"
+          },
+          "command": {
+            "description": "command for the entrypoint of the Compute runtime.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "default": ""
+            },
+            "x-kubernetes-list-type": "atomic"
+          },
+          "env": {
+            "description": "env is the list of environment variables to set in the Compute runtime.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.EnvVar"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map"
+          },
+          "image": {
+            "description": "image is the container image for the Compute runtime.",
+            "type": "string"
+          },
+          "labels": {
+            "description": "labels to apply to the Compute resources.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "default": ""
+            }
+          },
+          "resources": {
+            "description": "resources for each of the Compute replicas.",
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
+            }
+          },
+          "suspend": {
+            "description": "suspend defines whether to suspend the running Compute. Defaults to false.",
+            "type": "boolean"
+          }
+        }
+      },
+      "compute.v1alpha1.ComputeStatus": {
+        "description": "ComputeStatus represents the current status of the Compute.",
+        "type": "object",
+        "properties": {
+          "addresses": {
+            "description": "addresses lists the network addresses where the Compute can be accessed. These are derived from the Gateway status that routes traffic to this Compute.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/compute.v1alpha1.ComputeAddress"
+                }
+              ]
+            },
+            "x-kubernetes-list-type": "atomic"
+          },
+          "conditions": {
+            "description": "conditions of the Compute.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Condition"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "type"
+            ],
+            "x-kubernetes-list-type": "map"
+          }
+        }
+      },
+      "compute.v1alpha1.ContainerOverride": {
+        "description": "ContainerOverride represents parameters that can be overridden using PodSpecOverrides.",
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "env": {
+            "description": "env is the list of environment variables to set in the container.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.EnvVar"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map"
+          },
+          "name": {
+            "description": "name for the container.",
+            "type": "string"
+          },
+          "volumeMounts": {
+            "description": "volumeMounts are the volumes to mount into the container's filesystem.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.VolumeMount"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map"
+          }
+        }
+      },
+      "compute.v1alpha1.PodTemplateSpecOverride": {
+        "description": "PodTemplateSpecOverride represents the spec overrides for Pod template.",
+        "type": "object",
+        "properties": {
+          "affinity": {
+            "description": "affinity overrides for the affinity.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.api.core.v1.Affinity"
+              }
+            ]
+          },
+          "containers": {
+            "description": "containers overrides for the containers.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/compute.v1alpha1.ContainerOverride"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map"
+          },
+          "imagePullSecrets": {
+            "description": "imagePullSecrets overrides the image pull secrets.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.LocalObjectReference"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map"
+          },
+          "initContainers": {
+            "description": "initContainers overrides the init containers.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/compute.v1alpha1.ContainerOverride"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map"
+          },
+          "nodeSelector": {
+            "description": "nodeSelector overrides the node selector.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "default": ""
+            }
+          },
+          "schedulingGates": {
+            "description": "schedulingGates overrides the scheduling gates. More info: https://kubernetes.io/docs/concepts/scheduling-eviction/pod-scheduling-readiness/",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.PodSchedulingGate"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map"
+          },
+          "serviceAccountName": {
+            "description": "serviceAccountName overrides the service account.",
+            "type": "string"
+          },
+          "tolerations": {
+            "description": "tolerations overrides the tolerations.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.Toleration"
+                }
+              ]
+            },
+            "x-kubernetes-list-type": "atomic"
+          },
+          "volumes": {
+            "description": "volumes overrides the volumes.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.Volume"
+                }
+              ]
+            },
+            "x-kubernetes-list-map-keys": [
+              "name"
+            ],
+            "x-kubernetes-list-type": "map"
+          }
+        }
+      },
       "io.k8s.api.core.v1.AWSElasticBlockStoreVolumeSource": {
         "description": "Represents a Persistent Disk resource in AWS.\n\nAn AWS EBS disk must exist before mounting to a container. The disk must also be in the same AWS zone as the kubelet. An AWS EBS disk can only be mounted as read/write once. AWS EBS volumes support ownership management and SELinux relabeling.",
         "type": "object",
@@ -11612,372 +11978,6 @@
           "platform": {
             "type": "string",
             "default": ""
-          }
-        }
-      },
-      "kpu.v1alpha1.Compute": {
-        "description": "Compute represents the configuration of a compute environment.",
-        "type": "object",
-        "properties": {
-          "apiVersion": {
-            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-            "type": "string"
-          },
-          "kind": {
-            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-            "type": "string"
-          },
-          "metadata": {
-            "description": "metadata of the Compute.",
-            "default": {},
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
-              }
-            ]
-          },
-          "spec": {
-            "description": "spec of the Compute.",
-            "default": {},
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/kpu.v1alpha1.ComputeSpec"
-              }
-            ]
-          },
-          "status": {
-            "description": "status of the Compute.",
-            "default": {},
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/kpu.v1alpha1.ComputeStatus"
-              }
-            ]
-          }
-        }
-      },
-      "kpu.v1alpha1.ComputeAddress": {
-        "description": "ComputeAddress describes a network address that can be used to access the Compute.",
-        "type": "object",
-        "required": [
-          "value"
-        ],
-        "properties": {
-          "type": {
-            "description": "type of the address.",
-            "type": "string"
-          },
-          "value": {
-            "description": "value of the address. The validity of the values will depend on the type.\n\nExamples: `1.2.3.4`, `128::1`, `my-hostname.example.com`.",
-            "type": "string"
-          }
-        }
-      },
-      "kpu.v1alpha1.ComputeList": {
-        "description": "ComputeList is a collection of computes.",
-        "type": "object",
-        "required": [
-          "items"
-        ],
-        "properties": {
-          "apiVersion": {
-            "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-            "type": "string"
-          },
-          "items": {
-            "description": "List of Computes.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/kpu.v1alpha1.Compute"
-                }
-              ]
-            }
-          },
-          "kind": {
-            "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-            "type": "string"
-          },
-          "metadata": {
-            "description": "Standard list metadata.",
-            "default": {},
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"
-              }
-            ]
-          }
-        }
-      },
-      "kpu.v1alpha1.ComputeSpec": {
-        "description": "ComputeSpec represents the specification of the Compute.",
-        "type": "object",
-        "properties": {
-          "annotations": {
-            "description": "annotations to apply to the Compute resources.",
-            "type": "object",
-            "additionalProperties": {
-              "type": "string",
-              "default": ""
-            }
-          },
-          "args": {
-            "description": "args for the entrypoint for the Compute runtime.",
-            "type": "array",
-            "items": {
-              "type": "string",
-              "default": ""
-            },
-            "x-kubernetes-list-type": "atomic"
-          },
-          "command": {
-            "description": "command for the entrypoint of the Compute runtime.",
-            "type": "array",
-            "items": {
-              "type": "string",
-              "default": ""
-            },
-            "x-kubernetes-list-type": "atomic"
-          },
-          "env": {
-            "description": "env is the list of environment variables to set in the Compute runtime.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.api.core.v1.EnvVar"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "name"
-            ],
-            "x-kubernetes-list-type": "map"
-          },
-          "image": {
-            "description": "image is the container image for the Compute runtime.",
-            "type": "string"
-          },
-          "labels": {
-            "description": "labels to apply to the Compute resources.",
-            "type": "object",
-            "additionalProperties": {
-              "type": "string",
-              "default": ""
-            }
-          },
-          "resources": {
-            "description": "resources for each of the Compute replicas.",
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.api.resource.Quantity"
-            }
-          },
-          "suspend": {
-            "description": "suspend defines whether to suspend the running Compute. Defaults to false.",
-            "type": "boolean"
-          }
-        }
-      },
-      "kpu.v1alpha1.ComputeStatus": {
-        "description": "ComputeStatus represents the current status of the Compute.",
-        "type": "object",
-        "properties": {
-          "addresses": {
-            "description": "addresses lists the network addresses where the Compute can be accessed. These are derived from the Gateway status that routes traffic to this Compute.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/kpu.v1alpha1.ComputeAddress"
-                }
-              ]
-            },
-            "x-kubernetes-list-type": "atomic"
-          },
-          "conditions": {
-            "description": "conditions of the Compute.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Condition"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "type"
-            ],
-            "x-kubernetes-list-type": "map"
-          }
-        }
-      },
-      "kpu.v1alpha1.ContainerOverride": {
-        "description": "ContainerOverride represents parameters that can be overridden using PodSpecOverrides.",
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "env": {
-            "description": "env is the list of environment variables to set in the container.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.api.core.v1.EnvVar"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "name"
-            ],
-            "x-kubernetes-list-type": "map"
-          },
-          "name": {
-            "description": "name for the container.",
-            "type": "string"
-          },
-          "volumeMounts": {
-            "description": "volumeMounts are the volumes to mount into the container's filesystem.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.api.core.v1.VolumeMount"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "name"
-            ],
-            "x-kubernetes-list-type": "map"
-          }
-        }
-      },
-      "kpu.v1alpha1.PodTemplateSpecOverride": {
-        "description": "PodTemplateSpecOverride represents the spec overrides for Pod template.",
-        "type": "object",
-        "properties": {
-          "affinity": {
-            "description": "affinity overrides for the affinity.",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/io.k8s.api.core.v1.Affinity"
-              }
-            ]
-          },
-          "containers": {
-            "description": "containers overrides for the containers.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/kpu.v1alpha1.ContainerOverride"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "name"
-            ],
-            "x-kubernetes-list-type": "map"
-          },
-          "imagePullSecrets": {
-            "description": "imagePullSecrets overrides the image pull secrets.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.api.core.v1.LocalObjectReference"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "name"
-            ],
-            "x-kubernetes-list-type": "map"
-          },
-          "initContainers": {
-            "description": "initContainers overrides the init containers.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/kpu.v1alpha1.ContainerOverride"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "name"
-            ],
-            "x-kubernetes-list-type": "map"
-          },
-          "nodeSelector": {
-            "description": "nodeSelector overrides the node selector.",
-            "type": "object",
-            "additionalProperties": {
-              "type": "string",
-              "default": ""
-            }
-          },
-          "schedulingGates": {
-            "description": "schedulingGates overrides the scheduling gates. More info: https://kubernetes.io/docs/concepts/scheduling-eviction/pod-scheduling-readiness/",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.api.core.v1.PodSchedulingGate"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "name"
-            ],
-            "x-kubernetes-list-type": "map"
-          },
-          "serviceAccountName": {
-            "description": "serviceAccountName overrides the service account.",
-            "type": "string"
-          },
-          "tolerations": {
-            "description": "tolerations overrides the tolerations.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.api.core.v1.Toleration"
-                }
-              ]
-            },
-            "x-kubernetes-list-type": "atomic"
-          },
-          "volumes": {
-            "description": "volumes overrides the volumes.",
-            "type": "array",
-            "items": {
-              "default": {},
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/io.k8s.api.core.v1.Volume"
-                }
-              ]
-            },
-            "x-kubernetes-list-map-keys": [
-              "name"
-            ],
-            "x-kubernetes-list-type": "map"
           }
         }
       }

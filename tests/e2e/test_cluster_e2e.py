@@ -6,8 +6,8 @@ import asyncio
 import pytest
 import torch
 
-import kpu.torch.backend  # noqa: F401 - Register 'kpu' device
-from kpu.client import Compute, Cluster, log_event
+import skytorch.torch.backend  # noqa: F401 - Register 'sky' device
+from skytorch.client import Compute, Cluster, log_event
 
 
 @pytest.mark.e2e
@@ -45,11 +45,11 @@ async def test_cluster_managed(test_image):
         device1 = compute1.device("cpu")
         device2 = compute2.device("cpu")
 
-        # Create reference tensors on CPU
+        # Create reference tensors on cpu
         x_cpu = torch.randn(10, 10)
         y_cpu = torch.randn(10, 10)
 
-        # Transfer to both KPU devices
+        # Transfer to both sky devices
         x1 = x_cpu.to(device1)
         y1 = y_cpu.to(device1)
         x2 = x_cpu.to(device2)
@@ -59,7 +59,7 @@ async def test_cluster_managed(test_image):
         z1 = x1 + y1
         z2 = x2 * y2
 
-        # Copy results back to CPU
+        # Copy results back to cpu
         z1_result = z1.cpu()
         z2_result = z2.cpu()
 
@@ -118,12 +118,12 @@ async def test_cluster_parallel_operations(test_image):
         cpu_tensor2 = torch.randn(50, 50)
 
         # Transfer to different computes
-        kpu_tensor1 = cpu_tensor1.to(device1)
-        kpu_tensor2 = cpu_tensor2.to(device2)
+        sky_tensor1 = cpu_tensor1.to(device1)
+        sky_tensor2 = cpu_tensor2.to(device2)
 
         # Different operations on each compute
-        result1 = kpu_tensor1 * 2
-        result2 = torch.matmul(kpu_tensor2, kpu_tensor2.T)
+        result1 = sky_tensor1 * 2
+        result2 = torch.matmul(sky_tensor2, sky_tensor2.T)
 
         # Copy results back
         cpu_result1 = result1.cpu()

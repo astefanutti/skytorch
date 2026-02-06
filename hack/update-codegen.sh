@@ -22,7 +22,7 @@ set -o pipefail
 
 CURRENT_DIR=$(dirname "${BASH_SOURCE[0]}")
 ROOT_DIR=$(realpath "${CURRENT_DIR}/..")
-ROOT_PKG="github.com/astefanutti/kpu"
+ROOT_PKG="github.com/astefanutti/skytorch"
 
 cd "$CURRENT_DIR/.."
 
@@ -84,11 +84,11 @@ echo "gen_openapi_extra" ${gen_openapi_extra_pkgs}
 
 kube::codegen::gen_openapi \
   --boilerplate "${ROOT_DIR}/hack/boilerplate/boilerplate.go.txt" \
-  --output-dir "${ROOT_DIR}/pkg/apis/kpu/v1alpha1" \
-  --output-pkg "${ROOT_PKG}/pkg/apis/kpu/v1alpha1" \
+  --output-dir "${ROOT_DIR}/pkg/apis/compute/v1alpha1" \
+  --output-pkg "${ROOT_PKG}/pkg/apis/compute/v1alpha1" \
   ${gen_openapi_extra_pkgs} \
   --update-report \
-  "${ROOT_DIR}/pkg/apis/kpu/v1alpha1"
+  "${ROOT_DIR}/pkg/apis/compute/v1alpha1"
 
 echo "Generate OpenAPI Swagger"
 go run hack/swagger/main.go > hack/swagger/swagger.json

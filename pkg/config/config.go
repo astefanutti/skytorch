@@ -27,7 +27,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	configapi "github.com/astefanutti/kpu/pkg/apis/config/v1alpha1"
+	configapi "github.com/astefanutti/skytorch/pkg/apis/config/v1alpha1"
 )
 
 // fromFile loads configuration from a file.

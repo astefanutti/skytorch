@@ -4,37 +4,37 @@ import torch
 
 @pytest.mark.it
 @pytest.mark.asyncio
-async def test_cpu_to_kpu(device):
-    """Test transferring tensor from CPU to KPU."""
-    x_cpu = torch.randn(10, 10)
-    x_kpu = x_cpu.to(device)
+async def test_cpu_to_st(device):
+    """Test transferring tensor from cpu to sky."""
+    x = torch.randn(10, 10)
+    x_st = x.to(device)
 
-    assert x_kpu.device.type == "kpu"
-    assert x_kpu.shape == x_cpu.shape
+    assert x_st.device.type == "sky"
+    assert x_st.shape == x.shape
 
 
 @pytest.mark.it
 @pytest.mark.asyncio
-async def test_kpu_to_cpu(device):
-    """Test transferring tensor from KPU to CPU."""
+async def test_st_to_cpu(device):
+    """Test transferring tensor from sky to cpu."""
     x = torch.randn(10, 10, device=device)
-    x_cpu = x.cpu()
+    result = x.cpu()
 
-    assert x_cpu.device.type == "cpu"
-    assert x_cpu.shape == x.shape
+    assert result.device.type == "cpu"
+    assert result.shape == x.shape
 
 
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_data_integrity_roundtrip(device):
-    """Test data integrity after CPU -> KPU -> CPU roundtrip."""
+    """Test data integrity after cpu -> sky -> cpu roundtrip."""
     original = torch.randn(5, 5)
 
-    # Transfer to KPU and back
-    on_kpu = original.to(device)
-    back_to_cpu = on_kpu.cpu()
+    # Transfer to sky device and back
+    on_st = original.to(device)
+    result = on_st.cpu()
 
-    assert torch.allclose(original, back_to_cpu)
+    assert torch.allclose(original, result)
 
 
 @pytest.mark.it
@@ -45,8 +45,8 @@ async def test_various_dtypes(device):
 
     for dtype in dtypes:
         x = torch.tensor([1, 2, 3], dtype=dtype)
-        x_kpu = x.to(device)
-        x_back = x_kpu.cpu()
+        x_st = x.to(device)
+        x_back = x_st.cpu()
         assert torch.equal(x, x_back), f"Failed for dtype {dtype}"
 
 
@@ -55,8 +55,8 @@ async def test_various_dtypes(device):
 async def test_large_tensor(device):
     """Test transfer of larger tensor."""
     x = torch.randn(100, 100)
-    x_kpu = x.to(device)
-    x_back = x_kpu.cpu()
+    x_st = x.to(device)
+    x_back = x_st.cpu()
 
     assert torch.allclose(x, x_back)
 
@@ -64,28 +64,28 @@ async def test_large_tensor(device):
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_scalar_tensor_roundtrip(device):
-    """Test 0-dimensional (scalar) tensor CPU -> KPU -> CPU roundtrip."""
+    """Test 0-dimensional (scalar) tensor cpu -> sky -> cpu roundtrip."""
     scalar = torch.tensor(42.0)
 
-    # Transfer to KPU and back
-    on_kpu = scalar.to(device)
-    back_to_cpu = on_kpu.cpu()
+    # Transfer to sky device and back
+    on_st = scalar.to(device)
+    result = on_st.cpu()
 
     assert scalar.dim() == 0
-    assert on_kpu.dim() == 0
-    assert back_to_cpu.dim() == 0
-    assert torch.allclose(scalar, back_to_cpu)
+    assert on_st.dim() == 0
+    assert result.dim() == 0
+    assert torch.allclose(scalar, result)
 
 
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_scalar_tensor_item(device):
-    """Test .item() on scalar tensor - requires copying to CPU."""
+    """Test .item() on scalar tensor - requires copying to cpu."""
     scalar = torch.tensor(3.14159)
-    on_kpu = scalar.to(device)
+    on_st = scalar.to(device)
 
-    # .item() internally copies the tensor to CPU
-    value = on_kpu.item()
+    # .item() internally copies the tensor to cpu
+    value = on_st.item()
 
     assert abs(value - 3.14159) < 1e-5
 
@@ -103,17 +103,17 @@ async def test_scalar_tensor_various_dtypes(device):
 
     for dtype, value in test_cases:
         scalar = torch.tensor(value, dtype=dtype)
-        on_kpu = scalar.to(device)
-        back_to_cpu = on_kpu.cpu()
+        on_st = scalar.to(device)
+        result = on_st.cpu()
 
         assert scalar.dim() == 0
-        assert torch.equal(scalar, back_to_cpu), f"Failed for dtype {dtype}"
+        assert torch.equal(scalar, result), f"Failed for dtype {dtype}"
 
 
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_item_on_intermediate_operation_result(device):
-    """Test .item() on scalar resulting from chained KPU operations.
+    """Test .item() on scalar resulting from chained sky operations.
 
     This reproduces the bug from the MNIST example where:
     accuracy = (correct.float() / total).item() * 100
@@ -121,7 +121,7 @@ async def test_item_on_intermediate_operation_result(device):
     The intermediate scalar tensor from the division is created on the server
     but may not be properly registered for later retrieval.
     """
-    # Create tensors on CPU and move to device to ensure data is uploaded
+    # Create tensors on cpu and move to device to ensure data is uploaded
     # (torch.tensor(..., device=device) creates empty tensors via fallback)
     correct = torch.tensor(85.0).to(device)
     total = torch.tensor(100.0).to(device)
@@ -136,29 +136,29 @@ async def test_item_on_intermediate_operation_result(device):
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_nn_parameter_transfer(device):
-    """Test nn.Parameter transfer to KPU device.
+    """Test nn.Parameter transfer to sky device.
 
     This verifies the GIL-free allocator works correctly with nn.Parameter,
     which is critical for PyTorch 2.10 compatibility (kHasPyObject flag).
     """
     import torch.nn as nn
 
-    # Create parameter on CPU and transfer to KPU
+    # Create parameter on cpu and transfer to sky device
     param = nn.Parameter(torch.randn(3, 3))
-    param_kpu = param.to(device)
+    param_st = param.to(device)
 
-    assert param_kpu.device.type == "kpu"
-    assert param_kpu.requires_grad
+    assert param_st.device.type == "sky"
+    assert param_st.requires_grad
 
     # Verify data integrity
-    back_to_cpu = param_kpu.cpu()
-    assert torch.allclose(param.data, back_to_cpu)
+    result = param_st.cpu()
+    assert torch.allclose(param.data, result)
 
 
 @pytest.mark.it
 @pytest.mark.asyncio
-async def test_kpu_to_kpu_copy(device):
-    """Test server-side copy between KPU tensors."""
+async def test_st_to_st_copy(device):
+    """Test server-side copy between sky tensors."""
     src = torch.randn(5, 5).to(device)
     dst = torch.empty(5, 5, device=device)
 
@@ -170,9 +170,9 @@ async def test_kpu_to_kpu_copy(device):
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_tensor_view_transfer(device):
-    """Test transferring tensor views to/from KPU.
+    """Test transferring tensor views to/from sky device.
 
-    Note: Views are transferred as contiguous data to KPU, so the
+    Note: Views are transferred as contiguous data to sky device, so the
     storage_offset is not preserved. The key test is data integrity.
     """
     base = torch.randn(4, 4)
@@ -180,11 +180,11 @@ async def test_tensor_view_transfer(device):
 
     assert view.storage_offset() > 0  # Verify source has offset
 
-    view_kpu = view.to(device)
+    view_st = view.to(device)
 
-    assert view_kpu.shape == (2, 2)
+    assert view_st.shape == (2, 2)
 
-    back = view_kpu.cpu()
+    back = view_st.cpu()
     assert torch.allclose(view, back)
 
 
@@ -197,8 +197,8 @@ async def test_non_contiguous_tensor_transfer(device):
 
     assert not transposed.is_contiguous()
 
-    kpu_tensor = transposed.to(device)
-    back = kpu_tensor.cpu()
+    sky_tensor = transposed.to(device)
+    back = sky_tensor.cpu()
 
     assert torch.allclose(transposed, back)
 
@@ -206,12 +206,12 @@ async def test_non_contiguous_tensor_transfer(device):
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_sliced_tensor_roundtrip(device):
-    """Test sliced tensor CPU -> KPU -> CPU roundtrip."""
+    """Test sliced tensor cpu -> sky -> cpu roundtrip."""
     original = torch.randn(10, 10)
     sliced = original[2:7, 3:8]  # 5x5 slice
 
-    on_kpu = sliced.to(device)
-    back = on_kpu.cpu()
+    on_st = sliced.to(device)
+    back = on_st.cpu()
 
     assert sliced.shape == back.shape
     assert torch.allclose(sliced, back)
@@ -223,8 +223,8 @@ async def test_half_precision_transfer(device):
     """Test transfer with half precision dtypes."""
     for dtype in [torch.float16, torch.bfloat16]:
         x = torch.randn(3, 3).to(dtype)
-        x_kpu = x.to(device)
-        x_back = x_kpu.cpu()
+        x_st = x.to(device)
+        x_back = x_st.cpu()
         assert torch.allclose(x, x_back, rtol=1e-2, atol=1e-2)
 
 
@@ -233,8 +233,8 @@ async def test_half_precision_transfer(device):
 async def test_boolean_tensor_transfer(device):
     """Test transfer of boolean tensors."""
     x = torch.tensor([[True, False], [False, True]])
-    x_kpu = x.to(device)
-    x_back = x_kpu.cpu()
+    x_st = x.to(device)
+    x_back = x_st.cpu()
     assert torch.equal(x, x_back)
 
 
@@ -243,12 +243,12 @@ async def test_boolean_tensor_transfer(device):
 async def test_empty_tensor_transfer(device):
     """Test transfer of empty tensors (0 elements)."""
     x = torch.empty(0, 3)
-    x_kpu = x.to(device)
+    x_st = x.to(device)
 
-    assert x_kpu.shape == (0, 3)
-    assert x_kpu.numel() == 0
+    assert x_st.shape == (0, 3)
+    assert x_st.numel() == 0
 
-    x_back = x_kpu.cpu()
+    x_back = x_st.cpu()
     assert x_back.shape == (0, 3)
 
 
@@ -257,8 +257,8 @@ async def test_empty_tensor_transfer(device):
 async def test_complex_dtype_transfer(device):
     """Test transfer of complex tensors."""
     x = torch.randn(3, 3, dtype=torch.complex64)
-    x_kpu = x.to(device)
-    x_back = x_kpu.cpu()
+    x_st = x.to(device)
+    x_back = x_st.cpu()
     assert torch.allclose(x, x_back)
 
 
@@ -271,7 +271,7 @@ async def test_lazy_storage_registration(device):
     are generated atomically in C++ and only registered in Python
     when the tensor is first used in an operation.
     """
-    # Create tensor on KPU with known values
+    # Create tensor on sky device with known values
     x = torch.zeros(3, 3, device=device)
 
     # First operation triggers lazy registration
@@ -286,7 +286,7 @@ async def test_lazy_storage_registration(device):
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_nn_module_transfer(device):
-    """Test nn.Module transfer to KPU device.
+    """Test nn.Module transfer to sky device.
 
     This verifies the GIL-free allocator works correctly with nn.Module,
     which is critical for PyTorch 2.10 compatibility (kHasPyObject flag).
@@ -294,27 +294,26 @@ async def test_nn_module_transfer(device):
     """
     import torch.nn as nn
 
-    # Create module on CPU and transfer to KPU
+    # Create module on cpu and transfer to sky device
     linear = nn.Linear(4, 2)
-    linear_kpu = linear.to(device)
+    linear_st = linear.to(device)
 
-    # Verify parameters are on KPU
-    assert linear_kpu.weight.device.type == "kpu"
-    assert linear_kpu.bias.device.type == "kpu"
+    # Verify parameters are on sky device
+    assert linear_st.weight.device.type == "sky"
+    assert linear_st.bias.device.type == "sky"
 
     # Verify forward pass works
     x = torch.randn(3, 4).to(device)
-    output = linear_kpu(x)
+    output = linear_st(x)
 
-    assert output.device.type == "kpu"
+    assert output.device.type == "sky"
     assert output.shape == (3, 2)
 
-    # Verify data integrity by comparing CPU forward pass
-    x_cpu = x.cpu()
-    linear_cpu = nn.Linear(4, 2)
-    linear_cpu.weight.data = linear_kpu.weight.cpu()
-    linear_cpu.bias.data = linear_kpu.bias.cpu()
-    expected = linear_cpu(x_cpu)
+    # Verify data integrity by comparing cpu forward pass
+    ref_linear = nn.Linear(4, 2)
+    ref_linear.weight.data = linear_st.weight.cpu()
+    ref_linear.bias.data = linear_st.bias.cpu()
+    expected = ref_linear(x.cpu())
 
     assert torch.allclose(output.cpu(), expected)
 
@@ -322,7 +321,7 @@ async def test_nn_module_transfer(device):
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_nn_sequential_transfer(device):
-    """Test nn.Sequential with multiple layers transfers to KPU."""
+    """Test nn.Sequential with multiple layers transfers to sky device."""
     import torch.nn as nn
 
     model = nn.Sequential(
@@ -330,31 +329,30 @@ async def test_nn_sequential_transfer(device):
         nn.ReLU(),
         nn.Linear(4, 2),
     )
-    model_kpu = model.to(device)
+    model_st = model.to(device)
 
-    # Verify all parameters are on KPU
-    for param in model_kpu.parameters():
-        assert param.device.type == "kpu"
+    # Verify all parameters are on sky device
+    for param in model_st.parameters():
+        assert param.device.type == "sky"
 
     # Verify forward pass works
     x = torch.randn(2, 8).to(device)
-    output = model_kpu(x)
+    output = model_st(x)
 
-    assert output.device.type == "kpu"
+    assert output.device.type == "sky"
     assert output.shape == (2, 2)
 
-    # Verify numerical correctness by comparing with CPU forward pass
-    x_cpu = x.cpu()
-    model_cpu = nn.Sequential(
+    # Verify numerical correctness by comparing with cpu forward pass
+    ref_model = nn.Sequential(
         nn.Linear(8, 4),
         nn.ReLU(),
         nn.Linear(4, 2),
     )
-    # Copy weights from KPU model
-    model_cpu[0].weight.data = model_kpu[0].weight.cpu()
-    model_cpu[0].bias.data = model_kpu[0].bias.cpu()
-    model_cpu[2].weight.data = model_kpu[2].weight.cpu()
-    model_cpu[2].bias.data = model_kpu[2].bias.cpu()
-    expected = model_cpu(x_cpu)
+    # Copy weights from SkyTorch model
+    ref_model[0].weight.data = model_st[0].weight.cpu()
+    ref_model[0].bias.data = model_st[0].bias.cpu()
+    ref_model[2].weight.data = model_st[2].weight.cpu()
+    ref_model[2].bias.data = model_st[2].bias.cpu()
+    expected = ref_model(x.cpu())
 
     assert torch.allclose(output.cpu(), expected)

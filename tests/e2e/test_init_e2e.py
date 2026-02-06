@@ -5,20 +5,20 @@ End-to-end tests for client configuration.
 import pytest
 from kubernetes import client as k8s_client
 
-from kpu.client import init, Compute
-import kpu.client.init
+from skytorch.client import init, Compute
+import skytorch.client.init
 
 @pytest.fixture(autouse=True)
 def reset_client():
     """Reset client state before each test."""
     k8s_client.Configuration._default = None
-    kpu.client.init._default_namespace = "default"
+    skytorch.client.init._default_namespace = "default"
 
     yield
 
     # Clean up after test
     k8s_client.Configuration._default = None
-    kpu.client.init._default_namespace = "default"
+    skytorch.client.init._default_namespace = "default"
 
 
 @pytest.mark.e2e

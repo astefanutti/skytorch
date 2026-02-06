@@ -22,16 +22,16 @@ import (
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 
-	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
+	"github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1"
 )
 
 func serviceApplyConfiguration(compute *v1alpha1.Compute) *corev1apply.ServiceApplyConfiguration {
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kpu-torch-server",
+		"app.kubernetes.io/name":       "skytorch-server",
 		"app.kubernetes.io/instance":   compute.Name,
 		"app.kubernetes.io/component":  "compute",
-		"app.kubernetes.io/managed-by": "kpu-operator",
-		"app.kubernetes.io/part-of":    "kpu",
+		"app.kubernetes.io/managed-by": "skytorch-operator",
+		"app.kubernetes.io/part-of":    "skytorch",
 	}
 
 	// Merge user-provided labels
@@ -59,7 +59,7 @@ func serviceApplyConfiguration(compute *v1alpha1.Compute) *corev1apply.ServiceAp
 		WithSpec(
 			corev1apply.ServiceSpec().
 				WithSelector(map[string]string{
-					"app.kubernetes.io/name":     "kpu-torch-server",
+					"app.kubernetes.io/name":     "skytorch-server",
 					"app.kubernetes.io/instance": compute.Name,
 				}).
 				WithPorts(
