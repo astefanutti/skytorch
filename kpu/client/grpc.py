@@ -91,7 +91,10 @@ class GRPCClient:
         """Get or create a thread-local channel for the current thread."""
         channel = getattr(self._thread_local, 'channel', None)
         if channel is None:
-            channel = grpc.aio.insecure_channel(self.address)
+            channel = grpc.aio.insecure_channel(
+                self.address,
+                compression=grpc.Compression.Gzip,
+            )
             self._thread_local.channel = channel
         return channel
 
@@ -209,7 +212,10 @@ class GRPCClient:
 
         # Create the channel on the global loop
         async def create_channel():
-            return grpc.aio.insecure_channel(self.address)
+            return grpc.aio.insecure_channel(
+                self.address,
+                compression=grpc.Compression.Gzip,
+            )
 
         # Run channel creation on global loop
         future = asyncio.run_coroutine_threadsafe(create_channel(), global_loop)

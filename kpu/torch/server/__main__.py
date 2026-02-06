@@ -74,7 +74,7 @@ logger.info(f"  Metrics Sources: {', '.join(args.metrics_sources) if args.metric
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
-server = grpc.aio.server()
+server = grpc.aio.server(compression=grpc.Compression.Gzip)
 
 # Initialize metrics sources based on CLI configuration
 metrics_sources = []
