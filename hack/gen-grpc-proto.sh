@@ -25,7 +25,7 @@ $PYTHON -m grpc_tools.protoc \
     --python_out=. \
     --pyi_out=. \
     --grpc_python_out=. \
-    kpu/torch/server/service.proto
+    skytorch/torch/server/service.proto
 
 echo "Generating gRPC code for Health service..."
 $PYTHON -m grpc_tools.protoc \
@@ -33,7 +33,7 @@ $PYTHON -m grpc_tools.protoc \
     --python_out=. \
     --pyi_out=. \
     --grpc_python_out=. \
-    kpu/server/health/health.proto
+    skytorch/server/health/health.proto
 
 echo "Generating gRPC code for Metrics service..."
 $PYTHON -m grpc_tools.protoc \
@@ -41,6 +41,6 @@ $PYTHON -m grpc_tools.protoc \
     --python_out=. \
     --pyi_out=. \
     --grpc_python_out=. \
-    kpu/server/metrics/metrics.proto
+    skytorch/server/metrics/metrics.proto
 
 echo "Generated gRPC code successfully"

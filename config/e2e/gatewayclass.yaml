@@ -8,5 +8,5 @@ spec:
   parametersRef:
     group: projectcontour.io
     kind: ContourDeployment
-    namespace: kpu-system
+    namespace: skytorch-system
     name: contour-config

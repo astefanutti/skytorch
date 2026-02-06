@@ -4,12 +4,12 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kpu-compute-view
+  name: skytorch-compute-view
   labels:
     rbac.authorization.k8s.io/aggregate-to-view: "true"
 rules:
 - apiGroups:
-  - compute.kpu.dev
+  - compute.skytorch.dev
   resources:
   - computes
   verbs:
@@ -17,7 +17,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - compute.kpu.dev
+  - compute.skytorch.dev
   resources:
   - computes/status
   verbs:
@@ -28,12 +28,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kpu-compute-edit
+  name: skytorch-compute-edit
   labels:
     rbac.authorization.k8s.io/aggregate-to-edit: "true"
 rules:
 - apiGroups:
-  - compute.kpu.dev
+  - compute.skytorch.dev
   resources:
   - computes
   verbs:
@@ -46,7 +46,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - compute.kpu.dev
+  - compute.skytorch.dev
   resources:
   - computes/status
   verbs:
@@ -57,12 +57,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kpu-compute-admin
+  name: skytorch-compute-admin
   labels:
     rbac.authorization.k8s.io/aggregate-to-admin: "true"
 rules:
 - apiGroups:
-  - compute.kpu.dev
+  - compute.skytorch.dev
   resources:
   - computes
   verbs:
@@ -75,7 +75,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - compute.kpu.dev
+  - compute.skytorch.dev
   resources:
   - computes/status
   verbs:

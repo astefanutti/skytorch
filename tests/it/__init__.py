@@ -1,1 +1,1 @@
-"""KPU integration tests."""
+"""SkyTorch integration tests."""

@@ -1,5 +1,5 @@
 {
-  "packageName": "kpu.client",
+  "packageName": "skytorch.client",
   "generateSourceCodeOnly": true,
   "typeMappings": {}
 }

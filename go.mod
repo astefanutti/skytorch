@@ -1,4 +1,4 @@
-module github.com/astefanutti/kpu
+module github.com/astefanutti/skytorch
 
 go 1.24.0
 

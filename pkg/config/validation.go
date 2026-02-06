@@ -19,7 +19,7 @@ package config
 import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
-	configapi "github.com/astefanutti/kpu/pkg/apis/config/v1alpha1"
+	configapi "github.com/astefanutti/skytorch/pkg/apis/config/v1alpha1"
 )
 
 // validate validates the configuration.

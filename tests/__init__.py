@@ -1,1 +1,1 @@
-"""Tests for KPU."""
+"""Tests for SkyTorch."""

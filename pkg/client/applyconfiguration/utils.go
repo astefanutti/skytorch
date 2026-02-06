@@ -17,9 +17,9 @@
 package applyconfiguration
 
 import (
-	v1alpha1 "github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
-	internal "github.com/astefanutti/kpu/pkg/client/applyconfiguration/internal"
-	kpuv1alpha1 "github.com/astefanutti/kpu/pkg/client/applyconfiguration/kpu/v1alpha1"
+	v1alpha1 "github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1"
+	computev1alpha1 "github.com/astefanutti/skytorch/pkg/client/applyconfiguration/compute/v1alpha1"
+	internal "github.com/astefanutti/skytorch/pkg/client/applyconfiguration/internal"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	managedfields "k8s.io/apimachinery/pkg/util/managedfields"
@@ -29,15 +29,15 @@ import (
 // apply configuration type exists for the given GroupVersionKind.
 func ForKind(kind schema.GroupVersionKind) interface{} {
 	switch kind {
-	// Group=compute.kpu.dev, Version=v1alpha1
+	// Group=compute.skytorch.dev, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithKind("Compute"):
-		return &kpuv1alpha1.ComputeApplyConfiguration{}
+		return &computev1alpha1.ComputeApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComputeAddress"):
-		return &kpuv1alpha1.ComputeAddressApplyConfiguration{}
+		return &computev1alpha1.ComputeAddressApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComputeSpec"):
-		return &kpuv1alpha1.ComputeSpecApplyConfiguration{}
+		return &computev1alpha1.ComputeSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComputeStatus"):
-		return &kpuv1alpha1.ComputeStatusApplyConfiguration{}
+		return &computev1alpha1.ComputeStatusApplyConfiguration{}
 
 	}
 	return nil
