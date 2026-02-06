@@ -24,16 +24,16 @@ import (
 	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 
-	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
+	"github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1"
 )
 
 func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.StatefulSetApplyConfiguration {
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kpu-torch-server",
+		"app.kubernetes.io/name":       "skytorch-server",
 		"app.kubernetes.io/instance":   compute.Name,
 		"app.kubernetes.io/component":  "compute",
-		"app.kubernetes.io/managed-by": "kpu-operator",
-		"app.kubernetes.io/part-of":    "kpu",
+		"app.kubernetes.io/managed-by": "skytorch-operator",
+		"app.kubernetes.io/part-of":    "skytorch",
 	}
 
 	// Merge user-provided labels
@@ -47,16 +47,16 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 	}
 
 	// Default image if not specified
-	image := "kpu-torch-server:latest"
+	image := "skytorch-server:latest"
 	if compute.Spec.Image != nil && *compute.Spec.Image != "" {
 		image = *compute.Spec.Image
 	}
 
 	// Build container environment variables
 	env := []*corev1apply.EnvVarApplyConfiguration{
-		corev1apply.EnvVar().WithName("KPU_PORT").WithValue("50051"),
-		corev1apply.EnvVar().WithName("KPU_HOST").WithValue("[::]"),
-		corev1apply.EnvVar().WithName("KPU_LOG_LEVEL").WithValue("INFO"),
+		corev1apply.EnvVar().WithName("SKYTORCH_PORT").WithValue("50051"),
+		corev1apply.EnvVar().WithName("SKYTORCH_HOST").WithValue("[::]"),
+		corev1apply.EnvVar().WithName("SKYTORCH_LOG_LEVEL").WithValue("INFO"),
 	}
 
 	// Append user-provided env vars
@@ -110,7 +110,7 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 					corev1apply.GRPCAction().
 						WithPort(50051).
 						// TODO: Make it dependent of the server compute type
-						WithService("kpu.torch.Service"),
+						WithService("skytorch.torch.Service"),
 				).
 				WithInitialDelaySeconds(2).
 				WithPeriodSeconds(2).
@@ -154,7 +154,7 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 				WithSelector(
 					metav1apply.LabelSelector().
 						WithMatchLabels(map[string]string{
-							"app.kubernetes.io/name":     "kpu-torch-server",
+							"app.kubernetes.io/name":     "skytorch-server",
 							"app.kubernetes.io/instance": compute.Name,
 						}),
 				).

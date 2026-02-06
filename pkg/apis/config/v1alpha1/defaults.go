@@ -47,10 +47,10 @@ func SetDefaults_Configuration(cfg *Configuration) {
 		cfg.CertManagement.Enable = ptr.To(true)
 	}
 	if cfg.CertManagement.WebhookServiceName == "" {
-		cfg.CertManagement.WebhookServiceName = "kpu-controller-manager"
+		cfg.CertManagement.WebhookServiceName = "skytorch-controller-manager"
 	}
 	if cfg.CertManagement.WebhookSecretName == "" {
-		cfg.CertManagement.WebhookSecretName = "kpu-webhook-cert"
+		cfg.CertManagement.WebhookSecretName = "skytorch-webhook-cert"
 	}
 	if cfg.ClientConnection == nil {
 		cfg.ClientConnection = &ClientConnection{}

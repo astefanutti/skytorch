@@ -6,7 +6,7 @@ import threading
 import grpc
 import pytest
 
-from kpu.torch.server import Compute, serve
+from skytorch.torch.server import Compute, serve
 
 
 def check_port_available(port: int) -> bool:
@@ -73,9 +73,9 @@ def event_loop():
 
 
 @pytest.fixture(autouse=True)
-def reset_kpu_state():
+def reset_sky_state():
     """
-    Reset KPU device and runtime state before each test.
+    Reset SkyTorch device and runtime state before each test.
 
     This fixture works around a PyTorch autograd engine limitation:
     PyTorch sizes its internal `device_ready_queues_` once during the first
@@ -95,8 +95,8 @@ def reset_kpu_state():
     By resetting the device index to 0 between tests, all tests use the same
     device index that the autograd engine already has queues for.
     """
-    from kpu.torch.backend._device import device_manager
-    from kpu.torch.backend._runtime import runtime_manager
+    from skytorch.torch.backend._device import device_manager
+    from skytorch.torch.backend._runtime import runtime_manager
 
     # Reset before test
     device_manager.reset()
@@ -110,9 +110,9 @@ def reset_kpu_state():
 
 
 @pytest.fixture(scope="session")
-def kpu_server():
-    """Start KPU PyTorch server in-process for integration tests."""
-    port = int(os.environ.get("KPU_TEST_PORT", "50052"))
+def sky_server():
+    """Start SkyTorch PyTorch server in-process for integration tests."""
+    port = int(os.environ.get("SKYTORCH_TEST_PORT", "50052"))
 
     # Pre-flight check: fail fast if port is in use
     if not check_port_available(port):
@@ -136,13 +136,13 @@ def kpu_server():
 
 
 @pytest.fixture
-async def compute(kpu_server):
+async def compute(sky_server):
     """Provide a connected Compute instance."""
-    async with Compute(kpu_server) as c:
+    async with Compute(sky_server) as c:
         yield c
 
 
 @pytest.fixture
 async def device(compute):
-    """Provide a KPU device."""
+    """Provide a SkyTorch device."""
     return compute.device("cpu")

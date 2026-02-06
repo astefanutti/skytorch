@@ -28,9 +28,9 @@ import (
 
 const (
 	certDir          = "/tmp/k8s-webhook-server/serving-certs"
-	caName           = "kpu-ca"
-	caOrganization   = "kpu"
-	defaultNamespace = "kpu-system"
+	caName           = "skytorch-ca"
+	caOrganization   = "skytorch"
+	defaultNamespace = "skytorch-system"
 )
 
 func getOperatorNamespace() string {

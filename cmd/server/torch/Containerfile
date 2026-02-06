@@ -14,9 +14,9 @@ ENV PATH=$VIRTUAL_ENV/bin:$PATH
 RUN pip install --no-cache-dir "torch==2.9.1+cu128" --index-url https://download.pytorch.org/whl/cu128
 RUN pip install --no-cache-dir "nvidia-ml-py"
 
-# Copy the kpu Python package
+# Copy the skytorch Python package
 COPY --chown=1000:root pyproject.toml README.md VERSION.md ./
-COPY --chown=1000:root kpu/ kpu/
+COPY --chown=1000:root skytorch/ skytorch/
 
 # Install project
 RUN pip install --no-cache-dir "."
@@ -25,13 +25,12 @@ RUN pip install --no-cache-dir "."
 ENV PYTHONPATH=/app
 
 # Server configuration via environment variables
-ENV KPU_PORT=50051
-ENV KPU_HOST=[::]
-ENV KPU_MAX_WORKERS=10
-ENV KPU_CHUNK_SIZE=1048576
-ENV KPU_LOG_LEVEL=INFO
-ENV KPU_METRICS_SOURCES=nvidia-gpu
+ENV SKYTORCH_PORT=50051
+ENV SKYTORCH_HOST=[::]
+ENV SKYTORCH_MAX_WORKERS=10
+ENV SKYTORCH_CHUNK_SIZE=1048576
+ENV SKYTORCH_LOG_LEVEL=INFO
+ENV SKYTORCH_METRICS_SOURCES=nvidia-gpu
 
 # Run the server
-# Can override with: docker run image --port 8080 --log-level DEBUG
-ENTRYPOINT ["python", "-m", "kpu.torch.server"]
+ENTRYPOINT ["python", "-m", "skytorch.torch.server"]

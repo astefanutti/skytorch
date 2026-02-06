@@ -1,7 +1,7 @@
 """
-KPU PyTorch Backend - C++ Extension Build Configuration
+SkyTorch PyTorch Backend - C++ Extension Build Configuration
 
-This setup.py builds the C++ extension for the KPU PyTorch backend.
+This setup.py builds the C++ extension for the SkyTorch PyTorch backend.
 The extension is built automatically when installing the package via pip install.
 """
 
@@ -18,7 +18,7 @@ try:
     import torch
     from torch.utils.cpp_extension import BuildExtension, CppExtension
 except ImportError:
-    print("PyTorch is required to build the KPU backend extension.")
+    print("PyTorch is required to build the SkyTorch backend extension.")
     print(f"Install PyTorch first: pip install torch>={'.'.join(map(str, MIN_TORCH_VERSION))}")
     sys.exit(1)
 
@@ -31,8 +31,8 @@ if torch_version < MIN_TORCH_VERSION:
 
 # Get the directory containing this setup.py (project root)
 ROOT_DIR = Path(__file__).absolute().parent
-CSRC_DIR = ROOT_DIR / "kpu" / "torch" / "backend" / "csrc"
-CSRC_DIR_REL = Path("kpu") / "torch" / "backend" / "csrc"
+CSRC_DIR = ROOT_DIR / "skytorch" / "torch" / "backend" / "csrc"
+CSRC_DIR_REL = Path("skytorch") / "torch" / "backend" / "csrc"
 
 # Source files for the C++ extension (relative paths required by setuptools)
 CPP_SOURCES = sorted(str(CSRC_DIR_REL / f.name) for f in CSRC_DIR.glob("*.cpp"))
@@ -63,7 +63,7 @@ elif sys.platform == "linux":
     ])
 
 # Extension name - always use full module path since building from root
-EXT_NAME = "kpu.torch.backend._C"
+EXT_NAME = "skytorch.torch.backend._C"
 
 # Define the extension module
 ext_modules = [

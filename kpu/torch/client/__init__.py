@@ -1,3 +1,0 @@
-"""
-KPU PyTorch gRPC client.
-"""

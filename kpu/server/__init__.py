@@ -1,3 +1,0 @@
-"""
-KPU gRPC server components.
-"""

@@ -42,12 +42,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
-	"github.com/astefanutti/kpu/pkg/util/constants"
+	"github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1"
+	"github.com/astefanutti/skytorch/pkg/util/constants"
 )
 
 const (
-	fieldManager = "kpu-compute-controller"
+	fieldManager = "skytorch-compute-controller"
 )
 
 type ComputeReconciler struct {
@@ -62,7 +62,7 @@ var _ predicate.TypedPredicate[*v1alpha1.Compute] = (*ComputeReconciler)(nil)
 
 func NewComputeReconciler(client client.Client, recorder record.EventRecorder, operatorNamespace string) *ComputeReconciler {
 	return &ComputeReconciler{
-		log:               ctrl.Log.WithName("kpu-compute-controller"),
+		log:               ctrl.Log.WithName("skytorch-compute-controller"),
 		client:            client,
 		recorder:          recorder,
 		operatorNamespace: operatorNamespace,
@@ -74,9 +74,9 @@ func NewComputeReconciler(client client.Client, recorder record.EventRecorder, o
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=grpcroutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get
-// +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=compute.kpu.dev,resources=computes/finalizers,verbs=get;update;patch
+// +kubebuilder:rbac:groups=compute.skytorch.dev,resources=computes,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=compute.skytorch.dev,resources=computes/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=compute.skytorch.dev,resources=computes/finalizers,verbs=get;update;patch
 
 func (r *ComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var compute v1alpha1.Compute

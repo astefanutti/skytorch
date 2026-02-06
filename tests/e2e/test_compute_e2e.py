@@ -6,8 +6,8 @@ import asyncio
 import pytest
 import torch
 
-import kpu.torch.backend  # noqa: F401 - Register 'kpu' device
-from kpu.client import Compute, log_event
+import skytorch.torch.backend  # noqa: F401 - Register 'sky' device
+from skytorch.client import Compute, log_event
 
 
 @pytest.mark.e2e
@@ -18,9 +18,9 @@ async def test_compute_managed(test_image):
 
     Covers:
     - Creating Compute with context manager
-    - Creating tensors on KPU device
+    - Creating tensors on sky device
     - Performing PyTorch operations remotely
-    - Copying results back to CPU
+    - Copying results back to cpu
     - Verifying actual computation results
     - Automatic cleanup
     """
@@ -32,22 +32,22 @@ async def test_compute_managed(test_image):
         assert compute.is_ready()
         assert compute.name == "test-managed"
 
-        # Get KPU device mapped to remote CPU
+        # Get sky device mapped to remote cpu
         device = compute.device("cpu")
 
-        # Create reference tensors on CPU
+        # Create reference tensors on cpu
         x_cpu = torch.randn(10, 10)
         y_cpu = torch.randn(10, 10)
 
-        # Transfer to KPU
+        # Transfer to sky
         x = x_cpu.to(device)
         y = y_cpu.to(device)
 
-        # Perform operations on KPU
+        # Perform operations
         z = x + y
         w = torch.matmul(x, y)
 
-        # Copy results back to CPU
+        # Copy results back to cpu
         z_result = z.cpu()
         w_result = w.cpu()
 
@@ -70,8 +70,8 @@ async def test_compute_manual(test_image):
     Covers:
     - Creating Compute without context manager
     - ready() with timeout
-    - CPU to KPU data transfer
-    - KPU to CPU data transfer
+    - cpu to sky data transfer
+    - sky to cpu data transfer
     - Verifying actual computation results
     - Manual delete()
     """
@@ -86,14 +86,14 @@ async def test_compute_manual(test_image):
 
         device = compute.device("cpu")
 
-        # Transfer CPU tensor to KPU
+        # Transfer cpu tensor to sky
         cpu_input = torch.randn(100, 100)
-        kpu_tensor = cpu_input.to(device)
+        sky_tensor = cpu_input.to(device)
 
         # Perform operation
-        result = kpu_tensor * 2
+        result = sky_tensor * 2
 
-        # Transfer back to CPU and verify actual computation result
+        # Transfer back to cpu
         cpu_result = result.cpu()
         expected = cpu_input * 2
         assert torch.allclose(cpu_result, expected)

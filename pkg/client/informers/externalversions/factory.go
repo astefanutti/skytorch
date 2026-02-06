@@ -21,9 +21,9 @@ import (
 	sync "sync"
 	time "time"
 
-	versioned "github.com/astefanutti/kpu/pkg/client/clientset/versioned"
-	internalinterfaces "github.com/astefanutti/kpu/pkg/client/informers/externalversions/internalinterfaces"
-	kpu "github.com/astefanutti/kpu/pkg/client/informers/externalversions/kpu"
+	versioned "github.com/astefanutti/skytorch/pkg/client/clientset/versioned"
+	compute "github.com/astefanutti/skytorch/pkg/client/informers/externalversions/compute"
+	internalinterfaces "github.com/astefanutti/skytorch/pkg/client/informers/externalversions/internalinterfaces"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -252,9 +252,9 @@ type SharedInformerFactory interface {
 	// client.
 	InformerFor(obj runtime.Object, newFunc internalinterfaces.NewInformerFunc) cache.SharedIndexInformer
 
-	Compute() kpu.Interface
+	Compute() compute.Interface
 }
 
-func (f *sharedInformerFactory) Compute() kpu.Interface {
-	return kpu.New(f, f.namespace, f.tweakListOptions)
+func (f *sharedInformerFactory) Compute() compute.Interface {
+	return compute.New(f, f.namespace, f.tweakListOptions)
 }

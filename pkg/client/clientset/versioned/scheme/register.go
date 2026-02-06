@@ -17,7 +17,7 @@
 package scheme
 
 import (
-	computev1alpha1 "github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
+	computev1alpha1 "github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"

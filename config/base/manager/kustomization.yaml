@@ -7,13 +7,13 @@ generatorOptions:
 
 # ConfigMap generator for controller manager configuration
 configMapGenerator:
-  - name: kpu-operator-config
+  - name: skytorch-operator-config
     files:
       - config.yaml
 
 # Secret generator for the webhook server
 secretGenerator:
-  - name: kpu-webhook-cert
+  - name: skytorch-webhook-cert
     options:
       disableNameSuffixHash: true
 

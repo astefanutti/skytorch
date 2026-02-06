@@ -20,16 +20,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	configapi "github.com/astefanutti/kpu/pkg/apis/config/v1alpha1"
-	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
-	"github.com/astefanutti/kpu/pkg/config"
-	"github.com/astefanutti/kpu/pkg/controllers"
-	"github.com/astefanutti/kpu/pkg/util/cert"
-	"github.com/astefanutti/kpu/pkg/webhooks"
+	"github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1"
+	configapi "github.com/astefanutti/skytorch/pkg/apis/config/v1alpha1"
+	"github.com/astefanutti/skytorch/pkg/config"
+	"github.com/astefanutti/skytorch/pkg/controllers"
+	"github.com/astefanutti/skytorch/pkg/util/cert"
+	"github.com/astefanutti/skytorch/pkg/webhooks"
 )
 
 const (
-	webhookConfigurationName = "validator.kpu.dev"
+	webhookConfigurationName = "validator.skytorch.dev"
 )
 
 var (

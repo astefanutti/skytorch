@@ -1,14 +1,14 @@
 import pytest
 
-from kpu.torch.server import Compute
+from skytorch.torch.server import Compute
 
 
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_device_creation(compute: Compute):
-    """Test creating a KPU device from Compute."""
+    """Test creating a SkyTorch device from Compute."""
     device = compute.device("cpu")
-    assert device.type == "kpu"
+    assert device.type == "sky"
     assert device.index is not None
 
 
@@ -17,7 +17,7 @@ async def test_device_creation(compute: Compute):
 async def test_device_string_parsing(compute: Compute):
     """Test device string with index parsing."""
     device = compute.device("cpu:0")
-    assert device.type == "kpu"
+    assert device.type == "sky"
 
 
 @pytest.mark.it
@@ -25,7 +25,7 @@ async def test_device_string_parsing(compute: Compute):
 async def test_device_explicit_index(compute: Compute):
     """Test device with explicit index argument."""
     device = compute.device("cpu", 0)
-    assert device.type == "kpu"
+    assert device.type == "sky"
 
 
 @pytest.mark.it

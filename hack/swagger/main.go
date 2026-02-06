@@ -26,10 +26,10 @@ import (
 	"k8s.io/kube-openapi/pkg/openapiconv"
 	"k8s.io/kube-openapi/pkg/validation/spec"
 
-	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
+	"github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1"
 )
 
-// Generate Kubeflow Training OpenAPI specification.
+// Generate SkyTorch OpenAPI specification.
 func main() {
 	var oAPIDefs = map[string]common.OpenAPIDefinition{}
 	defs := spec.Definitions{}
@@ -64,7 +64,7 @@ func main() {
 			Paths:       &spec.Paths{Paths: map[string]spec.PathItem{}},
 			Info: &spec.Info{
 				InfoProps: spec.InfoProps{
-					Title:   "KPU OpenAPI Spec",
+					Title:   "SkyTorch OpenAPI Spec",
 					Version: "unversioned",
 				},
 			},
@@ -81,7 +81,7 @@ func main() {
 }
 
 func swaggify(name string) string {
-	name = strings.ReplaceAll(name, "github.com/astefanutti/kpu/pkg/apis/", "")
+	name = strings.ReplaceAll(name, "github.com/astefanutti/skytorch/pkg/apis/", "")
 	name = strings.ReplaceAll(name, "k8s.io", "io.k8s")
 	name = strings.ReplaceAll(name, "/", ".")
 	return name

@@ -153,16 +153,16 @@ type CertManagement struct {
 
 	// webhookServiceName is the name of the Service used as part of the DNSName
 	// when generating the webhook server certificate.
-	// Defaults to "kpu-controller-manager".
+	// Defaults to "skytorch-controller-manager".
 	// +optional
-	// +kubebuilder:default="kpu-controller-manager"
+	// +kubebuilder:default="skytorch-controller-manager"
 	// +kubebuilder:validation:MinLength=1
 	WebhookServiceName string `json:"webhookServiceName,omitempty"`
 
 	// webhookSecretName is the name of the Secret used to store the CA and server certificates.
-	// Defaults to "kpu-webhook-cert".
+	// Defaults to "skytorch-webhook-cert".
 	// +optional
-	// +kubebuilder:default="kpu-webhook-cert"
+	// +kubebuilder:default="skytorch-webhook-cert"
 	// +kubebuilder:validation:MinLength=1
 	WebhookSecretName string `json:"webhookSecretName,omitempty"`
 }

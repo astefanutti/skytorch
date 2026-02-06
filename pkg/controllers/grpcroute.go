@@ -21,17 +21,17 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1apply "sigs.k8s.io/gateway-api/applyconfiguration/apis/v1"
 
-	"github.com/astefanutti/kpu/pkg/apis/kpu/v1alpha1"
-	"github.com/astefanutti/kpu/pkg/util/constants"
+	"github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1"
+	"github.com/astefanutti/skytorch/pkg/util/constants"
 )
 
 func grpcRouteApplyConfiguration(compute *v1alpha1.Compute, operatorNamespace string) *gatewayv1apply.GRPCRouteApplyConfiguration {
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kpu-torch-server",
+		"app.kubernetes.io/name":       "skytorch-server",
 		"app.kubernetes.io/instance":   compute.Name,
 		"app.kubernetes.io/component":  "compute",
-		"app.kubernetes.io/managed-by": "kpu-operator",
-		"app.kubernetes.io/part-of":    "kpu",
+		"app.kubernetes.io/managed-by": "skytorch-operator",
+		"app.kubernetes.io/part-of":    "skytorch",
 	}
 
 	// Merge user-provided labels
@@ -62,7 +62,7 @@ func grpcRouteApplyConfiguration(compute *v1alpha1.Compute, operatorNamespace st
 				WithParentRefs(gatewayv1apply.ParentReference().
 					WithKind("Gateway").
 					WithNamespace(gatewayv1.Namespace(operatorNamespace)).
-					WithName("kpu-gateway"),
+					WithName("skytorch-gateway"),
 				).
 				WithRules(
 					gatewayv1apply.GRPCRouteRule().

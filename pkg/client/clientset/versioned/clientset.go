@@ -20,7 +20,7 @@ import (
 	fmt "fmt"
 	http "net/http"
 
-	computev1alpha1 "github.com/astefanutti/kpu/pkg/client/clientset/versioned/typed/kpu/v1alpha1"
+	computev1alpha1 "github.com/astefanutti/skytorch/pkg/client/clientset/versioned/typed/compute/v1alpha1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"

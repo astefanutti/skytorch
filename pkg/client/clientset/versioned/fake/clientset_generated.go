@@ -17,10 +17,10 @@
 package fake
 
 import (
-	applyconfiguration "github.com/astefanutti/kpu/pkg/client/applyconfiguration"
-	clientset "github.com/astefanutti/kpu/pkg/client/clientset/versioned"
-	computev1alpha1 "github.com/astefanutti/kpu/pkg/client/clientset/versioned/typed/kpu/v1alpha1"
-	fakecomputev1alpha1 "github.com/astefanutti/kpu/pkg/client/clientset/versioned/typed/kpu/v1alpha1/fake"
+	applyconfiguration "github.com/astefanutti/skytorch/pkg/client/applyconfiguration"
+	clientset "github.com/astefanutti/skytorch/pkg/client/clientset/versioned"
+	computev1alpha1 "github.com/astefanutti/skytorch/pkg/client/clientset/versioned/typed/compute/v1alpha1"
+	fakecomputev1alpha1 "github.com/astefanutti/skytorch/pkg/client/clientset/versioned/typed/compute/v1alpha1/fake"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"

@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kpu-operator
+  name: skytorch-operator
 rules:
 - apiGroups:
   - ""
@@ -56,7 +56,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - compute.kpu.dev
+  - compute.skytorch.dev
   resources:
   - computes
   verbs:
@@ -66,7 +66,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - compute.kpu.dev
+  - compute.skytorch.dev
   resources:
   - computes/finalizers
   - computes/status

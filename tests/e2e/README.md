@@ -1,17 +1,17 @@
-## KPU End-to-End Tests
+## SkyTorch End-to-End Tests
 
-This directory contains end-to-end (E2E) tests for the KPU Python client that validate functionality against a real Kubernetes cluster.
+This directory contains end-to-end (E2E) tests for the SkyTorch Python client that validate functionality against a real Kubernetes cluster.
 
 ### Prerequisites
 
 1. **Kubernetes Cluster**
    - KinD cluster or any Kubernetes cluster
-   - KPU operator deployed and running
+   - SkyTorch operator deployed and running
    - Gateway API installed (for GRPCRoute support)
 
 2. **Container Images**
-   - `kpu-torch-server` image available in the cluster
-   - Default test image: `ghcr.io/astefanutti/kpu-torch-server`
+   - `skytorch-server` image available in the cluster
+   - Default test image: `ghcr.io/astefanutti/skytorch-server`
 
 3. **kubectl Configuration**
    - kubectl configured with access to the cluster
@@ -29,17 +29,17 @@ If you don't have a cluster, you can create one using KinD:
 
 ```bash
 # Create KinD cluster with custom configuration
-kind create cluster --config test/e2e/kind.yaml --name kpu-test
+kind create cluster --config test/e2e/kind.yaml --name skytorch-test
 
-# Load the kpu-torch-server image into the cluster
-docker pull ghcr.io/astefanutti/kpu-torch-server
-kind load docker-image ghcr.io/astefanutti/kpu-torch-server --name kpu-test
+# Load the skytorch-server image into the cluster
+docker pull ghcr.io/astefanutti/skytorch-server
+kind load docker-image ghcr.io/astefanutti/skytorch-server --name skytorch-test
 
-# Deploy KPU
+# Deploy SkyTorch
 kubectl apply -f config/e2e
 
 # Verify operator is running
-kubectl get pods -n kpu-system
+kubectl get pods -n skytorch-system
 ```
 
 ### Running Tests
@@ -92,7 +92,7 @@ pytest test/e2e -v -m "e2e and not slow"
 
 Tests use fixtures for configuration, defined in `test/e2e/conftest.py`:
 
-- **test_image**: Container image for Compute resources (default: `ghcr.io/astefanutti/kpu-torch-server`)
+- **test_image**: Container image for Compute resources (default: `ghcr.io/astefanutti/skytorch-server`)
 
 The gRPC endpoint is automatically discovered from the Compute resource status (Gateway addresses).
 
@@ -101,14 +101,14 @@ The gRPC endpoint is automatically discovered from the Compute resource status (
 Set environment variables before running tests:
 
 ```bash
-export KPU_TEST_IMAGE="your-custom-image:tag"
+export SKYTORCH_TEST_IMAGE="your-custom-image:tag"
 pytest test/e2e -v -m e2e
 ```
 
 Or inline:
 
 ```bash
-KPU_TEST_IMAGE="your-custom-image:tag" pytest test/e2e -v -m e2e
+SKYTORCH_TEST_IMAGE="your-custom-image:tag" pytest test/e2e -v -m e2e
 ```
 
 #### Option 2: Edit Fixtures
@@ -119,7 +119,7 @@ For persistent local configuration, edit the fixtures in `test/e2e/conftest.py`:
 @pytest.fixture(scope="session")
 def test_image():
     """Get the test image for Compute resources."""
-    return os.getenv("KPU_TEST_IMAGE", "your-custom-image:tag")
+    return os.getenv("SKYTORCH_TEST_IMAGE", "your-custom-image:tag")
 ```
 
 **Namespace Configuration**: Tests will auto-detect the namespace from your kubeconfig context or use "default".
@@ -131,12 +131,12 @@ Or configure the cluster's Gateway/Ingress for external access.
 #### Tests Fail with Connection Errors
 
 - Verify Kubernetes cluster is accessible: `kubectl get nodes`
-- Check KPU operator is running: `kubectl get pods -n kpu-system`
+- Check SkyTorch operator is running: `kubectl get pods -n skytorch-system`
 - Verify port-forwarding is active (if testing externally)
 
 #### Tests Fail with Image Pull Errors
 
-- Ensure `kpu-torch-server` image is available in the cluster
+- Ensure `skytorch-server` image is available in the cluster
 - For KinD: Load image with `kind load docker-image`
 - For other clusters: Push to accessible registry
 
@@ -164,7 +164,7 @@ Key steps in CI/CD:
 - name: Setup KinD cluster
   uses: helm/kind-action@v1.13.0
   with:
-    cluster_name: kpu
+    cluster_name: skytorch
     config: test/e2e/kind.yaml
 
 - name: Install Gateway API CRDs
@@ -174,7 +174,7 @@ Key steps in CI/CD:
   run: |
     # Build and push operator and PyTorch server images to local registry
 
-- name: Deploy KPU operator
+- name: Deploy SkyTorch operator
   run: kubectl apply -f config/e2e
 
 - name: Install test dependencies
@@ -182,7 +182,7 @@ Key steps in CI/CD:
 
 - name: Run E2E tests
   run: |
-    KPU_TEST_IMAGE="${IMAGE_TAG}" pytest test/e2e -v -m e2e
+    SKYTORCH_TEST_IMAGE="${IMAGE_TAG}" pytest test/e2e -v -m e2e
 ```
 
 ### Test Structure

@@ -5,12 +5,11 @@ import time
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
-from kpu.client import Compute, compute, log_event
-import kpu.torch.server
+from skytorch.client import Compute, compute, log_event
 
 
 torch.set_printoptions(precision=2, threshold=10, edgeitems=2)
@@ -57,13 +56,10 @@ class MNISTNet(nn.Module):
 
 @compute(
     name="mnist",
-    image="ghcr.io/astefanutti/kpu-torch-server@sha256:b9c0243648ef57420b91c689f1ffe3c6820c7e861d30477fdc5e7b608cf16f42",
+    image="ghcr.io/astefanutti/kpu-torch-server",
     resources={"cpu": "4", "memory": "16Gi", "nvidia.com/gpu": "1"},
     on_events=log_event,
-    # on_metrics=lambda metrics: print(metrics),
 )
-# @kpu.torch.server.compute("localhost:50053", on_metrics=lambda metrics: print(metrics))
-# @kpu.torch.server.compute("localhost:50053")
 async def train(node: Compute, epochs: int = 10):
     device = node.device("cuda")
 
@@ -74,10 +70,7 @@ async def train(node: Compute, epochs: int = 10):
     train_data = datasets.MNIST("../data", train=True, download=True, transform=transform)
     test_data = datasets.MNIST("../data", train=False, download=True, transform=transform)
 
-    # train_data = Subset(train_data, list(range(0, 10000)))
-    # test_data = Subset(test_data, list(range(0, 10000)))
-
-    train_loader = DataLoader(train_data, batch_size=1000, shuffle=True)
+    train_loader = DataLoader(train_data, batch_size=5000, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=5000, shuffle=False)
 
     model = MNISTNet().to(device)

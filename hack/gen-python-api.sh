@@ -12,7 +12,7 @@ setup_container_runtime
 
 API_VERSION="${VERSION}"
 API_OUTPUT_PATH="."
-PKG_ROOT="${API_OUTPUT_PATH}/kpu/client"
+PKG_ROOT="${API_OUTPUT_PATH}/skytorch/client"
 
 OPENAPI_GENERATOR_VERSION="v7.13.0"
 ROOT_DIR="$(pwd)"

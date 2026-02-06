@@ -1,0 +1,202 @@
+syntax = "proto3";
+
+package skytorch.torch;
+
+// Tensor management service for SkyTorch PyTorch backend
+service Service {
+  // Tensor lifecycle management
+  rpc UpdateTensor(stream TensorChunk) returns (TensorResponse);
+  rpc GetTensor(GetTensorRequest) returns (stream TensorChunk);
+  rpc CopyTensor(CopyTensorRequest) returns (TensorResponse);
+  rpc DeleteTensors(DeleteTensorsRequest) returns (TensorResponse);
+
+  // ATen operation execution
+  rpc ExecuteAtenOperation(ExecuteAtenRequest) returns (ExecuteAtenResponse);
+
+  // Bidirectional streaming for low-latency operations
+  rpc StreamOperations(stream StreamRequest) returns (stream StreamResponse);
+}
+
+// Request to delete tensors by ID
+message DeleteTensorsRequest {
+  repeated uint64 tensor_ids = 1;
+}
+
+// Tensor metadata for auto-creation on the server
+message TensorMetadata {
+  uint64 tensor_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  int64 nbytes = 4;
+  string device_type = 5;
+  repeated int64 stride = 6;
+  int64 storage_offset = 7;
+  int32 device_index = 8;
+  optional uint64 tensor_ref = 9;  // Reference to base tensor for views
+}
+
+// Represents a chunk of serialized tensor data
+message TensorChunk {
+  // Tensor ID
+  uint64 tensor_id = 1;
+
+  // Chunk sequence number (for ordering)
+  uint32 chunk_number = 2;
+
+  // Binary data chunk
+  bytes data = 3;
+
+  // Total number of chunks for this tensor (set in first chunk)
+  uint32 total_chunks = 4;
+
+  // Tensor info (set on first chunk only)
+  repeated int64 shape = 7;
+  repeated int64 stride = 8;
+  int64 storage_offset = 9;
+  string dtype = 10;
+
+  // Total serialized size in bytes (set in first chunk, for pre-allocation)
+  uint64 total_bytes = 11;
+
+  // Tensor metadata for auto-creation on first chunk
+  TensorMetadata metadata = 12;
+}
+
+// Response after receiving tensors
+message TensorResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Request to create a tensor on the server
+message CreateTensorRequest {
+  uint64 tensor_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  int64 nbytes = 4;
+  string device_type = 5;
+  repeated int64 stride = 6;
+  int64 storage_offset = 7;
+  int32 device_index = 8;
+  optional uint64 tensor_ref = 9;  // Reference to base tensor for views
+}
+
+// Request to get tensor data from storage
+message GetTensorRequest {
+  uint64 tensor_id = 1;
+  repeated int64 shape = 2;
+  string dtype = 3;
+  repeated int64 stride = 4;
+  int64 storage_offset = 5;
+}
+
+// Request to copy tensor data on the server
+message CopyTensorRequest {
+  uint64 src_tensor_id = 1;
+  uint64 dst_tensor_id = 2;
+  int64 src_offset = 3;
+  int64 dst_offset = 4;
+  int64 num_bytes = 5;
+  TensorMetadata src_metadata = 6;  // For auto-creation of source tensor
+  TensorMetadata dst_metadata = 7;  // For auto-creation of destination tensor
+}
+
+// Reference to a tensor on the server
+message TensorReference {
+  uint64 tensor_id = 1;
+}
+
+// Argument for ATen operations (can be tensor, scalar, or nested structure)
+message AtenArgument {
+  oneof value {
+    TensorReference tensor = 1;
+    double scalar_float = 2;
+    int64 scalar_int = 3;
+    bool scalar_bool = 4;
+    string scalar_string = 5;
+    AtenArgumentList list_value = 6;
+    bool none_value = 7;  // Represents Python None
+    string scalar_dtype = 8;  // torch.dtype as string (e.g., "torch.float32")
+    string scalar_memory_format = 9;  // torch.memory_format as string (e.g., "torch.contiguous_format")
+  }
+}
+
+// List of AtenArguments (for nested lists/tuples)
+message AtenArgumentList {
+  repeated AtenArgument values = 1;
+  bool is_tuple = 2;  // Preserve tuple vs list distinction
+}
+
+// Request to execute an ATen operation
+message ExecuteAtenRequest {
+  string op_name = 1;
+  repeated AtenArgument args = 2;  // Positional arguments (preserves order)
+  repeated TensorReference outputs = 3;
+  map<string, AtenArgument> kwargs = 4;
+  repeated TensorMetadata tensor_metadata = 5;   // Input tensors to auto-create
+  repeated TensorMetadata output_metadata = 6;   // Output tensors to auto-create
+}
+
+// Response after executing an ATen operation
+message ExecuteAtenResponse {
+  bool success = 1;
+  string message = 2;
+  repeated TensorReference output_tensors = 3;
+}
+
+// Request to update tensor data (upload from client)
+message UpdateTensorRequest {
+  uint64 tensor_id = 1;
+  bytes data = 2;  // Serialized tensor data
+  repeated int64 shape = 3;
+  string dtype = 4;
+  repeated int64 stride = 5;
+  int64 storage_offset = 6;
+  TensorMetadata metadata = 7;  // For auto-creation
+}
+
+// Response for GetTensor containing tensor data
+message GetTensorResponse {
+  bool success = 1;
+  string message = 2;
+  bytes data = 3;  // Serialized tensor data
+  repeated int64 shape = 4;
+  string dtype = 5;
+  repeated int64 stride = 6;
+  int64 storage_offset = 7;
+}
+
+// Request wrapper for bidirectional streaming
+// All operations go through this single channel to ensure ordering
+message StreamRequest {
+  oneof request {
+    ExecuteAtenRequest execute_aten = 1;
+    DeleteTensorsRequest delete_tensors = 2;
+    CopyTensorRequest copy_tensor = 3;
+    UpdateTensorRequest update_tensor = 4;
+    GetTensorRequest get_tensor = 5;
+  }
+
+  // Chunking support for large payloads
+  uint32 chunk_number = 10;      // 0-indexed chunk sequence
+  uint32 total_chunks = 11;      // Total chunks (0 or 1 = single message)
+  uint64 total_bytes = 13;       // Total data size (set on first chunk)
+}
+
+// Response wrapper for bidirectional streaming
+message StreamResponse {
+  bool success = 1;
+  string error_message = 2;
+
+  oneof response {
+    ExecuteAtenResponse execute_aten = 3;
+    TensorResponse delete_tensors = 4;
+    TensorResponse copy_tensor = 5;
+    TensorResponse update_tensor = 6;
+    GetTensorResponse get_tensor = 7;
+  }
+
+  // Chunking support for large responses (get_tensor)
+  uint32 chunk_number = 10;
+  uint32 total_chunks = 11;
+}
