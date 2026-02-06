@@ -146,7 +146,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     continue
 
                 target = self.tensor_manager.get(tensor_id)
-                target.copy_(tensor.to(target.device))
+                if tensor.device == target.device:
+                    target.copy_(tensor)
+                else:
+                    target.copy_(tensor.to(target.device))
 
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"Updated tensor {tensor_id} with shape {tensor.shape}")
@@ -193,8 +196,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         try:
             # Stream the tensor data
+            tensor_for_serialization = tensor if tensor.device.type == 'cpu' else tensor.cpu()
             for chunk in serialize_tensor_to_chunks(
-                tensor_id, tensor.cpu().detach(), self.chunk_size
+                tensor_id, tensor_for_serialization.detach(), self.chunk_size
             ):
                 yield chunk
 
@@ -737,7 +741,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             # Copy to target tensor
             target = self.tensor_manager.get(update_req.tensor_id)
-            target.copy_(src_tensor.to(target.device))
+            if src_tensor.device == target.device:
+                target.copy_(src_tensor)
+            else:
+                target.copy_(src_tensor.to(target.device))
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
