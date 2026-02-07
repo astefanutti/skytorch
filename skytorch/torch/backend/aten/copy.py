@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import torch
 
-from skytorch.torch.backend._async import run_async
 from skytorch.torch.backend import _client
-from skytorch.torch.backend._client import ENABLE_STREAMING
 
 
 def _copy_from_device(tensor: torch.Tensor) -> torch.Tensor:
@@ -26,7 +24,7 @@ def _copy_from_device(tensor: torch.Tensor) -> torch.Tensor:
     Returns:
         cpu tensor with copied data
     """
-    return run_async(_client.copy_sky_to_cpu(tensor)).result()
+    return _client.copy_sky_to_cpu(tensor)
 
 
 def _copy_to_device(src: torch.Tensor, dst: torch.Tensor) -> None:
@@ -42,9 +40,7 @@ def _copy_to_device(src: torch.Tensor, dst: torch.Tensor) -> None:
     Returns:
         Destination tensor (same as dst)
     """
-    future = run_async(_client.copy_cpu_to_sky(src, dst))
-    if not ENABLE_STREAMING:
-        future.result()
+    _client.copy_cpu_to_sky(src, dst)
 
 
 def _copy_sky_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
@@ -54,9 +50,7 @@ def _copy_sky_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
         src: Source sky tensor
         dst: Destination sky tensor
     """
-    future = run_async(_client.copy_sky_to_sky(src, dst))
-    if not ENABLE_STREAMING:
-        future.result()
+    _client.copy_sky_to_sky(src, dst)
 
 
 def _copy_from(

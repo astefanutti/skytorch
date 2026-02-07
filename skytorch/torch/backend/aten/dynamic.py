@@ -11,9 +11,7 @@ from typing import Any
 
 import torch
 
-from skytorch.torch.backend._async import run_async
 from skytorch.torch.backend import _client
-from skytorch.torch.backend._client import ENABLE_STREAMING
 
 
 def _handle_masked_select(
@@ -38,17 +36,13 @@ def _handle_masked_select(
     )
 
     # Execute the operation with the pre-allocated output
-    future = run_async(
-        _client.execute_aten_operation(
-            sky_device=self_tensor.device,
-            op_name=str(op),
-            args=args,
-            kwargs=kwargs,
-            output_tensors=[output],
-        )
+    _client.execute_aten_operation(
+        sky_device=self_tensor.device,
+        op_name=str(op),
+        args=args,
+        kwargs=kwargs,
+        output_tensors=[output],
     )
-    if not ENABLE_STREAMING:
-        future.result()
 
     return output
 

@@ -42,39 +42,25 @@ class StorageInfo:
 
 
 def _delete_tensors_after_gc(
-    loop: asyncio.AbstractEventLoop,
     compute: "Compute",
     tensor_ids: list[int],
 ) -> None:
     """
-    Schedule the deletion coroutine on the event loop.
+    Delete tensors after garbage collection.
 
-    This function schedules tensor deletion asynchronously rather than blocking.
-    This is critical to avoid a deadlock when garbage collection triggers during
-    an async operation:
-
-    1. Main thread is in `run_async()` -> `run_until_complete()` -> `_run_once()`
-       -> `selector.select()` waiting for I/O
-    2. During this wait, garbage collection triggers and finalizes tensor storage
-    3. GC calls `free_storage()` which previously called `run_async(delete_tensors(...))`
-    4. The nested `run_async()` also tries to enter `selector.select()`
-    5. Deadlock: Both calls are blocked on `selector.select()` on the same selector
-
-    By using `call_soon_threadsafe()` + `ensure_future()`, we add the deletion to
-    the event loop's callback queue and return immediately. The deletion runs when
-    the loop is ready, not during `selector.select()`, avoiding the deadlock.
+    Called on the event loop thread via call_soon_threadsafe, so no lock
+    is held when this executes. This avoids the reentrant deadlock that
+    occurs when GC triggers free_storage while _pending_lock is held.
     """
     from skytorch.torch.backend._client import delete_tensors
 
-    async def do_delete():
+    async def _do_delete():
         try:
             await delete_tensors(compute, tensor_ids)
         except Exception as e:
-            logger.warning(
-                f"Failed to delete tensor(s) {tensor_ids} after GC: {e}"
-            )
+            logger.warning(f"Failed to delete tensor(s) {tensor_ids} after GC: {e}")
 
-    asyncio.ensure_future(do_delete(), loop=loop)
+    asyncio.ensure_future(_do_delete())
 
 
 class StorageManager:
@@ -156,29 +142,17 @@ class StorageManager:
             )
             return
 
-        # # Get the gRPC client's primary loop (if available)
-        # grpc_client = getattr(compute, '_grpc_client', None)
-        # if grpc_client is None:
-        #     logger.warning(
-        #         f"No gRPC client available, skipping deletion of tensor(s) "
-        #         f"{tensor_ids}"
-        #     )
-        #     return
-        #
-        # loop = getattr(grpc_client, '_primary_loop', None)
-        # if loop is None or loop.is_closed():
-        #     logger.warning(
-        #         f"Event loop is closed or unavailable, skipping deletion of "
-        #         f"tensor(s) {tensor_ids}"
-        #     )
-        #     return
-
+        # Always defer via call_soon_threadsafe to avoid reentrant deadlock.
+        # GC can trigger free_storage while _pending_lock is held (e.g., during
+        # PendingRequest allocation in _submit_request_sync). Calling
+        # delete_tensors_sync directly here would try to re-acquire the same
+        # non-reentrant lock on the same thread, causing a deadlock.
+        # By deferring to call_soon_threadsafe, the deletion runs on the event
+        # loop thread at a point where no lock is held.
         loop = get_event_loop()
-
-        # Schedule deletion on the primary loop - non-blocking, fire-and-forget
         try:
             loop.call_soon_threadsafe(
-                _delete_tensors_after_gc, loop, compute, tensor_ids
+                _delete_tensors_after_gc, compute, tensor_ids
             )
         except RuntimeError as e:
             logger.warning(
