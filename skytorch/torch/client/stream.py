@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
-import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -42,7 +41,7 @@ STREAM_CHUNK_SIZE = 1024 * 1024
 @dataclass
 class PendingRequest:
     """Tracks a pending request awaiting response."""
-    future: asyncio.Future
+    future: Optional[asyncio.Future]
     request_type: str
 
 
@@ -78,7 +77,6 @@ class StreamManager:
 
         # Pending requests - FIFO queue of futures matched by order
         self._pending: collections.deque[PendingRequest] = collections.deque()
-        self._pending_lock = threading.Lock()
 
         # Stream state
         self._request_queue: Optional[asyncio.Queue] = None
@@ -114,17 +112,32 @@ class StreamManager:
         self._receiver_task = asyncio.create_task(self._receiver_loop())
         self._started = True
 
+    def _enqueue(self, pending, stream_request):
+        """Enqueue a single request. Must run on the event loop thread."""
+        self._pending.append(pending)
+        self._request_queue.put_nowait(stream_request)
+
+    def _enqueue_batch(self, pending, stream_requests):
+        """Enqueue multiple requests with one pending entry. Must run on the event loop thread."""
+        for request in stream_requests:
+            self._request_queue.put_nowait(request)
+        self._pending.append(pending)
+
     async def _sender_loop(self) -> None:
         """Send requests from queue to the stream."""
         try:
             async def request_generator():
                 while not self._closing:
-                    # Efficient await - no busy-wait polling
                     request = await self._request_queue.get()
                     if request is None:
-                        # Shutdown signal
                         break
                     yield request
+                    # Drain ready items without re-awaiting
+                    while not self._request_queue.empty():
+                        request = self._request_queue.get_nowait()
+                        if request is None:
+                            return
+                        yield request
 
             # Start the bidirectional stream
             self._stream_call = self._stub.StreamOperations(
@@ -152,13 +165,20 @@ class StreamManager:
                 return
 
             async for response in self._stream_call:
-                with self._pending_lock:
-                    if not self._pending:
-                        logger.warning("Received response but no pending requests")
-                        continue
-                    pending = self._pending.popleft()
+                if not self._pending:
+                    logger.warning("Received response but no pending requests")
+                    continue
+                pending = self._pending.popleft()
 
-                if response.success:
+                if pending.future is None:
+                    # Fire-and-forget: log errors but don't raise
+                    if not response.success:
+                        logger.error(
+                            f"Fire-and-forget {pending.request_type} failed: "
+                            f"{response.error_message}"
+                        )
+                        self._last_error = RuntimeError(response.error_message)
+                elif response.success:
                     pending.future.set_result(response)
                 else:
                     error = RuntimeError(
@@ -190,141 +210,78 @@ class StreamManager:
 
     def _fail_all_pending(self, error_message: str) -> None:
         """Fail all pending requests with an error."""
-        with self._pending_lock:
-            for pending in self._pending:
-                if not pending.future.done():
-                    pending.future.set_exception(
-                        RuntimeError(f"Stream error: {error_message}")
-                    )
-            self._pending.clear()
+        for pending in self._pending:
+            if pending.future is not None and not pending.future.done():
+                pending.future.set_exception(
+                    RuntimeError(f"Stream error: {error_message}")
+                )
+        self._pending.clear()
 
     def _submit_request(
         self, stream_request: service_pb2.StreamRequest, request_type: str
-    ) -> asyncio.Future:
+    ) -> None:
         """
-        Submit a request to the stream (internal helper).
+        Submit a fire-and-forget request to the stream (callable from any thread).
 
-        Must be called from the event loop thread.
+        No future is created — the request is enqueued and the response is
+        discarded (errors are logged by the receiver loop).
 
         Args:
             stream_request: StreamRequest to submit
             request_type: Type of request for tracking
-
-        Returns:
-            Future that resolves to StreamResponse
         """
-        if self._loop is None:
-            raise RuntimeError("StreamManager not started")
-
-        future = self._loop.create_future()
-
-        with self._pending_lock:
-            self._pending.append(PendingRequest(
-                future=future,
-                request_type=request_type,
-            ))
-
-        self._request_queue.put_nowait(stream_request)
-
-        return future
+        pending = PendingRequest(future=None, request_type=request_type)
+        self._loop.call_soon_threadsafe(self._enqueue, pending, stream_request)
 
     def submit_execute_aten(
         self, request: service_pb2.ExecuteAtenRequest
-    ) -> asyncio.Future:
-        """
-        Submit an execute_aten request.
-
-        Args:
-            request: ExecuteAtenRequest to submit
-
-        Returns:
-            Future that resolves to StreamResponse
-        """
+    ) -> None:
+        """Submit a fire-and-forget execute_aten request (callable from any thread)."""
         stream_request = service_pb2.StreamRequest(execute_aten=request)
-        return self._submit_request(stream_request, "execute_aten")
+        self._submit_request(stream_request, "execute_aten")
 
     def submit_copy_tensor(
         self, request: service_pb2.CopyTensorRequest
-    ) -> asyncio.Future:
-        """
-        Submit a copy_tensor request.
-
-        Args:
-            request: CopyTensorRequest to submit
-
-        Returns:
-            Future that resolves to StreamResponse
-        """
+    ) -> None:
+        """Submit a fire-and-forget copy_tensor request (callable from any thread)."""
         stream_request = service_pb2.StreamRequest(copy_tensor=request)
-        return self._submit_request(stream_request, "copy_tensor")
+        self._submit_request(stream_request, "copy_tensor")
 
     def submit_delete_tensors(
         self, request: service_pb2.DeleteTensorsRequest
-    ) -> asyncio.Future:
-        """
-        Submit a delete_tensors request.
-
-        Args:
-            request: DeleteTensorsRequest to submit
-
-        Returns:
-            Future that resolves to StreamResponse
-        """
+    ) -> None:
+        """Submit a fire-and-forget delete_tensors request (callable from any thread)."""
         stream_request = service_pb2.StreamRequest(delete_tensors=request)
-        return self._submit_request(stream_request, "delete_tensors")
+        self._submit_request(stream_request, "delete_tensors")
 
     def submit_update_tensor(
         self, request: service_pb2.UpdateTensorRequest
-    ) -> asyncio.Future:
-        """
-        Submit an update_tensor request.
-
-        For large tensors, automatically splits into multiple
-        chunked messages to avoid gRPC message size limits.
-
-        Args:
-            request: UpdateTensorRequest to submit
-
-        Returns:
-            Future that resolves to StreamResponse
-        """
+    ) -> None:
+        """Submit a fire-and-forget update_tensor request (callable from any thread)."""
         data_size = len(request.data)
 
         if data_size <= STREAM_CHUNK_SIZE:
-            # Small tensor: single message
             stream_request = service_pb2.StreamRequest(update_tensor=request)
-            return self._submit_request(stream_request, "update_tensor")
-
-        # Large tensor: split into chunks
-        return self._submit_chunked_update_tensor(request)
+            self._submit_request(stream_request, "update_tensor")
+        else:
+            self._submit_chunked_update_tensor(request)
 
     def _submit_chunked_update_tensor(
         self, request: service_pb2.UpdateTensorRequest
-    ) -> asyncio.Future:
-        """
-        Submit a large update_tensor request as multiple chunks.
-
-        Only the last chunk is tracked for response; intermediate chunks
-        are enqueued without tracking to preserve FIFO ordering.
-
-        Args:
-            request: UpdateTensorRequest with large data payload
-
-        Returns:
-            Future that resolves to StreamResponse (for final chunk)
-        """
+    ) -> None:
+        """Submit a large update_tensor request as multiple fire-and-forget chunks."""
         data = request.data
         total_size = len(data)
         total_chunks = (total_size + STREAM_CHUNK_SIZE - 1) // STREAM_CHUNK_SIZE
 
         mv = memoryview(data)
+        stream_requests = []
 
         for chunk_number in range(total_chunks):
             start = chunk_number * STREAM_CHUNK_SIZE
             end = min(start + STREAM_CHUNK_SIZE, total_size)
             chunk_data = bytes(mv[start:end])
 
-            # Build chunk request (metadata only on first chunk)
             chunk_request = service_pb2.UpdateTensorRequest(
                 tensor_id=request.tensor_id,
                 data=chunk_data,
@@ -337,25 +294,25 @@ class StreamManager:
                 if request.HasField("metadata"):
                     chunk_request.metadata.CopyFrom(request.metadata)
 
-            stream_request = service_pb2.StreamRequest(
+            stream_requests.append(service_pb2.StreamRequest(
                 update_tensor=chunk_request,
                 chunk_number=chunk_number,
                 total_chunks=total_chunks,
                 total_bytes=total_size if chunk_number == 0 else 0,
-            )
+            ))
 
-            if chunk_number == total_chunks - 1:
-                # Last chunk: track for response
-                return self._submit_request(stream_request, "update_tensor")
-            else:
-                # Intermediate: enqueue without tracking
-                self._request_queue.put_nowait(stream_request)
+        pending = PendingRequest(future=None, request_type="update_tensor")
+        self._loop.call_soon_threadsafe(
+            self._enqueue_batch, pending, stream_requests
+        )
 
     def submit_get_tensor(
         self, request: service_pb2.GetTensorRequest
     ) -> asyncio.Future:
         """
         Submit a get_tensor request.
+
+        Must be called from the event loop thread.
 
         Args:
             request: GetTensorRequest to submit
@@ -364,8 +321,17 @@ class StreamManager:
             Awaitable that resolves to StreamResponse with tensor data,
             after checking for deferred errors from prior operations
         """
+        if self._loop is None:
+            raise RuntimeError("StreamManager not started")
+
+        future = self._loop.create_future()
         stream_request = service_pb2.StreamRequest(get_tensor=request)
-        future = self._submit_request(stream_request, "get_tensor")
+
+        self._pending.append(PendingRequest(
+            future=future,
+            request_type="get_tensor",
+        ))
+        self._request_queue.put_nowait(stream_request)
 
         async def _with_error_check():
             response = await future

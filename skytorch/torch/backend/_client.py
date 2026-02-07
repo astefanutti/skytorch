@@ -1,7 +1,7 @@
 """
-SkyTorch Client operations - Async tensor transfer and remote execution.
+SkyTorch Client operations - Tensor transfer and remote execution.
 
-This module provides async functions for tensor data transfer,
+This module provides functions for tensor data transfer,
 remote ATen operation execution via gRPC, and Compute resolution.
 """
 
@@ -26,6 +26,7 @@ from skytorch.torch.backend._storage import storage_manager
 from skytorch.torch.client.tensor import get_storage_id, get_tensor_id, get_tensor_metadata
 from skytorch.torch.client.metadata import TensorMetadata
 from skytorch.torch.client.service import TensorClient
+from skytorch.torch.backend._async import run_async
 from skytorch.torch.client.request import (
     tensor_metadata_to_proto,
     build_copy_tensor_request,
@@ -33,11 +34,11 @@ from skytorch.torch.client.request import (
 )
 
 
-async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
+def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     """
     Copy data from a sky tensor to a cpu tensor.
 
-    Uses streaming get_tensor to download tensor data from the server.
+    Uses streaming get_tensor or unary RPC depending on ENABLE_STREAMING.
 
     Args:
         tensor: Source sky tensor
@@ -45,6 +46,11 @@ async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     Returns:
         cpu tensor with copied data
     """
+    return run_async(_copy_sky_to_cpu_async(tensor)).result()
+
+
+async def _copy_sky_to_cpu_async(tensor: torch.Tensor) -> torch.Tensor:
+    """Async implementation of copy_sky_to_cpu."""
     from skytorch.torch.server import service_pb2
 
     if tensor.device.type != "sky":
@@ -71,8 +77,6 @@ async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
             request.metadata.CopyFrom(tensor_metadata_to_proto(meta))
 
         future = stream_manager.submit_get_tensor(request)
-
-        # Await the future - it's on the global loop which we're running on
         response = await future
 
         if not response.success:
@@ -90,7 +94,6 @@ async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
         return tensor_from_bytes(data, dtype, shape)
 
     else:
-        # Use unary RPC
         client = _require_client(compute)
         cpu_tensor = await client.get_tensor(
             tensor_id=get_tensor_id(tensor),
@@ -108,19 +111,16 @@ async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
         return cpu_tensor
 
 
-async def copy_cpu_to_sky(src: torch.Tensor, dst: torch.Tensor):
+def copy_cpu_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
     """
     Copy data from a cpu tensor to a sky tensor.
 
-    Uses streaming update_tensor call with metadata for auto-creation.
-    The server will create the tensor if it doesn't exist.
+    When streaming is enabled, the update_tensor goes through the stream
+    ensuring proper ordering with other operations.
 
     Args:
         src: Source cpu tensor
         dst: Destination sky tensor
-
-    Returns:
-        Destination tensor (same as dst)
     """
     from skytorch.torch.server import service_pb2
 
@@ -138,7 +138,6 @@ async def copy_cpu_to_sky(src: torch.Tensor, dst: torch.Tensor):
     src = src.to(dst.dtype) if src.dtype != dst.dtype else src
 
     if ENABLE_STREAMING:
-        # Use streaming channel for proper ordering
         stream_manager = compute._grpc_client.stream
 
         # Serialize tensor data (detach in case it requires grad)
@@ -160,28 +159,31 @@ async def copy_cpu_to_sky(src: torch.Tensor, dst: torch.Tensor):
         if metadata_proto is not None:
             request.metadata.CopyFrom(metadata_proto)
 
-        # FIXME: error handling
-        future = stream_manager.submit_update_tensor(request)
+        stream_manager.submit_update_tensor(request)
+
     else:
-        # Use unary RPC
-        client = _require_client(compute)
-        await client.update_tensor(
-            src=src,
-            tensor_id=get_tensor_id(dst),
-            tensor_metadata=meta,
-        )
+        run_async(_copy_cpu_to_sky_unary(compute, src, dst, meta)).result()
 
     # Register locally after RPC
     if meta is not None:
         _register_tensor_locally(dst)
 
 
-async def copy_sky_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
+async def _copy_cpu_to_sky_unary(
+    compute: Compute, src: torch.Tensor, dst: torch.Tensor, meta: Optional[TensorMetadata],
+) -> None:
+    """Async helper for unary copy_cpu_to_sky RPC."""
+    client = _require_client(compute)
+    await client.update_tensor(
+        src=src,
+        tensor_id=get_tensor_id(dst),
+        tensor_metadata=meta,
+    )
+
+
+def copy_sky_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
     """
     Copy data between sky tensors on the same Compute.
-
-    Uses streaming mode (fire-and-forget) when ENABLE_STREAMING is True,
-    otherwise uses synchronous unary RPC.
 
     Args:
         src: Source sky tensor
@@ -215,9 +217,6 @@ async def copy_sky_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
     dst_meta = _get_tensor_metadata_if_new(dst)
 
     if ENABLE_STREAMING:
-        stream_manager = src_compute._grpc_client.stream
-
-        # Build request
         request = build_copy_tensor_request(
             src_tensor_id=get_tensor_id(src),
             dst_tensor_id=get_tensor_id(dst),
@@ -227,22 +226,12 @@ async def copy_sky_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
             src_metadata=src_meta,
             dst_metadata=dst_meta,
         )
-
-        # FIXME: error handling
-        future = stream_manager.submit_copy_tensor(request)
-        # Fire-and-forget: don't await in streaming mode
+        stream_manager = src_compute._grpc_client.stream
+        stream_manager.submit_copy_tensor(request)
     else:
-        # Unary mode: wait for operation to complete
-        client = _require_client(src_compute)
-        await client.copy_tensor(
-            src_tensor_id=get_tensor_id(src),
-            dst_tensor_id=get_tensor_id(dst),
-            src_offset=src.storage_offset() * src.element_size(),
-            dst_offset=dst.storage_offset() * dst.element_size(),
-            num_bytes=src.numel() * src.element_size(),
-            src_metadata=src_meta,
-            dst_metadata=dst_meta,
-        )
+        run_async(_copy_sky_to_sky_unary(
+            src_compute, src, dst, src_meta, dst_meta,
+        )).result()
 
     # Register locally after RPC
     if src_meta is not None:
@@ -251,12 +240,32 @@ async def copy_sky_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
         _register_tensor_locally(dst)
 
 
+async def _copy_sky_to_sky_unary(
+    compute: Compute,
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    src_meta: Optional[TensorMetadata],
+    dst_meta: Optional[TensorMetadata],
+) -> None:
+    """Async helper for unary copy_sky_to_sky RPC."""
+    client = _require_client(compute)
+    await client.copy_tensor(
+        src_tensor_id=get_tensor_id(src),
+        dst_tensor_id=get_tensor_id(dst),
+        src_offset=src.storage_offset() * src.element_size(),
+        dst_offset=dst.storage_offset() * dst.element_size(),
+        num_bytes=src.numel() * src.element_size(),
+        src_metadata=src_meta,
+        dst_metadata=dst_meta,
+    )
+
+
 async def delete_tensors(compute: Compute, tensor_ids: list[int]) -> None:
     """
     Delete tensors on the remote server.
 
     When streaming is enabled, routes through the stream to maintain
-    ordering with other operations. Otherwise uses unary RPC.
+    ordering with other operations.
 
     Args:
         compute: The Compute instance
@@ -265,30 +274,26 @@ async def delete_tensors(compute: Compute, tensor_ids: list[int]) -> None:
     from skytorch.torch.server import service_pb2
 
     if ENABLE_STREAMING:
-        # Use streaming channel to maintain ordering with other ops
         stream_manager = compute._grpc_client.stream
         request = service_pb2.DeleteTensorsRequest(tensor_ids=tensor_ids)
-        # FIXME: error handling
-        future = stream_manager.submit_delete_tensors(request)
-        # Fire-and-forget: don't wait for response
-        # The stream ordering ensures deletes happen after prior ops complete
+        stream_manager.submit_delete_tensors(request)
     else:
         client = _require_client(compute)
         await client.delete_tensors(tensor_ids)
 
 
-async def execute_aten_operation(
+def execute_aten_operation(
     sky_device: torch.device,
     op_name: str,
     args: tuple,
     kwargs: dict,
     output_tensors: list[torch.Tensor] | None,
-) -> list[int] | None:
+) -> None:
     """
     Execute an ATen operation on the remote Compute.
 
     Uses streaming (fire-and-forget) when ENABLE_STREAMING is True,
-    otherwise uses unary RPC and waits for completion.
+    otherwise uses unary RPC.
 
     Args:
         sky_device: sky device to execute on
@@ -296,9 +301,6 @@ async def execute_aten_operation(
         args: Positional arguments (may contain sky tensors)
         kwargs: Keyword arguments (may contain sky tensors)
         output_tensors: Pre-allocated output tensors, or None for server-created
-
-    Returns:
-        None in streaming mode, list[int] of tensor_ids in unary mode if server created outputs
     """
     compute = device_manager.get_compute(sky_device.index)
     if compute is None:
@@ -354,8 +356,6 @@ async def execute_aten_operation(
                     output_tensors_to_register.append(tensor)
 
     if ENABLE_STREAMING:
-        stream_manager = compute._grpc_client.stream
-
         request = build_execute_aten_request(
             op_name=op_name,
             args=processed_args,
@@ -364,36 +364,40 @@ async def execute_aten_operation(
             tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
             output_metadata=output_metadata_list if output_metadata_list else None,
         )
-
-        # FIXME: error handling
-        future = stream_manager.submit_execute_aten(request)
-
-        # Register tensors locally immediately (optimistic)
-        for tensor in tensors_to_register:
-            _register_tensor_locally(tensor)
-        for tensor in output_tensors_to_register:
-            _register_tensor_locally(tensor)
-
-        return None  # Fire-and-forget
+        stream_manager = compute._grpc_client.stream
+        stream_manager.submit_execute_aten(request)
     else:
-        client = compute._grpc_client.torch
+        run_async(_execute_aten_operation_unary(
+            compute, op_name, processed_args, processed_kwargs,
+            output_tensors, tensor_metadata_list, output_metadata_list,
+        )).result()
 
-        result = await client.execute_aten_operation(
-            op_name=op_name,
-            args=processed_args,
-            kwargs=processed_kwargs,
-            output_tensors=output_tensors,
-            tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
-            output_metadata=output_metadata_list if output_metadata_list else None,
-        )
+    # Register tensors locally after RPC
+    for tensor in tensors_to_register:
+        _register_tensor_locally(tensor)
+    for tensor in output_tensors_to_register:
+        _register_tensor_locally(tensor)
 
-        # Register tensors locally after RPC
-        for tensor in tensors_to_register:
-            _register_tensor_locally(tensor)
-        for tensor in output_tensors_to_register:
-            _register_tensor_locally(tensor)
 
-        return result
+async def _execute_aten_operation_unary(
+    compute: Compute,
+    op_name: str,
+    args: tuple,
+    kwargs: dict,
+    output_tensors: list[torch.Tensor] | None,
+    tensor_metadata: list[TensorMetadata],
+    output_metadata: list[TensorMetadata],
+) -> None:
+    """Async helper for unary execute_aten_operation RPC."""
+    client = compute._grpc_client.torch
+    await client.execute_aten_operation(
+        op_name=op_name,
+        args=args,
+        kwargs=kwargs,
+        output_tensors=output_tensors,
+        tensor_metadata=tensor_metadata if tensor_metadata else None,
+        output_metadata=output_metadata if output_metadata else None,
+    )
 
 
 def map_args_kwargs(

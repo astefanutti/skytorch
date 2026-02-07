@@ -4,10 +4,6 @@ SkyTorch ATen Dispatch - Meta tensor execution for shape inference.
 This module provides the fallback mechanism for ATen operations on SkyTorch devices.
 It uses meta tensors to infer output shapes without moving data, then creates
 output tensors on the SkyTorch device and executes operations remotely.
-
-Environment variables:
-    SKYTORCH_ENABLE_STREAMING: Set to "1" to enable bidirectional streaming for
-        pipelined operations (reduces per-op latency).
 """
 
 from typing import Any
@@ -15,9 +11,8 @@ from typing import Any
 import torch
 import torch._dynamo  # Pre-import to avoid circular import issues during debugging
 
-from skytorch.torch.backend._async import run_async
 from skytorch.torch.backend import _client
-from skytorch.torch.backend._client import map_args_kwargs, ENABLE_STREAMING
+from skytorch.torch.backend._client import map_args_kwargs
 
 
 def _create_meta_tensor_from_sky(
@@ -165,17 +160,13 @@ def _execute_with_static_outputs(
     )
 
     # Execute operation remotely via gRPC
-    future = run_async(
-        _client.execute_aten_operation(
-            sky_device=sky_device,
-            op_name=str(op),
-            args=args,
-            kwargs=kwargs,
-            output_tensors=output_tensors,
-        )
+    _client.execute_aten_operation(
+        sky_device=sky_device,
+        op_name=str(op),
+        args=args,
+        kwargs=kwargs,
+        output_tensors=output_tensors,
     )
-    if not ENABLE_STREAMING:
-        future.result()
 
     # Return results
     if len(output_tensors) > 1:
