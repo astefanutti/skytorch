@@ -674,12 +674,6 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
-    "native_dropout",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.native_dropout.default),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
     "native_dropout.out",
     _sky_kernel_fallback_wrapper(torch.ops.aten.native_dropout.out),
     dispatch_key="PrivateUse1",

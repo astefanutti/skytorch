@@ -18,6 +18,7 @@ import torch
 
 from .copy import _copy_from
 from .dispatch import _sky_kernel_fallback
+from .dropout import _native_dropout
 from .dynamic import _masked_select, _masked_select_out
 from .scalar import _equal, _local_scalar_dense
 
@@ -53,6 +54,9 @@ _sky_lib_aten.impl("_local_scalar_dense", _local_scalar_dense, dispatch_key="Pri
 
 # Equality comparison - returns Python bool
 _sky_lib_aten.impl("equal", _equal, dispatch_key="PrivateUse1")
+
+# Dropout - handle deterministic edge cases client-side
+_sky_lib_aten.impl("native_dropout", _native_dropout, dispatch_key="PrivateUse1")
 
 # Masked select - has data-dependent output shape
 _sky_lib_aten.impl("masked_select", _masked_select, dispatch_key="PrivateUse1")

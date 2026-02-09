@@ -219,7 +219,7 @@ def main():
         # "masked_select",
         # "masked_select.out",
         # Dropout
-        "native_dropout",
+        # native_dropout is handled client-side in dropout.py
         "native_dropout.out",
         "native_dropout_backward",
         "native_dropout_backward.out",
