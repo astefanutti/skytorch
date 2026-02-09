@@ -134,6 +134,9 @@ async def copy_cpu_to_sky(src: torch.Tensor, dst: torch.Tensor):
     # Get metadata for auto-creation if tensor is not registered
     meta = _get_tensor_metadata_if_new(dst)
 
+    # Cast to destination dtype if needed (copy_ semantics require dtype casting)
+    src = src.to(dst.dtype) if src.dtype != dst.dtype else src
+
     if ENABLE_STREAMING:
         # Use streaming channel for proper ordering
         stream_manager = compute._grpc_client.stream

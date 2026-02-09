@@ -175,7 +175,6 @@ async def test_clone_matches_cpu(device):
     torch.testing.assert_close(cloned_sky.cpu(), cloned_cpu, check_device=False)
 
 
-@pytest.mark.xfail(reason="dtype copy produces incorrect values")
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_copy_preserves_dtype(device):
