@@ -88,6 +88,7 @@ message GetTensorRequest {
   string dtype = 3;
   repeated int64 stride = 4;
   int64 storage_offset = 5;
+  TensorMetadata metadata = 6;  // For auto-creation of tensor on server
 }
 
 // Request to copy tensor data on the server

@@ -122,6 +122,323 @@ at::Tensor _reshape_alias_sky(
 }
 
 /**
+ * Transpose a 2D SkyTorch tensor.
+ */
+at::Tensor t_sky(const at::Tensor& self) {
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "t_sky expects a SkyTorch tensor");
+
+    TORCH_CHECK(
+        self.dim() <= 2,
+        "t expects a tensor with <= 2 dimensions, but self is ", self.dim(), "D");
+
+    if (self.dim() < 2) {
+        return self;
+    }
+
+    auto sizes = self.sizes().vec();
+    auto strides = self.strides().vec();
+    std::swap(sizes[0], sizes[1]);
+    std::swap(strides[0], strides[1]);
+    return as_strided_sky(self, sizes, strides, self.storage_offset());
+}
+
+/**
+ * Transpose two dimensions of a SkyTorch tensor.
+ */
+at::Tensor transpose_int_sky(const at::Tensor& self, int64_t dim0, int64_t dim1) {
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "transpose_int_sky expects a SkyTorch tensor");
+
+    auto ndim = self.dim();
+    if (dim0 < 0) dim0 += ndim;
+    if (dim1 < 0) dim1 += ndim;
+    TORCH_CHECK(
+        dim0 >= 0 && dim0 < ndim && dim1 >= 0 && dim1 < ndim,
+        "transpose: dim0 and dim1 out of range");
+
+    if (dim0 == dim1) {
+        return self;
+    }
+
+    auto sizes = self.sizes().vec();
+    auto strides = self.strides().vec();
+    std::swap(sizes[dim0], sizes[dim1]);
+    std::swap(strides[dim0], strides[dim1]);
+    return as_strided_sky(self, sizes, strides, self.storage_offset());
+}
+
+/**
+ * Permute dimensions of a SkyTorch tensor.
+ */
+at::Tensor permute_sky(const at::Tensor& self, at::IntArrayRef dims) {
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "permute_sky expects a SkyTorch tensor");
+
+    auto ndim = self.dim();
+    TORCH_CHECK(
+        static_cast<int64_t>(dims.size()) == ndim,
+        "permute: number of dims doesn't match tensor dimensions");
+
+    auto old_sizes = self.sizes();
+    auto old_strides = self.strides();
+    std::vector<int64_t> new_sizes(ndim);
+    std::vector<int64_t> new_strides(ndim);
+    std::vector<bool> seen(ndim, false);
+
+    for (int64_t i = 0; i < ndim; i++) {
+        auto d = dims[i];
+        if (d < 0) d += ndim;
+        TORCH_CHECK(
+            d >= 0 && d < ndim,
+            "permute: dim ", dims[i], " out of range for tensor of dim ", ndim);
+        TORCH_CHECK(
+            !seen[d],
+            "permute: duplicate dims are not allowed");
+        seen[d] = true;
+        new_sizes[i] = old_sizes[d];
+        new_strides[i] = old_strides[d];
+    }
+
+    return as_strided_sky(self, new_sizes, new_strides, self.storage_offset());
+}
+
+/**
+ * Expand a SkyTorch tensor to a larger size.
+ */
+at::Tensor expand_sky(
+    const at::Tensor& self,
+    at::IntArrayRef sizes,
+    bool implicit) {
+
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "expand_sky expects a SkyTorch tensor");
+
+    auto ndim = static_cast<int64_t>(sizes.size());
+    auto self_ndim = self.dim();
+    TORCH_CHECK(
+        ndim >= self_ndim,
+        "expand: the number of sizes provided (", ndim,
+        ") must be greater or equal to the number of dimensions in the tensor (", self_ndim, ")");
+
+    auto old_sizes = self.sizes();
+    auto old_strides = self.strides();
+    std::vector<int64_t> new_sizes(ndim);
+    std::vector<int64_t> new_strides(ndim);
+
+    // Align dimensions from the right
+    auto diff = ndim - self_ndim;
+    for (int64_t i = ndim - 1; i >= 0; i--) {
+        auto self_i = i - diff;
+        if (self_i >= 0) {
+            auto self_size = old_sizes[self_i];
+            auto target_size = sizes[i];
+            if (target_size == -1) {
+                target_size = self_size;
+            }
+            if (self_size == target_size) {
+                new_sizes[i] = self_size;
+                new_strides[i] = old_strides[self_i];
+            } else {
+                TORCH_CHECK(
+                    self_size == 1,
+                    "expand: the expanded size of the tensor (", target_size,
+                    ") must match the existing size (", self_size,
+                    ") at non-singleton dimension ", i);
+                new_sizes[i] = target_size;
+                new_strides[i] = 0;
+            }
+        } else {
+            TORCH_CHECK(
+                sizes[i] >= 0,
+                "expand: the expanded size at non-existing dimension ", i,
+                " must be non-negative, got ", sizes[i]);
+            new_sizes[i] = sizes[i];
+            new_strides[i] = 0;
+        }
+    }
+
+    return as_strided_sky(self, new_sizes, new_strides, self.storage_offset());
+}
+
+/**
+ * Squeeze a single dimension of a SkyTorch tensor.
+ */
+at::Tensor squeeze_dim_sky(const at::Tensor& self, int64_t dim) {
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "squeeze_dim_sky expects a SkyTorch tensor");
+
+    auto ndim = self.dim();
+    if (dim < 0) dim += ndim;
+    TORCH_CHECK(
+        dim >= 0 && dim < ndim,
+        "squeeze: dim ", dim, " out of range for tensor of dim ", ndim);
+
+    if (self.sizes()[dim] != 1) {
+        return as_strided_sky(self, self.sizes(), self.strides(), self.storage_offset());
+    }
+
+    auto sizes = self.sizes().vec();
+    auto strides = self.strides().vec();
+    sizes.erase(sizes.begin() + dim);
+    strides.erase(strides.begin() + dim);
+    return as_strided_sky(self, sizes, strides, self.storage_offset());
+}
+
+/**
+ * Squeeze multiple dimensions of a SkyTorch tensor.
+ */
+at::Tensor squeeze_dims_sky(const at::Tensor& self, at::IntArrayRef dims) {
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "squeeze_dims_sky expects a SkyTorch tensor");
+
+    auto ndim = self.dim();
+    auto old_sizes = self.sizes();
+    auto old_strides = self.strides();
+
+    // Normalize and validate dims, mark which to squeeze
+    std::vector<bool> to_squeeze(ndim, false);
+    for (auto d : dims) {
+        if (d < 0) d += ndim;
+        TORCH_CHECK(
+            d >= 0 && d < ndim,
+            "squeeze: dim out of range for tensor of dim ", ndim);
+        if (old_sizes[d] == 1) {
+            to_squeeze[d] = true;
+        }
+    }
+
+    std::vector<int64_t> new_sizes;
+    std::vector<int64_t> new_strides;
+    for (int64_t i = 0; i < ndim; i++) {
+        if (!to_squeeze[i]) {
+            new_sizes.push_back(old_sizes[i]);
+            new_strides.push_back(old_strides[i]);
+        }
+    }
+
+    return as_strided_sky(self, new_sizes, new_strides, self.storage_offset());
+}
+
+/**
+ * Unsqueeze a SkyTorch tensor at the given dimension.
+ */
+at::Tensor unsqueeze_sky(const at::Tensor& self, int64_t dim) {
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "unsqueeze_sky expects a SkyTorch tensor");
+
+    auto ndim = self.dim();
+    if (dim < 0) dim += ndim + 1;
+    TORCH_CHECK(
+        dim >= 0 && dim <= ndim,
+        "unsqueeze: dim ", dim, " out of range for tensor of dim ", ndim);
+
+    auto sizes = self.sizes().vec();
+    auto strides = self.strides().vec();
+
+    // Compute stride for the new dimension
+    int64_t new_stride = 1;
+    if (dim < ndim) {
+        new_stride = sizes[dim] * strides[dim];
+    } else if (ndim > 0) {
+        new_stride = 1;
+    }
+
+    sizes.insert(sizes.begin() + dim, 1);
+    strides.insert(strides.begin() + dim, new_stride);
+    return as_strided_sky(self, sizes, strides, self.storage_offset());
+}
+
+/**
+ * Select a single element along a dimension.
+ */
+at::Tensor select_int_sky(const at::Tensor& self, int64_t dim, int64_t index) {
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "select_int_sky expects a SkyTorch tensor");
+
+    auto ndim = self.dim();
+    TORCH_CHECK(ndim > 0, "select requires a tensor with at least one dimension");
+
+    if (dim < 0) dim += ndim;
+    TORCH_CHECK(
+        dim >= 0 && dim < ndim,
+        "select: dim ", dim, " out of range for tensor of dim ", ndim);
+
+    auto dim_size = self.sizes()[dim];
+    if (index < 0) index += dim_size;
+    TORCH_CHECK(
+        index >= 0 && index < dim_size,
+        "select: index ", index, " out of range for dimension ", dim, " of size ", dim_size);
+
+    auto sizes = self.sizes().vec();
+    auto strides = self.strides().vec();
+    auto offset = self.storage_offset() + index * strides[dim];
+    sizes.erase(sizes.begin() + dim);
+    strides.erase(strides.begin() + dim);
+    return as_strided_sky(self, sizes, strides, offset);
+}
+
+/**
+ * Slice a SkyTorch tensor along a dimension.
+ */
+at::Tensor slice_tensor_sky(
+    const at::Tensor& self,
+    int64_t dim,
+    c10::optional<int64_t> start,
+    c10::optional<int64_t> end,
+    int64_t step) {
+
+    TORCH_CHECK(
+        self.device().type() == c10::DeviceType::PrivateUse1,
+        "slice_tensor_sky expects a SkyTorch tensor");
+
+    auto ndim = self.dim();
+    TORCH_CHECK(ndim > 0, "slice requires a tensor with at least one dimension");
+
+    if (dim < 0) dim += ndim;
+    TORCH_CHECK(
+        dim >= 0 && dim < ndim,
+        "slice: dim ", dim, " out of range for tensor of dim ", ndim);
+
+    TORCH_CHECK(step > 0, "slice: step must be positive, got ", step);
+
+    auto dim_size = self.sizes()[dim];
+
+    // Handle start
+    int64_t start_val = start.has_value() ? start.value() : 0;
+    if (start_val < 0) start_val += dim_size;
+    if (start_val < 0) start_val = 0;
+    if (start_val > dim_size) start_val = dim_size;
+
+    // Handle end
+    int64_t end_val = end.has_value() ? end.value() : dim_size;
+    if (end_val < 0) end_val += dim_size;
+    if (end_val < 0) end_val = 0;
+    if (end_val > dim_size) end_val = dim_size;
+
+    // Compute new size along dim
+    int64_t new_dim_size = 0;
+    if (start_val < end_val) {
+        new_dim_size = (end_val - start_val + step - 1) / step;
+    }
+
+    auto sizes = self.sizes().vec();
+    auto strides = self.strides().vec();
+    auto offset = self.storage_offset() + start_val * strides[dim];
+    sizes[dim] = new_dim_size;
+    strides[dim] = strides[dim] * step;
+    return as_strided_sky(self, sizes, strides, offset);
+}
+
+/**
  * Lazy clone that preserves TensorImpl.
  *
  * Creates a new tensor with its own storage and copies data from self.

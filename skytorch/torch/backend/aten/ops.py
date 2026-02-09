@@ -266,12 +266,6 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
-    "contiguous",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.contiguous.default),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
     "convolution",
     _sky_kernel_fallback_wrapper(torch.ops.aten.convolution.default),
     dispatch_key="PrivateUse1",
@@ -392,12 +386,6 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
-    "expand",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.expand.default),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
     "fill_.Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.fill_.Scalar),
     dispatch_key="PrivateUse1",
@@ -406,12 +394,6 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "fill_.Tensor",
     _sky_kernel_fallback_wrapper(torch.ops.aten.fill_.Tensor),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
-    "flatten.using_ints",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.flatten.using_ints),
     dispatch_key="PrivateUse1",
 )
 
@@ -758,12 +740,6 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
-    "permute",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.permute.default),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
     "pow.Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.pow.Scalar),
     dispatch_key="PrivateUse1",
@@ -800,12 +776,6 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
-    "reshape",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.reshape.default),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
     "rsqrt",
     _sky_kernel_fallback_wrapper(torch.ops.aten.rsqrt.default),
     dispatch_key="PrivateUse1",
@@ -820,12 +790,6 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "rsqrt_",
     _sky_kernel_fallback_wrapper(torch.ops.aten.rsqrt_.default),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
-    "select.int",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.select.int),
     dispatch_key="PrivateUse1",
 )
 
@@ -860,12 +824,6 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
-    "slice.Tensor",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.slice.Tensor),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
     "sqrt",
     _sky_kernel_fallback_wrapper(torch.ops.aten.sqrt.default),
     dispatch_key="PrivateUse1",
@@ -880,18 +838,6 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "sqrt_",
     _sky_kernel_fallback_wrapper(torch.ops.aten.sqrt_.default),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
-    "squeeze.dim",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.squeeze.dim),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
-    "squeeze.dims",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.squeeze.dims),
     dispatch_key="PrivateUse1",
 )
 
@@ -944,12 +890,6 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
-    "t",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.t.default),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
     "tanh",
     _sky_kernel_fallback_wrapper(torch.ops.aten.tanh.default),
     dispatch_key="PrivateUse1",
@@ -988,18 +928,6 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "threshold_backward.grad_input",
     _sky_kernel_fallback_wrapper(torch.ops.aten.threshold_backward.grad_input),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
-    "transpose.int",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.transpose.int),
-    dispatch_key="PrivateUse1",
-)
-
-_sky_lib_aten.impl(
-    "unsqueeze",
-    _sky_kernel_fallback_wrapper(torch.ops.aten.unsqueeze.default),
     dispatch_key="PrivateUse1",
 )
 

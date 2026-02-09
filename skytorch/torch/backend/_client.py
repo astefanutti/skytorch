@@ -52,6 +52,9 @@ async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
 
     compute = _require_compute(tensor)
 
+    # Get metadata for auto-creation if tensor is not registered
+    meta = _get_tensor_metadata_if_new(tensor)
+
     if ENABLE_STREAMING:
         stream_manager = compute._grpc_client.stream
 
@@ -64,6 +67,8 @@ async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
             stride=list(tensor.stride()),
             storage_offset=tensor.storage_offset(),
         )
+        if meta is not None:
+            request.metadata.CopyFrom(tensor_metadata_to_proto(meta))
 
         future = stream_manager.submit_get_tensor(request)
 
@@ -72,6 +77,10 @@ async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
 
         if not response.success:
             raise RuntimeError(f"Failed to get tensor: {response.error_message}")
+
+        # Register locally after successful response
+        if meta is not None:
+            _register_tensor_locally(tensor)
 
         # Deserialize tensor data
         dtype = eval(response.get_tensor.dtype)
@@ -89,7 +98,13 @@ async def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
             dtype=tensor.dtype,
             stride=tuple(tensor.stride()),
             storage_offset=tensor.storage_offset(),
+            tensor_metadata=meta,
         )
+
+        # Register locally after successful response
+        if meta is not None:
+            _register_tensor_locally(tensor)
+
         return cpu_tensor
 
 

@@ -49,6 +49,24 @@ at::Tensor _reshape_alias_sky(
     at::IntArrayRef stride);
 at::Tensor _lazy_clone_sky(const at::Tensor& self);
 
+at::Tensor t_sky(const at::Tensor& self);
+at::Tensor transpose_int_sky(const at::Tensor& self, int64_t dim0, int64_t dim1);
+at::Tensor permute_sky(const at::Tensor& self, at::IntArrayRef dims);
+at::Tensor expand_sky(
+    const at::Tensor& self,
+    at::IntArrayRef sizes,
+    bool implicit);
+at::Tensor squeeze_dim_sky(const at::Tensor& self, int64_t dim);
+at::Tensor squeeze_dims_sky(const at::Tensor& self, at::IntArrayRef dims);
+at::Tensor unsqueeze_sky(const at::Tensor& self, int64_t dim);
+at::Tensor select_int_sky(const at::Tensor& self, int64_t dim, int64_t index);
+at::Tensor slice_tensor_sky(
+    const at::Tensor& self,
+    int64_t dim,
+    c10::optional<int64_t> start,
+    c10::optional<int64_t> end,
+    int64_t step);
+
 // Register the C++ implementations directly with PyTorch's dispatch system
 // These override the Python fallback for these specific operations
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
@@ -77,6 +95,17 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     // Alias and clone operations
     m.impl("alias", alias_sky);
     m.impl("_lazy_clone", _lazy_clone_sky);
+
+    // View/shape operations - purely metadata, no gRPC needed
+    m.impl("t", t_sky);
+    m.impl("transpose.int", transpose_int_sky);
+    m.impl("permute", permute_sky);
+    m.impl("expand", expand_sky);
+    m.impl("squeeze.dim", squeeze_dim_sky);
+    m.impl("squeeze.dims", squeeze_dims_sky);
+    m.impl("unsqueeze", unsqueeze_sky);
+    m.impl("select.int", select_int_sky);
+    m.impl("slice.Tensor", slice_tensor_sky);
 }
 
 }  // namespace skytorch

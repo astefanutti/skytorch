@@ -47,9 +47,6 @@ async def test_linear_regression_training(device):
 # =============================================================================
 
 
-@pytest.mark.xfail(
-    reason="Tensor does not exist — view/alias not tracked on server"
-)
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_mlp_forward_backward(device):
@@ -178,9 +175,6 @@ async def test_loss_item_during_training(device):
 # =============================================================================
 
 
-@pytest.mark.xfail(
-    reason="PrivateUse1 dispatch overrides CompositeImplicitAutograd, breaking gradient"
-)
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_cnn_pipeline_chain(device):

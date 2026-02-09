@@ -20,6 +20,16 @@ CPP_REGISTERED_OPS = {
     "resize_",
     "alias",
     "_lazy_clone",
+    # View/shape ops — purely metadata, no gRPC needed
+    "t",
+    "transpose.int",
+    "permute",
+    "expand",
+    "squeeze.dim",
+    "squeeze.dims",
+    "unsqueeze",
+    "select.int",
+    "slice.Tensor",
 }
 
 
@@ -200,21 +210,9 @@ def main():
         "le.Tensor",
         "le.Scalar",
         # Shape operations
-        "reshape",
-        "flatten.using_ints",
-        "squeeze.dim",
-        "squeeze.dims",
-        "unsqueeze",
-        "permute",
-        "transpose.int",
-        "t",
-        "contiguous",
-        "expand",
         "cat",
         "cat.out",
         # Indexing
-        "select.int",
-        "slice.Tensor",
         "index.Tensor",
         "index.Tensor_out",
         # TODO

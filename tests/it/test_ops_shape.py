@@ -28,27 +28,13 @@ from .op_test_utils import assert_forward_correct, assert_grad_correct
         ("unsqueeze_0", lambda x: x.unsqueeze(0), (3, 4)),
         ("unsqueeze_1", lambda x: x.unsqueeze(1), (3, 4)),
         ("unsqueeze_-1", lambda x: x.unsqueeze(-1), (3, 4)),
-        pytest.param(
-            "permute",
-            lambda x: x.permute(2, 0, 1),
-            (2, 3, 4),
-            marks=pytest.mark.xfail(
-                reason="Tensor does not exist — view/alias not tracked on server"
-            ),
-        ),
+        ("permute", lambda x: x.permute(2, 0, 1), (2, 3, 4)),
         ("transpose", lambda x: x.transpose(0, 1), (3, 4)),
         ("t", lambda x: x.t(), (3, 4)),
         ("contiguous", lambda x: x.transpose(0, 1).contiguous(), (3, 4)),
         ("expand", lambda x: x.expand(3, 4), (1, 4)),
         ("expand_3d", lambda x: x.expand(2, 3, 4), (1, 3, 4)),
-        pytest.param(
-            "view",
-            lambda x: x.view(6, 4),
-            (2, 3, 4),
-            marks=pytest.mark.xfail(
-                reason="Tensor does not exist — view/alias not tracked on server"
-            ),
-        ),
+        ("view", lambda x: x.view(6, 4), (2, 3, 4)),
         ("reshape", lambda x: x.reshape(6, 4), (2, 3, 4)),
     ],
     ids=lambda x: x if isinstance(x, str) else "",
@@ -96,22 +82,8 @@ async def test_index_tensor_forward(device):
 @pytest.mark.parametrize(
     "op_name,fn,shape",
     [
-        pytest.param(
-            "flatten",
-            lambda x: torch.flatten(x, 1).sum(),
-            (2, 3, 4),
-            marks=pytest.mark.xfail(
-                reason="PrivateUse1 dispatch overrides CompositeImplicitAutograd, breaking gradient"
-            ),
-        ),
-        pytest.param(
-            "flatten_all",
-            lambda x: torch.flatten(x).sum(),
-            (2, 3, 4),
-            marks=pytest.mark.xfail(
-                reason="PrivateUse1 dispatch overrides CompositeImplicitAutograd, breaking gradient"
-            ),
-        ),
+        ("flatten", lambda x: torch.flatten(x, 1).sum(), (2, 3, 4)),
+        ("flatten_all", lambda x: torch.flatten(x).sum(), (2, 3, 4)),
         ("squeeze_dim", lambda x: x.squeeze(1).sum(), (2, 1, 3)),
         ("squeeze_dims", lambda x: x.squeeze((1, 3)).sum(), (2, 1, 3, 1)),
         ("unsqueeze", lambda x: x.unsqueeze(0).sum(), (3, 4)),
@@ -120,14 +92,7 @@ async def test_index_tensor_forward(device):
         ("t", lambda x: x.t().sum(), (3, 4)),
         ("expand", lambda x: x.expand(3, 4).sum(), (1, 4)),
         ("view", lambda x: x.view(6, 4).sum(), (2, 3, 4)),
-        pytest.param(
-            "reshape",
-            lambda x: x.reshape(6, 4).sum(),
-            (2, 3, 4),
-            marks=pytest.mark.xfail(
-                reason="PrivateUse1 dispatch overrides CompositeImplicitAutograd, breaking gradient"
-            ),
-        ),
+        ("reshape", lambda x: x.reshape(6, 4).sum(), (2, 3, 4)),
     ],
     ids=lambda x: x if isinstance(x, str) else "",
 )
@@ -196,9 +161,6 @@ async def test_index_tensor_grad(device):
 # =============================================================================
 
 
-@pytest.mark.xfail(
-    reason="PrivateUse1 dispatch overrides CompositeImplicitAutograd, breaking gradient"
-)
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_flatten_mm_sum_grad(device):
@@ -240,9 +202,6 @@ async def test_flatten_mm_sum_grad(device):
     )
 
 
-@pytest.mark.xfail(
-    reason="PrivateUse1 dispatch overrides CompositeImplicitAutograd, breaking gradient"
-)
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_reshape_chain_grad(device):

@@ -127,9 +127,6 @@ async def test_bmm_grad(device):
     )
 
 
-@pytest.mark.xfail(
-    reason="Tensor does not exist — view/alias not tracked on server"
-)
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_addmm_grad(device):

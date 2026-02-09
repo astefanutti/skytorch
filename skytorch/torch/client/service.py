@@ -112,6 +112,7 @@ class TensorClient:
         dtype: torch.dtype,
         stride: Optional[tuple[int, ...]] = None,
         storage_offset: int = 0,
+        tensor_metadata: Optional[TensorMetadata] = None,
     ) -> torch.Tensor:
         """
         Download tensor data from server storage.
@@ -122,6 +123,7 @@ class TensorClient:
             dtype: Expected tensor dtype
             stride: Optional stride (default: contiguous)
             storage_offset: Element offset in the storage
+            tensor_metadata: Optional metadata for auto-creating the tensor
 
         Returns:
             cpu tensor with data from server storage
@@ -136,6 +138,8 @@ class TensorClient:
             stride=list(stride) if stride else [],
             storage_offset=storage_offset,
         )
+        if tensor_metadata is not None:
+            request.metadata.CopyFrom(tensor_metadata_to_proto(tensor_metadata))
 
         assembler = TensorAssembler()
 

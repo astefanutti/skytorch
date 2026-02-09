@@ -189,6 +189,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         offset = request.storage_offset
 
         try:
+            # Auto-create tensor from metadata if provided
+            if request.HasField("metadata"):
+                self._ensure_tensor_exists(request.metadata)
+
             tensor = self.tensor_manager.get(tensor_id)
         except ValueError:
             await context.abort(
@@ -528,6 +532,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             GetTensorResponse with serialized tensor data
         """
         try:
+            # Auto-create tensor from metadata if provided
+            if request.HasField("metadata"):
+                self._ensure_tensor_exists(request.metadata)
+
             tensor = self.tensor_manager.get(request.tensor_id)
 
             # Apply view parameters if provided

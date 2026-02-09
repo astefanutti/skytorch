@@ -400,9 +400,6 @@ async def test_cat_grad(device):
 # =============================================================================
 
 
-@pytest.mark.xfail(
-    reason="PrivateUse1 dispatch overrides CompositeImplicitAutograd, breaking gradient"
-)
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_mnist_cnn_forward_backward(device):

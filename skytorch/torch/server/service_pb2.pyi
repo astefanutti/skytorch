@@ -89,18 +89,20 @@ class CreateTensorRequest(_message.Message):
     def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., device_index: _Optional[int] = ..., tensor_ref: _Optional[int] = ...) -> None: ...
 
 class GetTensorRequest(_message.Message):
-    __slots__ = ("tensor_id", "shape", "dtype", "stride", "storage_offset")
+    __slots__ = ("tensor_id", "shape", "dtype", "stride", "storage_offset", "metadata")
     TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
     SHAPE_FIELD_NUMBER: _ClassVar[int]
     DTYPE_FIELD_NUMBER: _ClassVar[int]
     STRIDE_FIELD_NUMBER: _ClassVar[int]
     STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
     tensor_id: int
     shape: _containers.RepeatedScalarFieldContainer[int]
     dtype: str
     stride: _containers.RepeatedScalarFieldContainer[int]
     storage_offset: int
-    def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ...) -> None: ...
+    metadata: TensorMetadata
+    def __init__(self, tensor_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., metadata: _Optional[_Union[TensorMetadata, _Mapping]] = ...) -> None: ...
 
 class CopyTensorRequest(_message.Message):
     __slots__ = ("src_tensor_id", "dst_tensor_id", "src_offset", "dst_offset", "num_bytes", "src_metadata", "dst_metadata")
