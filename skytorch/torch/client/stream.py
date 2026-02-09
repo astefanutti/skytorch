@@ -89,7 +89,7 @@ class StreamManager:
         self._started = False
         self._closing = False
 
-        # Sync support
+        # Deferred error from fire-and-forget operations
         self._last_error: Optional[Exception] = None
 
         # Shutdown signaling
@@ -165,8 +165,7 @@ class StreamManager:
                         f"Stream operation failed: {response.error_message}"
                     )
                     pending.future.set_exception(error)
-                    # Track error for sync
-                    self._last_error = error
+                    self.record_error(error)
 
         except grpc.RpcError as e:
             if not self._closing:
@@ -176,6 +175,18 @@ class StreamManager:
             if not self._closing:
                 logger.error(f"Unexpected stream receiver error: {e}")
                 self._fail_all_pending(str(e))
+
+    def record_error(self, error: Exception) -> None:
+        """Record error for deferred raising. First-error-wins semantics."""
+        if self._last_error is None:
+            self._last_error = error
+
+    def check_error(self) -> None:
+        """Raise deferred error if any, then clear it."""
+        error = self._last_error
+        if error is not None:
+            self._last_error = None
+            raise error
 
     def _fail_all_pending(self, error_message: str) -> None:
         """Fail all pending requests with an error."""
@@ -350,10 +361,19 @@ class StreamManager:
             request: GetTensorRequest to submit
 
         Returns:
-            Future that resolves to StreamResponse with tensor data
+            Awaitable that resolves to StreamResponse with tensor data,
+            after checking for deferred errors from prior operations
         """
         stream_request = service_pb2.StreamRequest(get_tensor=request)
-        return self._submit_request(stream_request, "get_tensor")
+        future = self._submit_request(stream_request, "get_tensor")
+
+        async def _with_error_check():
+            response = await future
+            # FIFO ordering guarantees all prior fire-and-forget errors are recorded
+            self.check_error()
+            return response
+
+        return _with_error_check()
 
     async def close(self) -> None:
         """Gracefully close the stream."""
