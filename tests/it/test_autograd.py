@@ -484,6 +484,7 @@ async def test_retain_grad_multiple_intermediates(device):
     torch.testing.assert_close(z_sky.grad.cpu(), z_cpu.grad, check_device=False)
 
 
+@pytest.mark.filterwarnings("ignore:The .grad attribute of a Tensor that is not a leaf")
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_without_retain_grad_no_intermediate_gradients(device):
