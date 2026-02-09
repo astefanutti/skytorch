@@ -256,8 +256,22 @@ def main():
         "log.out",
         "log_",
         "pow.Tensor_Scalar",
+        "pow.Tensor_Scalar_out",
         "pow.Tensor_Tensor",
+        "pow.Tensor_Tensor_out",
         "pow.Scalar",
+        "pow.Scalar_out",
+        "pow_.Scalar",
+        # Logical (needed by pow backward decomposition)
+        "logical_and",
+        "logical_and.out",
+        "logical_and_",
+        # Conditional (needed by pow backward decomposition)
+        "where.self",
+        "where.self_out",
+        # Scalar tensor creation (needed by backward decompositions)
+        "scalar_tensor",
+        "scalar_tensor.out",
         # Cross entropy loss components
         "nll_loss_forward",
         "nll_loss_forward.output",

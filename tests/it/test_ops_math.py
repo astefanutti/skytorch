@@ -220,7 +220,6 @@ async def test_pow_tensor_forward(device):
     )
 
 
-@pytest.mark.xfail(reason="Cannot mix cpu tensors with sky tensors")
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_pow_tensor_grad(device):

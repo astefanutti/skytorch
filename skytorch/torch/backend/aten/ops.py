@@ -506,6 +506,24 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "logical_and",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_and.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "logical_and.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_and.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "logical_and_",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_and_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "lt.Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.lt.Scalar),
     dispatch_key="PrivateUse1",
@@ -746,14 +764,38 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "pow.Scalar_out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.pow.Scalar_out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "pow.Tensor_Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.pow.Tensor_Scalar),
     dispatch_key="PrivateUse1",
 )
 
 _sky_lib_aten.impl(
+    "pow.Tensor_Scalar_out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.pow.Tensor_Scalar_out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "pow.Tensor_Tensor",
     _sky_kernel_fallback_wrapper(torch.ops.aten.pow.Tensor_Tensor),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "pow.Tensor_Tensor_out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.pow.Tensor_Tensor_out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "pow_.Scalar",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.pow_.Scalar),
     dispatch_key="PrivateUse1",
 )
 
@@ -790,6 +832,18 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "rsqrt_",
     _sky_kernel_fallback_wrapper(torch.ops.aten.rsqrt_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "scalar_tensor",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scalar_tensor.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "scalar_tensor.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scalar_tensor.out),
     dispatch_key="PrivateUse1",
 )
 
@@ -928,6 +982,18 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "threshold_backward.grad_input",
     _sky_kernel_fallback_wrapper(torch.ops.aten.threshold_backward.grad_input),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "where.self",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.where.self),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "where.self_out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.where.self_out),
     dispatch_key="PrivateUse1",
 )
 
