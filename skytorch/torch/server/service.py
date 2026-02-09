@@ -449,6 +449,13 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 format_name = format_str[6:]  # Remove "torch." prefix
                 return getattr(torch, format_name)
             raise ValueError(f"Invalid memory_format string: {format_str}")
+        elif which == "scalar_layout":
+            # Convert layout string (e.g., "torch.strided") to torch.layout
+            layout_str = arg.scalar_layout
+            if layout_str.startswith("torch."):
+                layout_name = layout_str[6:]  # Remove "torch." prefix
+                return getattr(torch, layout_name)
+            raise ValueError(f"Invalid layout string: {layout_str}")
         elif which == "none_value":
             return None
         elif which == "list_value":

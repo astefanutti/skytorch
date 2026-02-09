@@ -85,6 +85,8 @@ def to_aten_arg(value) -> service_pb2.AtenArgument:
         arg.scalar_dtype = str(value)
     elif isinstance(value, torch.memory_format):
         arg.scalar_memory_format = str(value)
+    elif isinstance(value, torch.layout):
+        arg.scalar_layout = str(value)
     elif isinstance(value, (list, tuple)):
         # Handle nested lists/tuples recursively
         list_arg = service_pb2.AtenArgumentList()

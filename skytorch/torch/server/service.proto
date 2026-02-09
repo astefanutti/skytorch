@@ -119,6 +119,7 @@ message AtenArgument {
     bool none_value = 7;  // Represents Python None
     string scalar_dtype = 8;  // torch.dtype as string (e.g., "torch.float32")
     string scalar_memory_format = 9;  // torch.memory_format as string (e.g., "torch.contiguous_format")
+    string scalar_layout = 10;  // torch.layout as string (e.g., "torch.strided")
   }
 }
 

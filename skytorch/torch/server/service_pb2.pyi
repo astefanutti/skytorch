@@ -129,7 +129,7 @@ class TensorReference(_message.Message):
     def __init__(self, tensor_id: _Optional[int] = ...) -> None: ...
 
 class AtenArgument(_message.Message):
-    __slots__ = ("tensor", "scalar_float", "scalar_int", "scalar_bool", "scalar_string", "list_value", "none_value", "scalar_dtype", "scalar_memory_format")
+    __slots__ = ("tensor", "scalar_float", "scalar_int", "scalar_bool", "scalar_string", "list_value", "none_value", "scalar_dtype", "scalar_memory_format", "scalar_layout")
     TENSOR_FIELD_NUMBER: _ClassVar[int]
     SCALAR_FLOAT_FIELD_NUMBER: _ClassVar[int]
     SCALAR_INT_FIELD_NUMBER: _ClassVar[int]
@@ -139,6 +139,7 @@ class AtenArgument(_message.Message):
     NONE_VALUE_FIELD_NUMBER: _ClassVar[int]
     SCALAR_DTYPE_FIELD_NUMBER: _ClassVar[int]
     SCALAR_MEMORY_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    SCALAR_LAYOUT_FIELD_NUMBER: _ClassVar[int]
     tensor: TensorReference
     scalar_float: float
     scalar_int: int
@@ -148,7 +149,8 @@ class AtenArgument(_message.Message):
     none_value: bool
     scalar_dtype: str
     scalar_memory_format: str
-    def __init__(self, tensor: _Optional[_Union[TensorReference, _Mapping]] = ..., scalar_float: _Optional[float] = ..., scalar_int: _Optional[int] = ..., scalar_bool: bool = ..., scalar_string: _Optional[str] = ..., list_value: _Optional[_Union[AtenArgumentList, _Mapping]] = ..., none_value: bool = ..., scalar_dtype: _Optional[str] = ..., scalar_memory_format: _Optional[str] = ...) -> None: ...
+    scalar_layout: str
+    def __init__(self, tensor: _Optional[_Union[TensorReference, _Mapping]] = ..., scalar_float: _Optional[float] = ..., scalar_int: _Optional[int] = ..., scalar_bool: bool = ..., scalar_string: _Optional[str] = ..., list_value: _Optional[_Union[AtenArgumentList, _Mapping]] = ..., none_value: bool = ..., scalar_dtype: _Optional[str] = ..., scalar_memory_format: _Optional[str] = ..., scalar_layout: _Optional[str] = ...) -> None: ...
 
 class AtenArgumentList(_message.Message):
     __slots__ = ("values", "is_tuple")
