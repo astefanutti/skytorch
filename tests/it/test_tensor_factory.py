@@ -98,7 +98,6 @@ async def test_tensor_from_list(device):
     )
 
 
-@pytest.mark.xfail(reason="Cannot mix cpu tensors with sky tensors")
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_arange_on_device(device):

@@ -200,6 +200,36 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "arange",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.arange.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "arange.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.arange.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "arange.start",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.arange.start),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "arange.start_out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.arange.start_out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "arange.start_step",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.arange.start_step),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "argmax",
     _sky_kernel_fallback_wrapper(torch.ops.aten.argmax.default),
     dispatch_key="PrivateUse1",

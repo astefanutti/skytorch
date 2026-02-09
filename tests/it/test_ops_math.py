@@ -192,7 +192,6 @@ async def test_empty(device):
     assert result.shape == (3, 4)
 
 
-@pytest.mark.xfail(reason="Cannot mix cpu tensors with sky tensors")
 @pytest.mark.it
 @pytest.mark.asyncio
 async def test_arange(device):
