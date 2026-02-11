@@ -24,7 +24,7 @@ namespace skytorch {
 /**
  * Create an empty SkyTorch tensor with the specified size and options.
  */
-at::Tensor empty_sky(
+at::Tensor empty(
     at::IntArrayRef size,
     c10::optional<at::ScalarType> dtype,
     c10::optional<at::Layout> layout,
@@ -35,11 +35,11 @@ at::Tensor empty_sky(
     // Require explicit device to avoid masking bugs
     TORCH_CHECK(
         device.has_value(),
-        "empty_sky requires explicit device specification");
+        "empty requires explicit device specification");
     c10::Device target_device = *device;
     TORCH_CHECK(
         target_device.type() == c10::DeviceType::PrivateUse1,
-        "empty_sky expects PrivateUse1 device, got: ", target_device.type());
+        "empty expects PrivateUse1 device, got: ", target_device.type());
 
     const auto resolved_dtype = c10::dtype_or_default(dtype);
     TORCH_CHECK(
@@ -78,7 +78,7 @@ at::Tensor empty_sky(
 /**
  * Create an empty strided SkyTorch tensor.
  */
-at::Tensor empty_strided_sky(
+at::Tensor empty_strided(
     at::IntArrayRef size,
     at::IntArrayRef stride,
     c10::optional<at::ScalarType> dtype,
@@ -88,11 +88,11 @@ at::Tensor empty_strided_sky(
 
     TORCH_CHECK(
         device.has_value(),
-        "empty_strided_sky requires explicit device specification");
+        "empty_strided requires explicit device specification");
     c10::Device target_device = *device;
     TORCH_CHECK(
         target_device.type() == c10::DeviceType::PrivateUse1,
-        "empty_strided_sky expects PrivateUse1 device, got: ",
+        "empty_strided expects PrivateUse1 device, got: ",
         target_device.type());
 
     TORCH_CHECK(

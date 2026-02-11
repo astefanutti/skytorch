@@ -18,7 +18,7 @@
 namespace skytorch {
 
 // Forward declarations for functions defined in other files
-at::Tensor empty_sky(
+at::Tensor empty(
     at::IntArrayRef size,
     c10::optional<at::ScalarType> dtype,
     c10::optional<at::Layout> layout,
@@ -26,7 +26,7 @@ at::Tensor empty_sky(
     c10::optional<bool> pin_memory,
     c10::optional<at::MemoryFormat> memory_format);
 
-at::Tensor empty_strided_sky(
+at::Tensor empty_strided(
     at::IntArrayRef size,
     at::IntArrayRef stride,
     c10::optional<at::ScalarType> dtype,
@@ -34,33 +34,33 @@ at::Tensor empty_strided_sky(
     c10::optional<at::Device> device,
     c10::optional<bool> pin_memory);
 
-at::Tensor as_strided_sky(
+at::Tensor as_strided(
     const at::Tensor& self,
     at::IntArrayRef size,
     at::IntArrayRef stride,
     c10::optional<int64_t> storage_offset);
 
-at::Tensor view_sky(const at::Tensor& self, at::IntArrayRef size);
-at::Tensor _unsafe_view_sky(const at::Tensor& self, at::IntArrayRef size);
-at::Tensor alias_sky(const at::Tensor& self);
-at::Tensor _reshape_alias_sky(
+at::Tensor view(const at::Tensor& self, at::IntArrayRef size);
+at::Tensor _unsafe_view(const at::Tensor& self, at::IntArrayRef size);
+at::Tensor alias(const at::Tensor& self);
+at::Tensor _reshape_alias(
     const at::Tensor& self,
     at::IntArrayRef size,
     at::IntArrayRef stride);
-at::Tensor _lazy_clone_sky(const at::Tensor& self);
+at::Tensor _lazy_clone(const at::Tensor& self);
 
-at::Tensor t_sky(const at::Tensor& self);
-at::Tensor transpose_int_sky(const at::Tensor& self, int64_t dim0, int64_t dim1);
-at::Tensor permute_sky(const at::Tensor& self, at::IntArrayRef dims);
-at::Tensor expand_sky(
+at::Tensor t(const at::Tensor& self);
+at::Tensor transpose_int(const at::Tensor& self, int64_t dim0, int64_t dim1);
+at::Tensor permute(const at::Tensor& self, at::IntArrayRef dims);
+at::Tensor expand(
     const at::Tensor& self,
     at::IntArrayRef sizes,
     bool implicit);
-at::Tensor squeeze_dim_sky(const at::Tensor& self, int64_t dim);
-at::Tensor squeeze_dims_sky(const at::Tensor& self, at::IntArrayRef dims);
-at::Tensor unsqueeze_sky(const at::Tensor& self, int64_t dim);
-at::Tensor select_int_sky(const at::Tensor& self, int64_t dim, int64_t index);
-at::Tensor slice_tensor_sky(
+at::Tensor squeeze_dim(const at::Tensor& self, int64_t dim);
+at::Tensor squeeze_dims(const at::Tensor& self, at::IntArrayRef dims);
+at::Tensor unsqueeze(const at::Tensor& self, int64_t dim);
+at::Tensor select_int(const at::Tensor& self, int64_t dim, int64_t index);
+at::Tensor slice_tensor(
     const at::Tensor& self,
     int64_t dim,
     c10::optional<int64_t> start,
@@ -73,16 +73,16 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     // Empty tensor creation - these MUST be in C++ to avoid infinite recursion
     // When the Python fallback tries to create output tensors, it would call
     // torch.empty_strided which dispatches back to the fallback, causing recursion.
-    m.impl("empty.memory_format", empty_sky);
-    m.impl("empty_strided", empty_strided_sky);
+    m.impl("empty.memory_format", empty);
+    m.impl("empty_strided", empty_strided);
 
     // View operations - implemented in C++ to preserve TensorImpl
     // Without these, view operations would create generic TensorImpl instead
     // of our custom TensorImpl, losing storage ID tracking.
-    m.impl("view", view_sky);
-    m.impl("as_strided", as_strided_sky);
-    m.impl("_unsafe_view", _unsafe_view_sky);
-    m.impl("_reshape_alias", _reshape_alias_sky);
+    m.impl("view", view);
+    m.impl("as_strided", as_strided);
+    m.impl("_unsafe_view", _unsafe_view);
+    m.impl("_reshape_alias", _reshape_alias);
 
     // Set operations for tensor/storage aliasing
     m.impl("set_.source_Tensor", set_source_tensor);
@@ -93,19 +93,19 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("resize_", resize_);
 
     // Alias and clone operations
-    m.impl("alias", alias_sky);
-    m.impl("_lazy_clone", _lazy_clone_sky);
+    m.impl("alias", alias);
+    m.impl("_lazy_clone", _lazy_clone);
 
     // View/shape operations - purely metadata, no gRPC needed
-    m.impl("t", t_sky);
-    m.impl("transpose.int", transpose_int_sky);
-    m.impl("permute", permute_sky);
-    m.impl("expand", expand_sky);
-    m.impl("squeeze.dim", squeeze_dim_sky);
-    m.impl("squeeze.dims", squeeze_dims_sky);
-    m.impl("unsqueeze", unsqueeze_sky);
-    m.impl("select.int", select_int_sky);
-    m.impl("slice.Tensor", slice_tensor_sky);
+    m.impl("t", t);
+    m.impl("transpose.int", transpose_int);
+    m.impl("permute", permute);
+    m.impl("expand", expand);
+    m.impl("squeeze.dim", squeeze_dim);
+    m.impl("squeeze.dims", squeeze_dims);
+    m.impl("unsqueeze", unsqueeze);
+    m.impl("select.int", select_int);
+    m.impl("slice.Tensor", slice_tensor);
 }
 
 }  // namespace skytorch
