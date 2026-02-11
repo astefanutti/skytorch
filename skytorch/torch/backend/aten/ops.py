@@ -320,6 +320,30 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "cos",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.cos.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "cos.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.cos.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "cumsum",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.cumsum.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "cumsum.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.cumsum.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "div.Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.div.Scalar),
     dispatch_key="PrivateUse1",
@@ -440,6 +464,24 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "full_like",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.full_like.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "gather",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.gather.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "gather.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.gather.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "ge.Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.ge.Scalar),
     dispatch_key="PrivateUse1",
@@ -506,6 +548,30 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "index_put",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.index_put.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "index_put_",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.index_put_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "isinf",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.isinf.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "isinf.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.isinf.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "le.Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.le.Scalar),
     dispatch_key="PrivateUse1",
@@ -554,6 +620,42 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "logical_not",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_not.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "logical_not.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_not.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "logical_not_",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_not_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "logical_or",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_or.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "logical_or.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_or.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "logical_or_",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.logical_or_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "lt.Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.lt.Scalar),
     dispatch_key="PrivateUse1",
@@ -562,6 +664,30 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "lt.Tensor",
     _sky_kernel_fallback_wrapper(torch.ops.aten.lt.Tensor),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "masked_fill.Scalar",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.masked_fill.Scalar),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "masked_fill.Tensor",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.masked_fill.Tensor),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "masked_fill_.Scalar",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.masked_fill_.Scalar),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "masked_fill_.Tensor",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.masked_fill_.Tensor),
     dispatch_key="PrivateUse1",
 )
 
@@ -626,6 +752,24 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "min",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.min.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "min.dim",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.min.dim),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "min.dim_min",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.min.dim_min),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "mm",
     _sky_kernel_fallback_wrapper(torch.ops.aten.mm.default),
     dispatch_key="PrivateUse1",
@@ -664,6 +808,18 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "mul_.Tensor",
     _sky_kernel_fallback_wrapper(torch.ops.aten.mul_.Tensor),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "multinomial",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.multinomial.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "multinomial.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.multinomial.out),
     dispatch_key="PrivateUse1",
 )
 
@@ -782,6 +938,12 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "ones_like",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.ones_like.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "pow.Scalar",
     _sky_kernel_fallback_wrapper(torch.ops.aten.pow.Scalar),
     dispatch_key="PrivateUse1",
@@ -824,6 +986,24 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "prod",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.prod.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "prod.dim_int",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.prod.dim_int),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "prod.int_out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.prod.int_out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "relu",
     _sky_kernel_fallback_wrapper(torch.ops.aten.relu.default),
     dispatch_key="PrivateUse1",
@@ -838,6 +1018,12 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "relu_",
     _sky_kernel_fallback_wrapper(torch.ops.aten.relu_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "repeat_interleave.self_int",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.repeat_interleave.self_int),
     dispatch_key="PrivateUse1",
 )
 
@@ -872,6 +1058,48 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "scatter.src",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scatter.src),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "scatter.value",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scatter.value),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "scatter_.src",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scatter_.src),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "scatter_.value",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scatter_.value),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "scatter_add",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scatter_add.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "scatter_add.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scatter_add.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "scatter_add_",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.scatter_add_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "sigmoid",
     _sky_kernel_fallback_wrapper(torch.ops.aten.sigmoid.default),
     dispatch_key="PrivateUse1",
@@ -902,6 +1130,66 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "silu",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.silu.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "silu.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.silu.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "silu_",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.silu_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "silu_backward",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.silu_backward.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "silu_backward.grad_input",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.silu_backward.grad_input),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "sin",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.sin.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "sin.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.sin.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "sort",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.sort.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "sort.values",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.sort.values),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "sort.values_stable",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.sort.values_stable),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "sqrt",
     _sky_kernel_fallback_wrapper(torch.ops.aten.sqrt.default),
     dispatch_key="PrivateUse1",
@@ -916,6 +1204,18 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "sqrt_",
     _sky_kernel_fallback_wrapper(torch.ops.aten.sqrt_.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "stack",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.stack.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "stack.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.stack.out),
     dispatch_key="PrivateUse1",
 )
 
@@ -1010,6 +1310,42 @@ _sky_lib_aten.impl(
 )
 
 _sky_lib_aten.impl(
+    "topk",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.topk.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "topk.values",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.topk.values),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "tril",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.tril.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "tril.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.tril.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "triu",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.triu.default),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "triu.out",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.triu.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
     "where.self",
     _sky_kernel_fallback_wrapper(torch.ops.aten.where.self),
     dispatch_key="PrivateUse1",
@@ -1036,5 +1372,11 @@ _sky_lib_aten.impl(
 _sky_lib_aten.impl(
     "zeros.out",
     _sky_kernel_fallback_wrapper(torch.ops.aten.zeros.out),
+    dispatch_key="PrivateUse1",
+)
+
+_sky_lib_aten.impl(
+    "zeros_like",
+    _sky_kernel_fallback_wrapper(torch.ops.aten.zeros_like.default),
     dispatch_key="PrivateUse1",
 )

@@ -131,6 +131,11 @@ def main():
         "gelu_",
         "gelu_backward",
         "gelu_backward.grad_input",
+        "silu",
+        "silu.out",
+        "silu_",
+        "silu_backward",
+        "silu_backward.grad_input",
         "_softmax",
         "_softmax.out",
         "_softmax_backward_data",
@@ -194,6 +199,25 @@ def main():
         "max",
         "max.dim",
         "max.dim_max",
+        "min",
+        "min.dim",
+        "min.dim_min",
+        "prod",
+        "prod.dim_int",
+        "prod.int_out",
+        # Top-k selection
+        "topk",
+        "topk.values",
+        # Cumulative sum
+        "cumsum",
+        "cumsum.out",
+        # Sort
+        "sort",
+        "sort.values",
+        "sort.values_stable",
+        # Multinomial
+        "multinomial",
+        "multinomial.out",
         # Comparisons
         "eq.Tensor",
         "eq.Scalar",
@@ -212,24 +236,53 @@ def main():
         # Shape operations
         "cat",
         "cat.out",
+        "stack",
+        "stack.out",
+        # Repeat interleave (grouped query attention)
+        "repeat_interleave.self_int",
         # Indexing
         "index.Tensor",
         "index.Tensor_out",
+        "index_put",
+        "index_put_",
         # TODO
         # "masked_select",
         # "masked_select.out",
+        # Gather/scatter
+        "gather",
+        "gather.out",
+        "scatter.src",
+        "scatter.value",
+        "scatter_.src",
+        "scatter_.value",
+        "scatter_add",
+        "scatter_add.out",
+        "scatter_add_",
+        # Masked fill
+        "masked_fill.Scalar",
+        "masked_fill.Tensor",
+        "masked_fill_.Scalar",
+        "masked_fill_.Tensor",
         # Dropout
         # native_dropout is handled client-side in dropout.py
         "native_dropout.out",
         "native_dropout_backward",
         "native_dropout_backward.out",
+        # Triu/tril (causal mask creation)
+        "triu",
+        "triu.out",
+        "tril",
+        "tril.out",
         # Initialization
         "zeros",
         "zeros.out",
+        "zeros_like",
         "ones",
         "ones.out",
+        "ones_like",
         "full",
         "full.out",
+        "full_like",
         "arange",
         "arange.start",
         "arange.start_step",
@@ -267,10 +320,19 @@ def main():
         "pow.Scalar",
         "pow.Scalar_out",
         "pow_.Scalar",
+        # Isinf (logits processing)
+        "isinf",
+        "isinf.out",
         # Logical (needed by pow backward decomposition)
         "logical_and",
         "logical_and.out",
         "logical_and_",
+        "logical_not",
+        "logical_not.out",
+        "logical_not_",
+        "logical_or",
+        "logical_or.out",
+        "logical_or_",
         # Conditional (needed by pow backward decomposition)
         "where.self",
         "where.self_out",
@@ -289,6 +351,11 @@ def main():
         # Embedding
         "embedding",
         "embedding_dense_backward",
+        # Trigonometric (needed for rotary position embeddings in transformers)
+        "cos",
+        "cos.out",
+        "sin",
+        "sin.out",
         # Linear algebra
         # FIXME
         # "linear",
