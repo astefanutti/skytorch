@@ -237,6 +237,17 @@ class StreamManager:
         self, request: service_pb2.ExecuteAtenRequest
     ) -> None:
         """Submit a fire-and-forget execute_aten request (callable from any thread)."""
+        if logger.isEnabledFor(logging.DEBUG):
+            input_tensor_ids = [
+                arg.tensor.tensor_id
+                for arg in request.args
+                if arg.WhichOneof("value") == "tensor"
+            ]
+            output_tensor_ids = [ref.tensor_id for ref in request.outputs]
+            logger.debug(
+                f"Executing {request.op_name} | "
+                f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
+            )
         stream_request = service_pb2.StreamRequest(execute_aten=request)
         self._submit_request(stream_request, "execute_aten")
 
@@ -244,6 +255,11 @@ class StreamManager:
         self, request: service_pb2.CopyTensorRequest
     ) -> None:
         """Submit a fire-and-forget copy_tensor request (callable from any thread)."""
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"Copying tensor {request.src_tensor_id} "
+                f"to tensor {request.dst_tensor_id}"
+            )
         stream_request = service_pb2.StreamRequest(copy_tensor=request)
         self._submit_request(stream_request, "copy_tensor")
 
@@ -251,6 +267,8 @@ class StreamManager:
         self, request: service_pb2.DeleteTensorsRequest
     ) -> None:
         """Submit a fire-and-forget delete_tensors request (callable from any thread)."""
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Deleting tensors {list(request.tensor_ids)}")
         stream_request = service_pb2.StreamRequest(delete_tensors=request)
         self._submit_request(stream_request, "delete_tensors")
 
@@ -259,6 +277,18 @@ class StreamManager:
     ) -> None:
         """Submit a fire-and-forget update_tensor request (callable from any thread)."""
         data_size = len(request.data)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            chunked = data_size > STREAM_CHUNK_SIZE
+            msg = (
+                f"Updating tensor {request.tensor_id} | "
+                f"shape={list(request.shape)} | "
+                f"size={data_size} bytes"
+            )
+            if chunked:
+                num_chunks = (data_size + STREAM_CHUNK_SIZE - 1) // STREAM_CHUNK_SIZE
+                msg += f" | chunks={num_chunks}"
+            logger.debug(msg)
 
         if data_size <= STREAM_CHUNK_SIZE:
             stream_request = service_pb2.StreamRequest(update_tensor=request)
@@ -323,6 +353,9 @@ class StreamManager:
         """
         if self._loop is None:
             raise RuntimeError("StreamManager not started")
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Getting tensor {request.tensor_id}")
 
         future = self._loop.create_future()
         stream_request = service_pb2.StreamRequest(get_tensor=request)
