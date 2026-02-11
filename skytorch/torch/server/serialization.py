@@ -48,6 +48,9 @@ DEFAULT_CHUNK_SIZE = 1024 * 1024
 
 def tensor_from_bytes(data: bytes, dtype: torch.dtype, shape: list[int]) -> torch.Tensor:
     """Create tensor from bytes, handling numpy-unsupported dtypes like bfloat16."""
+    # torch.frombuffer fails with 0-byte buffers, so handle empty tensors directly
+    if len(data) == 0:
+        return torch.empty(shape, dtype=dtype)
     if dtype in _NUMPY_UNSUPPORTED_DTYPES:
         # Use UntypedStorage for dtypes numpy doesn't support
         storage = torch.UntypedStorage.from_buffer(data, dtype=torch.uint8)
@@ -100,8 +103,24 @@ def serialize_tensor_to_chunks(
 
     total_size = len(serialized_data)
 
-    # Calculate total number of chunks
-    total_chunks = (total_size + chunk_size - 1) // chunk_size
+    # Calculate total number of chunks (at least 1 for empty tensors)
+    total_chunks = max(1, (total_size + chunk_size - 1) // chunk_size)
+
+    # Handle empty tensors: yield a single metadata-only chunk
+    if total_size == 0:
+        chunk = TensorChunk(
+            tensor_id=tensor_id,
+            chunk_number=0,
+            data=b"",
+            total_chunks=1,
+            total_bytes=0,
+            dtype=str(tensor_contig.dtype),
+        )
+        chunk.shape.extend(tensor_contig.shape)
+        chunk.stride.extend(tensor_contig.stride())
+        chunk.storage_offset = tensor_contig.storage_offset()
+        yield chunk
+        return
 
     # Use memoryview for zero-copy slicing
     mv = memoryview(serialized_data)
@@ -186,6 +205,10 @@ class TensorAssembler:
         """Assemble all chunks into a complete tensor."""
         # Get metadata
         dtype = parse_dtype(self.dtype)
+
+        # torch.frombuffer fails with 0-byte buffers, so handle empty tensors directly
+        if len(self._buffer) == 0:
+            return torch.empty(self.shape, dtype=dtype)
 
         # Zero-copy tensor from pre-allocated buffer
         tensor = torch.frombuffer(self._buffer, dtype=dtype)
