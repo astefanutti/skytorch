@@ -55,4 +55,12 @@ c10::intrusive_ptr<c10::StorageImpl> make_storage_impl(
  */
 c10::Allocator* get_allocator();
 
+/**
+ * Advance the storage ID counter past the given ID.
+ *
+ * Used when server-assigned storage IDs are received to prevent
+ * future client-side allocations from colliding.
+ */
+void advance_storage_id_past(storage_id_t id);
+
 }  // namespace skytorch

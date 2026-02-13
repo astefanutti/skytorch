@@ -19,7 +19,9 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
+from skytorch.client.models.compute_v1alpha1_pod_template_spec_override import ComputeV1alpha1PodTemplateSpecOverride
 from skytorch.client.models.io_k8s_api_core_v1_env_var import IoK8sApiCoreV1EnvVar
+from skytorch.client.models.io_k8s_api_core_v1_persistent_volume_claim_template import IoK8sApiCoreV1PersistentVolumeClaimTemplate
 from skytorch.client.models.io_k8s_apimachinery_pkg_api_resource_quantity import IoK8sApimachineryPkgApiResourceQuantity
 from typing import Optional, Set
 from typing_extensions import Self
@@ -34,9 +36,11 @@ class ComputeV1alpha1ComputeSpec(BaseModel):
     env: Optional[List[IoK8sApiCoreV1EnvVar]] = Field(default=None, description="env is the list of environment variables to set in the Compute runtime.")
     image: Optional[StrictStr] = Field(default=None, description="image is the container image for the Compute runtime.")
     labels: Optional[Dict[str, StrictStr]] = Field(default=None, description="labels to apply to the Compute resources.")
+    override: Optional[ComputeV1alpha1PodTemplateSpecOverride] = Field(default=None, description="override is the pod template spec override for the Compute.")
     resources: Optional[Dict[str, IoK8sApimachineryPkgApiResourceQuantity]] = Field(default=None, description="resources for each of the Compute replicas.")
     suspend: Optional[StrictBool] = Field(default=None, description="suspend defines whether to suspend the running Compute. Defaults to false.")
-    __properties: ClassVar[List[str]] = ["annotations", "args", "command", "env", "image", "labels", "resources", "suspend"]
+    volume_claim_templates: Optional[List[IoK8sApiCoreV1PersistentVolumeClaimTemplate]] = Field(default=None, description="volumeClaimTemplates is the list of PersistentVolumeClaims for the Compute.", alias="volumeClaimTemplates")
+    __properties: ClassVar[List[str]] = ["annotations", "args", "command", "env", "image", "labels", "override", "resources", "suspend", "volumeClaimTemplates"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -84,6 +88,9 @@ class ComputeV1alpha1ComputeSpec(BaseModel):
                 if _item_env:
                     _items.append(_item_env.to_dict())
             _dict['env'] = _items
+        # override the default output from pydantic by calling `to_dict()` of override
+        if self.override:
+            _dict['override'] = self.override.to_dict()
         # override the default output from pydantic by calling `to_dict()` of each value in resources (dict)
         _field_dict = {}
         if self.resources:
@@ -91,6 +98,13 @@ class ComputeV1alpha1ComputeSpec(BaseModel):
                 if self.resources[_key_resources]:
                     _field_dict[_key_resources] = self.resources[_key_resources].to_dict()
             _dict['resources'] = _field_dict
+        # override the default output from pydantic by calling `to_dict()` of each item in volume_claim_templates (list)
+        _items = []
+        if self.volume_claim_templates:
+            for _item_volume_claim_templates in self.volume_claim_templates:
+                if _item_volume_claim_templates:
+                    _items.append(_item_volume_claim_templates.to_dict())
+            _dict['volumeClaimTemplates'] = _items
         return _dict
 
     @classmethod
@@ -109,13 +123,15 @@ class ComputeV1alpha1ComputeSpec(BaseModel):
             "env": [IoK8sApiCoreV1EnvVar.from_dict(_item) for _item in obj["env"]] if obj.get("env") is not None else None,
             "image": obj.get("image"),
             "labels": obj.get("labels"),
+            "override": ComputeV1alpha1PodTemplateSpecOverride.from_dict(obj["override"]) if obj.get("override") is not None else None,
             "resources": dict(
                 (_k, IoK8sApimachineryPkgApiResourceQuantity.from_dict(_v))
                 for _k, _v in obj["resources"].items()
             )
             if obj.get("resources") is not None
             else None,
-            "suspend": obj.get("suspend")
+            "suspend": obj.get("suspend"),
+            "volumeClaimTemplates": [IoK8sApiCoreV1PersistentVolumeClaimTemplate.from_dict(_item) for _item in obj["volumeClaimTemplates"]] if obj.get("volumeClaimTemplates") is not None else None
         })
         return _obj
 

@@ -16,15 +16,7 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
+  - persistentvolumeclaims
   - services
   verbs:
   - create
@@ -32,6 +24,15 @@ rules:
   - get
   - list
   - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
   - update
   - watch
 - apiGroups:

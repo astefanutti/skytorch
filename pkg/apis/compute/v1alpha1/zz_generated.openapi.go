@@ -590,11 +590,36 @@ func schema_pkg_apis_compute_v1alpha1_ComputeSpec(ref common.ReferenceCallback) 
 							},
 						},
 					},
+					"volumeClaimTemplates": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "volumeClaimTemplates is the list of PersistentVolumeClaims for the Compute.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/api/core/v1.PersistentVolumeClaimTemplate"),
+									},
+								},
+							},
+						},
+					},
+					"override": {
+						SchemaProps: spec.SchemaProps{
+							Description: "override is the pod template spec override for the Compute.",
+							Ref:         ref("github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1.PodTemplateSpecOverride"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/api/core/v1.EnvVar", "k8s.io/apimachinery/pkg/api/resource.Quantity"},
+			"github.com/astefanutti/skytorch/pkg/apis/compute/v1alpha1.PodTemplateSpecOverride", "k8s.io/api/core/v1.EnvVar", "k8s.io/api/core/v1.PersistentVolumeClaimTemplate", "k8s.io/apimachinery/pkg/api/resource.Quantity"},
 	}
 }
 

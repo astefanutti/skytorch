@@ -330,6 +330,13 @@ def execute_aten_operation(
                 return obj
             elif obj.device.type == "cpu" and obj.dim() == 0:
                 return obj
+            elif obj.device.type == "cpu" and obj.numel() == 0:
+                promoted = torch.empty(obj.shape, dtype=obj.dtype, device=sky_device)
+                meta = _get_tensor_metadata_if_new(promoted)
+                if meta is not None:
+                    tensor_metadata_list.append(meta)
+                    tensors_to_register.append(promoted)
+                return promoted
             else:
                 raise ValueError(
                     f"Unsupported tensor: {obj.device.type} with dim {obj.dim()}. "

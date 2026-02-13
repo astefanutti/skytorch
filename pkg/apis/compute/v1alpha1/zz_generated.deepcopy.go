@@ -153,6 +153,18 @@ func (in *ComputeSpec) DeepCopyInto(out *ComputeSpec) {
 			(*out)[key] = val.DeepCopy()
 		}
 	}
+	if in.VolumeClaimTemplates != nil {
+		in, out := &in.VolumeClaimTemplates, &out.VolumeClaimTemplates
+		*out = make([]v1.PersistentVolumeClaimTemplate, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.Override != nil {
+		in, out := &in.Override, &out.Override
+		*out = new(PodTemplateSpecOverride)
+		(*in).DeepCopyInto(*out)
+	}
 	return
 }
 
