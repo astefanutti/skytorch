@@ -9,6 +9,7 @@ import asyncio
 import functools
 import logging
 import pickle
+import struct
 import sys
 from typing import AsyncIterator
 
@@ -79,8 +80,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             The existing or newly created tensor
         """
         tensor_id = metadata.tensor_id
-        if tensor_id in self.tensor_manager:
-            return self.tensor_manager.get(tensor_id)
+        try:
+            return self.tensor_manager._tensors[tensor_id]
+        except KeyError:
+            pass
 
         dtype = parse_dtype(metadata.dtype)
         shape = list(metadata.shape)
@@ -112,8 +115,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 )
             else:
                 logger.debug(
-                    f"Auto-created tensor {tensor_id} "
-                    f"(nbytes={metadata.nbytes}, dtype={dtype})"
+                    f"Auto-created tensor {tensor_id} " f"(nbytes={metadata.nbytes}, dtype={dtype})"
                 )
 
         return tensor
@@ -203,9 +205,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             tensor = self.tensor_manager.get(tensor_id)
         except ValueError:
-            await context.abort(
-                grpc.StatusCode.NOT_FOUND, f"Tensor {tensor_id} not found"
-            )
+            await context.abort(grpc.StatusCode.NOT_FOUND, f"Tensor {tensor_id} not found")
 
         try:
             # Stream the tensor data
@@ -270,8 +270,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    f"Copied tensor {request.src_tensor_id} "
-                    f"to tensor {request.dst_tensor_id}"
+                    f"Copied tensor {request.src_tensor_id} " f"to tensor {request.dst_tensor_id}"
                 )
 
             return service_pb2.TensorResponse(success=True)
@@ -477,10 +476,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 for i, arg in enumerate(args):
                     if isinstance(arg, torch.Tensor):
                         data_preview = arg.cpu().flatten()[:8].tolist()
-                        logger.debug(
-                            f"Input arg[{i}] shape={arg.shape} "
-                            f"data={data_preview}..."
-                        )
+                        logger.debug(f"Input arg[{i}] shape={arg.shape} " f"data={data_preview}...")
 
             result = op(*args, **kwargs)
 
@@ -585,9 +581,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         else:
             raise ValueError(f"Unknown AtenArgument type: {which}")
 
-    def _resolve_kwargs(
-        self, kwargs: dict[str, service_pb2.AtenArgument]
-    ) -> dict:
+    def _resolve_kwargs(self, kwargs: dict[str, service_pb2.AtenArgument]) -> dict:
         """Resolve kwargs from proto format to Python values."""
         return {key: self._resolve_aten_arg(arg) for key, arg in kwargs.items()}
 
@@ -606,6 +600,238 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         for part in parts:
             op = getattr(op, part)
         return op
+
+    def _parse_raw_execute_aten(self, data: bytes):
+        """Parse binary execute_aten format (v2: metadata-first) from C++ RequestBuilder.
+
+        Binary format order: header, op_name, metadata, outputs, args, kwargs.
+        Single-pass parsing — metadata is parsed first so tensors exist when
+        args reference them by ID.
+
+        Returns:
+            Tuple of (op_name, args, kwargs_dict, output_tensor_ids)
+            where args are resolved Python values with tensor refs resolved.
+        """
+        pos = 0
+
+        # Header (4 bytes)
+        num_args = data[pos]
+        num_kwargs = data[pos + 1]
+        num_outputs = data[pos + 2]
+        num_metadata = data[pos + 3]
+        pos = 4
+
+        # Op name
+        op_name_len = struct.unpack_from("<H", data, pos)[0]
+        pos += 2
+        op_name = data[pos : pos + op_name_len].decode("utf-8")
+        pos += op_name_len
+
+        # Parse metadata and auto-create tensors (now immediately after op_name)
+        for _ in range(num_metadata):
+            meta, pos = self._parse_raw_tensor_metadata(data, pos)
+            self._ensure_tensor_exists(meta)
+
+        # Parse output tensor IDs
+        output_tensor_ids = []
+        for _ in range(num_outputs):
+            tid = struct.unpack_from("<Q", data, pos)[0]
+            pos += 8
+            output_tensor_ids.append(tid)
+
+        # Parse args (tensors already exist from metadata above)
+        args = []
+        for _ in range(num_args):
+            val, pos = self._parse_raw_arg(data, pos)
+            args.append(val)
+
+        # Parse kwargs
+        kwargs = {}
+        for _ in range(num_kwargs):
+            name_len = data[pos]
+            pos += 1
+            name = data[pos : pos + name_len].decode("utf-8")
+            pos += name_len
+            val, pos = self._parse_raw_arg(data, pos)
+            kwargs[name] = val
+
+        return op_name, tuple(args), kwargs, output_tensor_ids
+
+    def _parse_raw_arg(self, data: bytes, pos: int):
+        """Parse a single argument from binary format. Returns (value, new_pos)."""
+        arg_type = data[pos]
+        pos += 1
+
+        if arg_type == 0x00:  # NONE
+            return None, pos
+        elif arg_type == 0x01:  # TENSOR_ID
+            tid = struct.unpack_from("<Q", data, pos)[0]
+            return self.tensor_manager.get(tid), pos + 8
+        elif arg_type == 0x02:  # INT64
+            val = struct.unpack_from("<q", data, pos)[0]
+            return val, pos + 8
+        elif arg_type == 0x03:  # FLOAT64
+            val = struct.unpack_from("<d", data, pos)[0]
+            return val, pos + 8
+        elif arg_type == 0x04:  # BOOL
+            return data[pos] != 0, pos + 1
+        elif arg_type == 0x05:  # DTYPE
+            slen = data[pos]
+            s = data[pos + 1 : pos + 1 + slen].decode("utf-8")
+            if s.startswith("torch."):
+                return getattr(torch, s[6:]), pos + 1 + slen
+            raise ValueError(f"Invalid dtype string: {s}")
+        elif arg_type == 0x06:  # MEMORY_FORMAT
+            slen = data[pos]
+            s = data[pos + 1 : pos + 1 + slen].decode("utf-8")
+            if s.startswith("torch."):
+                return getattr(torch, s[6:]), pos + 1 + slen
+            raise ValueError(f"Invalid memory_format string: {s}")
+        elif arg_type == 0x07:  # LAYOUT
+            slen = data[pos]
+            s = data[pos + 1 : pos + 1 + slen].decode("utf-8")
+            if s.startswith("torch."):
+                return getattr(torch, s[6:]), pos + 1 + slen
+            raise ValueError(f"Invalid layout string: {s}")
+        elif arg_type == 0x08:  # STRING
+            slen = struct.unpack_from("<H", data, pos)[0]
+            s = data[pos + 2 : pos + 2 + slen].decode("utf-8")
+            return s, pos + 2 + slen
+        elif arg_type == 0x09:  # LIST
+            count = struct.unpack_from("<H", data, pos)[0]
+            pos += 2
+            items = []
+            for _ in range(count):
+                val, pos = self._parse_raw_arg(data, pos)
+                items.append(val)
+            return items, pos
+        elif arg_type == 0x0A:  # TUPLE
+            count = struct.unpack_from("<H", data, pos)[0]
+            pos += 2
+            items = []
+            for _ in range(count):
+                val, pos = self._parse_raw_arg(data, pos)
+                items.append(val)
+            return tuple(items), pos
+        else:
+            raise ValueError(f"Unknown arg type: 0x{arg_type:02x}")
+
+    def _parse_raw_tensor_metadata(self, data: bytes, pos: int):
+        """Parse tensor metadata from binary format. Returns (metadata_proto, new_pos)."""
+        tensor_id = struct.unpack_from("<Q", data, pos)[0]
+        pos += 8
+        ndim = data[pos]
+        pos += 1
+
+        shape = list(struct.unpack_from(f"<{ndim}q", data, pos))
+        pos += ndim * 8
+        stride = list(struct.unpack_from(f"<{ndim}q", data, pos))
+        pos += ndim * 8
+
+        # dtype string (uint8 len + bytes)
+        dtype_len = data[pos]
+        pos += 1
+        dtype_str = data[pos : pos + dtype_len].decode("utf-8")
+        pos += dtype_len
+
+        storage_offset = struct.unpack_from("<q", data, pos)[0]
+        pos += 8
+        nbytes = struct.unpack_from("<q", data, pos)[0]
+        pos += 8
+
+        # device_type string (uint8 len + bytes)
+        dt_len = data[pos]
+        pos += 1
+        device_type = data[pos : pos + dt_len].decode("utf-8")
+        pos += dt_len
+
+        device_index = struct.unpack_from("<i", data, pos)[0]
+        pos += 4
+
+        # tensor_ref (optional)
+        has_tensor_ref = data[pos]
+        pos += 1
+        tensor_ref = None
+        if has_tensor_ref:
+            tensor_ref = struct.unpack_from("<Q", data, pos)[0]
+            pos += 8
+
+        # Build a metadata proto
+        meta = service_pb2.TensorMetadata(
+            tensor_id=tensor_id,
+            shape=shape,
+            dtype=dtype_str,
+            nbytes=nbytes,
+            device_type=device_type,
+            stride=stride,
+            storage_offset=storage_offset,
+            device_index=device_index,
+        )
+        if tensor_ref is not None:
+            meta.tensor_ref = tensor_ref
+
+        return meta, pos
+
+    def _execute_raw_aten_inline(self, data: bytes) -> None:
+        """Execute a raw binary execute_aten request inline (no response construction).
+
+        Used for fire-and-forget operations. Raises on error.
+        """
+        op_name, args, kwargs, output_tensor_ids = self._parse_raw_execute_aten(data)
+
+        # Get the ATen op (metadata already auto-created during parse)
+        op = self._get_aten_op(op_name)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Executing raw {op_name} | outputs={output_tensor_ids}")
+
+        # Execute
+        result = op(*args, **kwargs)
+
+        # Register outputs
+        if output_tensor_ids:
+            if isinstance(result, torch.Tensor):
+                result_tensors = [result]
+            elif isinstance(result, (tuple, list)):
+                result_tensors = [t for t in result if isinstance(t, torch.Tensor)]
+            else:
+                result_tensors = []
+
+            for tid, tensor in zip(output_tensor_ids, result_tensors, strict=False):
+                if tensor is not None:
+                    self.tensor_manager.register(tid, tensor)
+
+    def _execute_batch_inline(self, operations) -> None:
+        """Execute a batch of ExecuteAtenRequest operations inline.
+
+        Avoids per-op response construction overhead.
+        Raises on first error.
+        """
+        for op_request in operations:
+            # Auto-create tensors from metadata
+            for metadata in op_request.tensor_metadata:
+                self._ensure_tensor_exists(metadata)
+            for metadata in op_request.output_metadata:
+                self._ensure_tensor_exists(metadata)
+
+            args = tuple(self._resolve_aten_arg(arg) for arg in op_request.args)
+            kwargs = self._resolve_kwargs(dict(op_request.kwargs))
+            op = self._get_aten_op(op_request.op_name)
+
+            result = op(*args, **kwargs)
+
+            # Register outputs directly
+            if op_request.outputs:
+                if isinstance(result, torch.Tensor):
+                    result_tensors = [result]
+                elif isinstance(result, (tuple, list)):
+                    result_tensors = [t for t in result if isinstance(t, torch.Tensor)]
+                else:
+                    result_tensors = []
+
+                for ref, tensor in zip(op_request.outputs, result_tensors, strict=False):
+                    if tensor is not None:
+                        self.tensor_manager.register(ref.tensor_id, tensor)
 
     async def _handle_update_tensor(
         self, request: service_pb2.UpdateTensorRequest
@@ -692,11 +918,52 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             logger.error(f"Error getting tensor via stream: {e}")
             return service_pb2.GetTensorResponse(success=False, message=str(e))
 
+    async def _handle_get_scalar(
+        self, request: service_pb2.GetScalarRequest
+    ) -> service_pb2.GetScalarResponse:
+        """Handle get_scalar request in streaming context.
+
+        Resolves the tensor, calls .item(), and returns the typed scalar value.
+
+        Args:
+            request: GetScalarRequest with tensor ID
+
+        Returns:
+            GetScalarResponse with the scalar value
+        """
+        try:
+            for metadata in request.tensor_metadata:
+                self._ensure_tensor_exists(metadata)
+
+            tensor = self.tensor_manager.get(request.tensor_id)
+            value = tensor.item()
+
+            if isinstance(value, bool):
+                return service_pb2.GetScalarResponse(bool_value=value)
+            elif isinstance(value, int):
+                return service_pb2.GetScalarResponse(int_value=value)
+            elif isinstance(value, float):
+                return service_pb2.GetScalarResponse(float_value=value)
+            else:
+                return service_pb2.GetScalarResponse(float_value=float(value))
+
+        except Exception as e:
+            logger.error(f"Error getting scalar via stream: {e}")
+            raise
+
     # Request types that are fire-and-forget (no response sent to client)
-    _FIRE_AND_FORGET_TYPES = frozenset({
-        "execute_aten", "delete_tensors", "copy_tensor",
-        "update_tensor", "register_tensors", "batched_execute_aten",
-    })
+    _FIRE_AND_FORGET_TYPES = frozenset(
+        {
+            "execute_aten",
+            "delete_tensors",
+            "copy_tensor",
+            "update_tensor",
+            "register_tensors",
+            "batched_execute_aten",
+            "raw_execute_aten",
+            "raw_batched_execute_aten",
+        }
+    )
 
     async def StreamOperations(
         self,
@@ -724,23 +991,97 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         # Only one chunked request can be in-flight at a time per stream (FIFO)
         current_chunk_state: list = [None]  # [buffer, first_request, chunk_size] or None
 
-        async for request in request_iterator:
-            total_chunks = request.total_chunks
+        try:
+            async for request in request_iterator:
+                total_chunks = request.total_chunks
 
-            if total_chunks <= 1:
-                # Single message
-                request_type = request.WhichOneof("request")
+                if total_chunks > 1:
+                    # Chunked request (always fire-and-forget update_tensor)
+                    await self._handle_chunked_request(request, context, current_chunk_state)
+                    continue
 
-                if request_type in self._FIRE_AND_FORGET_TYPES:
-                    # Fire-and-forget: process but don't yield a response
-                    await self._handle_fire_and_forget(request, context)
+                # Inline hot-path: check fire-and-forget types with HasField
+                # instead of WhichOneof + frozenset lookup
+                if request.HasField("raw_execute_aten"):
+                    try:
+                        self._execute_raw_aten_inline(request.raw_execute_aten)
+                    except Exception as e:
+                        logger.error(f"Error in fire-and-forget operation: {e}")
+                        self._deferred_error = str(e)
+                elif request.HasField("raw_batched_execute_aten"):
+                    try:
+                        raw_data = request.raw_batched_execute_aten
+                        pos = 0
+                        while pos < len(raw_data):
+                            op_len = struct.unpack_from("<I", raw_data, pos)[0]
+                            pos += 4
+                            op_data = raw_data[pos : pos + op_len]
+                            pos += op_len
+                            self._execute_raw_aten_inline(op_data)
+                    except Exception as e:
+                        logger.error(f"Error in fire-and-forget operation: {e}")
+                        self._deferred_error = str(e)
+                elif request.HasField("batched_execute_aten"):
+                    try:
+                        self._execute_batch_inline(
+                            request.batched_execute_aten.operations
+                        )
+                    except Exception as e:
+                        logger.error(f"Error in fire-and-forget operation: {e}")
+                        self._deferred_error = str(e)
+                elif request.HasField("execute_aten"):
+                    try:
+                        result = await self.ExecuteAtenOperation(
+                            request.execute_aten, context
+                        )
+                        if not result.success:
+                            self._deferred_error = result.message
+                    except Exception as e:
+                        logger.error(f"Error in fire-and-forget operation: {e}")
+                        self._deferred_error = str(e)
+                elif request.HasField("delete_tensors"):
+                    try:
+                        result = await self.DeleteTensors(
+                            request.delete_tensors, context
+                        )
+                        if not result.success:
+                            self._deferred_error = result.message
+                    except Exception as e:
+                        logger.error(f"Error in fire-and-forget operation: {e}")
+                        self._deferred_error = str(e)
+                elif request.HasField("copy_tensor"):
+                    try:
+                        result = await self.CopyTensor(request.copy_tensor, context)
+                        if not result.success:
+                            self._deferred_error = result.message
+                    except Exception as e:
+                        logger.error(f"Error in fire-and-forget operation: {e}")
+                        self._deferred_error = str(e)
+                elif request.HasField("update_tensor"):
+                    try:
+                        result = await self._handle_update_tensor(request.update_tensor)
+                        if not result.success:
+                            self._deferred_error = result.message
+                    except Exception as e:
+                        logger.error(f"Error in fire-and-forget operation: {e}")
+                        self._deferred_error = str(e)
+                elif request.HasField("register_tensors"):
+                    try:
+                        for reg in request.register_tensors.registrations:
+                            tensor = self._pending_tensors.pop(reg.storage_id, None)
+                            if tensor is not None:
+                                self.tensor_manager.register(reg.tensor_id, tensor)
+                    except Exception as e:
+                        logger.error(f"Error in fire-and-forget operation: {e}")
+                        self._deferred_error = str(e)
                 else:
-                    # Sync operation (get_tensor): yield response
+                    # Sync operation (get_tensor, get_scalar): yield response
                     response = await self._handle_single_request(request, context)
                     yield response
-            else:
-                # Chunked request (always fire-and-forget update_tensor)
-                await self._handle_chunked_request(request, context, current_chunk_state)
+        finally:
+            # Release all tensor memory when the client disconnects
+            self.tensor_manager.clear()
+            self._pending_tensors.clear()
 
     async def _handle_fire_and_forget(
         self,
@@ -778,11 +1119,21 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                         self.tensor_manager.register(reg.tensor_id, tensor)
 
             elif request_type == "batched_execute_aten":
-                for op in request.batched_execute_aten.operations:
-                    result = await self.ExecuteAtenOperation(op, context)
-                    if not result.success:
-                        self._deferred_error = result.message
-                        break
+                self._execute_batch_inline(request.batched_execute_aten.operations)
+
+            elif request_type == "raw_execute_aten":
+                self._execute_raw_aten_inline(request.raw_execute_aten)
+
+            elif request_type == "raw_batched_execute_aten":
+                # Multiple binary ops concatenated, each prefixed with uint32 length
+                raw_data = request.raw_batched_execute_aten
+                pos = 0
+                while pos < len(raw_data):
+                    op_len = struct.unpack_from("<I", raw_data, pos)[0]
+                    pos += 4
+                    op_data = raw_data[pos : pos + op_len]
+                    pos += op_len
+                    self._execute_raw_aten_inline(op_data)
 
         except Exception as e:
             logger.error(f"Error in fire-and-forget operation: {e}")
@@ -816,6 +1167,11 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 if not result.success:
                     response.error_message = result.message
                 response.get_tensor.CopyFrom(result)
+
+            elif request_type == "get_scalar":
+                result = await self._handle_get_scalar(request.get_scalar)
+                response.success = True
+                response.get_scalar.CopyFrom(result)
 
             else:
                 response.success = False

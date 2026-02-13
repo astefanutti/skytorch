@@ -14,6 +14,7 @@ import torch
 
 # Feature flags
 ENABLE_STREAMING = os.environ.get("SKYTORCH_ENABLE_STREAMING", "1") == "1"
+ENABLE_CPP_REQUEST_BUILDER = os.environ.get("SKYTORCH_CPP_REQUEST_BUILDER", "1") == "1"
 
 from skytorch.torch.server.serialization import (
     tensor_from_bytes,
@@ -170,7 +171,10 @@ def copy_cpu_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
 
 
 async def _copy_cpu_to_sky_unary(
-    compute: Compute, src: torch.Tensor, dst: torch.Tensor, meta: Optional[TensorMetadata],
+    compute: Compute,
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    meta: Optional[TensorMetadata],
 ) -> None:
     """Async helper for unary copy_cpu_to_sky RPC."""
     client = _require_client(compute)
@@ -229,9 +233,15 @@ def copy_sky_to_sky(src: torch.Tensor, dst: torch.Tensor) -> None:
         stream_manager = src_compute._grpc_client.stream
         stream_manager.submit_copy_tensor(request)
     else:
-        run_async(_copy_sky_to_sky_unary(
-            src_compute, src, dst, src_meta, dst_meta,
-        )).result()
+        run_async(
+            _copy_sky_to_sky_unary(
+                src_compute,
+                src,
+                dst,
+                src_meta,
+                dst_meta,
+            )
+        ).result()
 
     # Register locally after RPC
     if src_meta is not None:
@@ -258,6 +268,43 @@ async def _copy_sky_to_sky_unary(
         src_metadata=src_meta,
         dst_metadata=dst_meta,
     )
+
+
+async def get_scalar(compute: Compute, tensor_id: int, metadata=None):
+    """
+    Get a scalar value from a remote tensor via streaming GetScalar RPC.
+
+    Args:
+        compute: The Compute instance
+        tensor_id: ID of the tensor to get scalar from
+        metadata: Optional TensorMetadata proto for auto-creation
+
+    Returns:
+        Python scalar value (int, float, or bool)
+    """
+    from skytorch.torch.server import service_pb2
+
+    stream_manager = compute._grpc_client.stream
+
+    request = service_pb2.GetScalarRequest(tensor_id=tensor_id)
+    if metadata is not None:
+        request.tensor_metadata.append(metadata)
+
+    response = await stream_manager.submit_get_scalar(request)
+
+    if not response.success:
+        raise RuntimeError(f"Failed to get scalar: {response.error_message}")
+
+    scalar_response = response.get_scalar
+    scalar_type = scalar_response.WhichOneof("value")
+    if scalar_type == "float_value":
+        return scalar_response.float_value
+    elif scalar_type == "int_value":
+        return scalar_response.int_value
+    elif scalar_type == "bool_value":
+        return scalar_response.bool_value
+    else:
+        raise RuntimeError("GetScalar response has no value set")
 
 
 async def delete_tensors(compute: Compute, tensor_ids: list[int]) -> None:
@@ -295,6 +342,9 @@ def execute_aten_operation(
     Uses streaming (fire-and-forget) when ENABLE_STREAMING is True,
     otherwise uses unary RPC.
 
+    When ENABLE_CPP_REQUEST_BUILDER is True and streaming is enabled,
+    uses the C++ binary request builder for faster serialization.
+
     Args:
         sky_device: sky device to execute on
         op_name: ATen operation name (e.g., "aten::add.Tensor")
@@ -311,10 +361,64 @@ def execute_aten_operation(
 
     if compute._grpc_client is None:
         raise RuntimeError(
-            f"Compute '{compute.name}' is not ready. "
-            "The gRPC client has not been initialized."
+            f"Compute '{compute.name}' is not ready. " "The gRPC client has not been initialized."
         )
 
+    if ENABLE_STREAMING and ENABLE_CPP_REQUEST_BUILDER:
+        _execute_aten_cpp_fast_path(compute, sky_device, op_name, args, kwargs, output_tensors)
+    elif ENABLE_STREAMING:
+        _execute_aten_python_path(compute, sky_device, op_name, args, kwargs, output_tensors)
+    else:
+        _execute_aten_unary_path(compute, sky_device, op_name, args, kwargs, output_tensors)
+
+
+def _execute_aten_cpp_fast_path(
+    compute,
+    sky_device: torch.device,
+    op_name: str,
+    args: tuple,
+    kwargs: dict,
+    output_tensors: list[torch.Tensor] | None,
+) -> None:
+    """Fast path: C++ binary serialization + raw bytes submission."""
+    from skytorch.torch.backend._C import _build_execute_aten_request
+
+    remote_info = device_manager.get_remote_device_info(sky_device.index or 0)
+
+    # C++ builds binary request + identifies new tensors
+    raw_bytes, new_tensor_ids, new_storage_ids = _build_execute_aten_request(
+        op_name,
+        args,
+        kwargs,
+        output_tensors,
+        sky_device.index or 0,
+        remote_info.device_type,
+        remote_info.device_index,
+    )
+
+    stream_manager = compute._grpc_client.stream
+    stream_manager.submit_execute_aten_bytes(raw_bytes)
+
+    # Register new tensors locally (C++ already updated its tracking set)
+    for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids):
+        storage_manager.register_storage(
+            storage_id=storage_id,
+            nbytes=0,  # Actual nbytes tracked by server
+            device_index=sky_device.index or 0,
+        )
+        # Register tensor_id → storage mapping
+        storage_manager._storage_to_tensors[storage_id].add(tensor_id)
+
+
+def _execute_aten_python_path(
+    compute,
+    sky_device: torch.device,
+    op_name: str,
+    args: tuple,
+    kwargs: dict,
+    output_tensors: list[torch.Tensor] | None,
+) -> None:
+    """Python path: protobuf serialization via build_execute_aten_request."""
     # Collect metadata for unregistered input tensors
     tensor_metadata_list: list[TensorMetadata] = []
     tensors_to_register: list[torch.Tensor] = []
@@ -362,22 +466,91 @@ def execute_aten_operation(
                     output_metadata_list.append(meta)
                     output_tensors_to_register.append(tensor)
 
-    if ENABLE_STREAMING:
-        request = build_execute_aten_request(
-            op_name=op_name,
-            args=processed_args,
-            kwargs=processed_kwargs,
-            output_tensors=output_tensors,
-            tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
-            output_metadata=output_metadata_list if output_metadata_list else None,
+    request = build_execute_aten_request(
+        op_name=op_name,
+        args=processed_args,
+        kwargs=processed_kwargs,
+        output_tensors=output_tensors,
+        tensor_metadata=tensor_metadata_list if tensor_metadata_list else None,
+        output_metadata=output_metadata_list if output_metadata_list else None,
+    )
+    stream_manager = compute._grpc_client.stream
+    stream_manager.submit_execute_aten(request)
+
+    # Register tensors locally after RPC
+    for tensor in tensors_to_register:
+        _register_tensor_locally(tensor)
+    for tensor in output_tensors_to_register:
+        _register_tensor_locally(tensor)
+
+
+def _execute_aten_unary_path(
+    compute,
+    sky_device: torch.device,
+    op_name: str,
+    args: tuple,
+    kwargs: dict,
+    output_tensors: list[torch.Tensor] | None,
+) -> None:
+    """Unary RPC path (non-streaming fallback)."""
+    # Collect metadata for unregistered input tensors
+    tensor_metadata_list: list[TensorMetadata] = []
+    tensors_to_register: list[torch.Tensor] = []
+
+    def process_arg(obj):
+        """Process an argument: collect metadata and map devices."""
+        if isinstance(obj, torch.Tensor):
+            if obj.device.type == "sky":
+                meta = _get_tensor_metadata_if_new(obj)
+                if meta is not None:
+                    tensor_metadata_list.append(meta)
+                    tensors_to_register.append(obj)
+                return obj
+            elif obj.device.type == "cpu" and obj.dim() == 0:
+                return obj
+            elif obj.device.type == "cpu" and obj.numel() == 0:
+                promoted = torch.empty(obj.shape, dtype=obj.dtype, device=sky_device)
+                meta = _get_tensor_metadata_if_new(promoted)
+                if meta is not None:
+                    tensor_metadata_list.append(meta)
+                    tensors_to_register.append(promoted)
+                return promoted
+            else:
+                raise ValueError(
+                    f"Unsupported tensor: {obj.device.type} with dim {obj.dim()}. "
+                    f"Only sky tensors and 0-dim cpu scalar tensors are allowed."
+                )
+        elif isinstance(obj, torch.device):
+            if obj.type == "sky":
+                info = device_manager.get_remote_device_info(obj.index or 0)
+                return torch.device(info.device_type, info.device_index)
+            return obj
+        return obj
+
+    processed_args, processed_kwargs = map_args_kwargs(process_arg, args, kwargs)
+
+    # Collect metadata for unregistered output tensors
+    output_metadata_list: list[TensorMetadata] = []
+    output_tensors_to_register: list[torch.Tensor] = []
+    if output_tensors:
+        for tensor in output_tensors:
+            if tensor is not None:
+                meta = _get_tensor_metadata_if_new(tensor)
+                if meta is not None:
+                    output_metadata_list.append(meta)
+                    output_tensors_to_register.append(tensor)
+
+    run_async(
+        _execute_aten_operation_unary(
+            compute,
+            op_name,
+            processed_args,
+            processed_kwargs,
+            output_tensors,
+            tensor_metadata_list,
+            output_metadata_list,
         )
-        stream_manager = compute._grpc_client.stream
-        stream_manager.submit_execute_aten(request)
-    else:
-        run_async(_execute_aten_operation_unary(
-            compute, op_name, processed_args, processed_kwargs,
-            output_tensors, tensor_metadata_list, output_metadata_list,
-        )).result()
+    ).result()
 
     # Register tensors locally after RPC
     for tensor in tensors_to_register:
@@ -408,9 +581,9 @@ async def _execute_aten_operation_unary(
 
 
 def map_args_kwargs(
-        func: Callable[[Any], Any],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
+    func: Callable[[Any], Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """
     Apply func to all elements in args/kwargs, recursing into lists/tuples.
@@ -568,7 +741,6 @@ def _require_client(compute: Compute) -> TensorClient:
     """
     if compute._grpc_client is None:
         raise RuntimeError(
-            f"Compute '{compute.name}' is not ready. "
-            "The gRPC client has not been initialized."
+            f"Compute '{compute.name}' is not ready. " "The gRPC client has not been initialized."
         )
     return compute._grpc_client.torch

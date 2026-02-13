@@ -41,9 +41,7 @@ class ServerThread(threading.Thread):
     async def _start_server(self):
         self.server = grpc.aio.server()
         # Start serving in background task
-        task = asyncio.create_task(
-            serve(self.server, host="localhost", port=self.port)
-        )
+        task = asyncio.create_task(serve(self.server, host="localhost", port=self.port))
         # Wait briefly for server to bind, then signal ready
         await asyncio.sleep(0.5)
         self.started.set()
@@ -53,9 +51,7 @@ class ServerThread(threading.Thread):
     def stop(self):
         if self.server and self.loop and self.loop.is_running():
             # Schedule stop on the server's event loop
-            future = asyncio.run_coroutine_threadsafe(
-                self.server.stop(grace=0), self.loop
-            )
+            future = asyncio.run_coroutine_threadsafe(self.server.stop(grace=0), self.loop)
             try:
                 future.result(timeout=5)
             except TimeoutError:
@@ -101,12 +97,24 @@ def reset_sky_state():
     # Reset before test
     device_manager.reset()
     runtime_manager.reset()
+    try:
+        from skytorch.torch.backend._C import _clear_registered_tensor_ids
+
+        _clear_registered_tensor_ids()
+    except (ImportError, AttributeError):
+        pass
 
     yield
 
     # Cleanup after test
     device_manager.reset()
     runtime_manager.reset()
+    try:
+        from skytorch.torch.backend._C import _clear_registered_tensor_ids
+
+        _clear_registered_tensor_ids()
+    except (ImportError, AttributeError):
+        pass
 
 
 @pytest.fixture(scope="session")
@@ -117,8 +125,7 @@ def sky_server():
     # Pre-flight check: fail fast if port is in use
     if not check_port_available(port):
         pytest.fail(
-            f"Port {port} is already in use. "
-            f"Check for stale processes with: lsof -i :{port}"
+            f"Port {port} is already in use. " f"Check for stale processes with: lsof -i :{port}"
         )
 
     # Start server in separate thread with its own event loop

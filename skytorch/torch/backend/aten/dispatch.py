@@ -37,34 +37,58 @@ class _OutputMeta:
 _shape_cache: dict[tuple, list[_OutputMeta | None]] = {}
 
 
-def _build_cache_key(
+_UNCACHEABLE = object()
+
+
+def _build_cache_key_with_context(
     op: torch._ops.OpOverload,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
-) -> tuple | None:
-    """Build a hashable cache key from op + argument signatures.
+) -> tuple[tuple | None, torch.device | None, list[torch.Tensor]]:
+    """Build cache key, resolve sky device, and collect input tensors in one pass.
 
-    Returns None if the arguments contain unhashable types, in which
-    case the caller should fall back to full meta execution.
-
-    The key includes storage sharing information: tensor arguments that
-    share storage get the same storage group ID, ensuring cache entries
-    aren't reused when sharing patterns differ (e.g., out=self vs out=new).
+    Returns (cache_key, sky_device, input_tensors).
+    cache_key is None if args contain unhashable types.
+    sky_device is the first sky device found in args/kwargs.
+    input_tensors is a list of unique sky tensors (by storage ptr).
     """
     parts: list = [str(op)]
+    sky_device: torch.device | None = None
+    input_tensors: list[torch.Tensor] = []
+    seen_ptrs: set[int] = set()
+
     # Track storage sharing: data_ptr -> group ID
     storage_groups: dict[int, int] = {}
-    next_group = [0]
+    next_group = 0
+    uncacheable = False
 
-    def _storage_group(tensor: torch.Tensor) -> int:
-        ptr = tensor.untyped_storage().data_ptr()
-        if ptr not in storage_groups:
-            storage_groups[ptr] = next_group[0]
-            next_group[0] += 1
-        return storage_groups[ptr]
-
-    def _arg_key(obj: Any) -> Any:
+    def _process(obj: Any) -> Any:
+        nonlocal sky_device, next_group, uncacheable
         if isinstance(obj, torch.Tensor):
+            if obj.device.type == "sky":
+                if sky_device is None:
+                    sky_device = obj.device
+                ptr = obj.untyped_storage().data_ptr()
+                if ptr not in seen_ptrs:
+                    seen_ptrs.add(ptr)
+                    input_tensors.append(obj)
+                if ptr not in storage_groups:
+                    storage_groups[ptr] = next_group
+                    next_group += 1
+                return (
+                    "T",
+                    tuple(obj.shape),
+                    obj.dtype,
+                    tuple(obj.stride()),
+                    obj.storage_offset(),
+                    obj.untyped_storage().nbytes(),
+                    storage_groups[ptr],
+                )
+            # Non-sky tensor (e.g., cpu scalar) — still build key
+            ptr = obj.untyped_storage().data_ptr()
+            if ptr not in storage_groups:
+                storage_groups[ptr] = next_group
+                next_group += 1
             return (
                 "T",
                 tuple(obj.shape),
@@ -72,35 +96,39 @@ def _build_cache_key(
                 tuple(obj.stride()),
                 obj.storage_offset(),
                 obj.untyped_storage().nbytes(),
-                _storage_group(obj),
+                storage_groups[ptr],
             )
         if isinstance(obj, (list, tuple)):
-            return tuple(_arg_key(v) for v in obj)
+            return tuple(_process(v) for v in obj)
         if isinstance(obj, torch.device):
+            if obj.type == "sky" and sky_device is None:
+                sky_device = obj
             return ("D", obj.type, obj.index)
         if obj is None:
             return None
         if isinstance(obj, (int, float, bool, str, torch.dtype, torch.memory_format, torch.layout)):
             return obj
-        # Unhashable / unknown type — skip caching
+        uncacheable = True
         return _UNCACHEABLE
 
+    # Check kwargs device first (like _resolve_device did)
+    if "device" in kwargs and isinstance(kwargs["device"], torch.device):
+        if kwargs["device"].type == "sky":
+            sky_device = kwargs["device"]
+
     for arg in args:
-        k = _arg_key(arg)
-        if k is _UNCACHEABLE:
-            return None
+        k = _process(arg)
+        if uncacheable:
+            return None, sky_device, input_tensors
         parts.append(k)
 
     for key in sorted(kwargs):
-        k = _arg_key(kwargs[key])
-        if k is _UNCACHEABLE:
-            return None
+        k = _process(kwargs[key])
+        if uncacheable:
+            return None, sky_device, input_tensors
         parts.append((key, k))
 
-    return tuple(parts)
-
-
-_UNCACHEABLE = object()
+    return tuple(parts), sky_device, input_tensors
 
 
 def _create_meta_tensor_from_sky(
@@ -420,28 +448,6 @@ def _collect_input_tensors(args: tuple[Any, ...], kwargs: dict[str, Any]) -> lis
     return tensors
 
 
-def _resolve_device(args: tuple[Any, ...], kwargs: dict[str, Any]) -> torch.device | None:
-    """Find the first sky device from tensor args/kwargs."""
-    if "device" in kwargs and isinstance(kwargs["device"], torch.device):
-        if kwargs["device"].type == "sky":
-            return kwargs["device"]
-
-    def _find(obj: Any) -> torch.device | None:
-        if isinstance(obj, torch.Tensor) and obj.device.type == "sky":
-            return obj.device
-        if isinstance(obj, (list, tuple)):
-            for v in obj:
-                d = _find(v)
-                if d is not None:
-                    return d
-        return None
-
-    for arg in args:
-        d = _find(arg)
-        if d is not None:
-            return d
-    return None
-
 
 def _sky_kernel_fallback(
     op: torch._ops.OpOverload,
@@ -453,32 +459,33 @@ def _sky_kernel_fallback(
         logger.debug(f"Dispatching {op}")
 
     try:
+        # Build cache key, resolve device, and collect tensors in one pass
+        cache_key, sky_device, input_tensors = _build_cache_key_with_context(
+            op, args, kwargs
+        )
+
         # Try shape cache first
-        cache_key = _build_cache_key(op, args, kwargs)
         if cache_key is not None:
             cached = _shape_cache.get(cache_key)
-            if cached is not None:
-                sky_device = _resolve_device(args, kwargs)
-                if sky_device is not None:
-                    input_tensors = _collect_input_tensors(args, kwargs)
-                    output_tensors = _create_outputs_from_cache(
-                        cached, input_tensors, sky_device
-                    )
+            if cached is not None and sky_device is not None:
+                output_tensors = _create_outputs_from_cache(
+                    cached, input_tensors, sky_device
+                )
 
-                    _client.execute_aten_operation(
-                        sky_device=sky_device,
-                        op_name=str(op),
-                        args=args,
-                        kwargs=kwargs,
-                        output_tensors=output_tensors,
-                    )
+                _client.execute_aten_operation(
+                    sky_device=sky_device,
+                    op_name=str(op),
+                    args=args,
+                    kwargs=kwargs,
+                    output_tensors=output_tensors,
+                )
 
-                    if len(output_tensors) > 1:
-                        return tuple(output_tensors)
-                    elif output_tensors:
-                        return output_tensors[0]
-                    else:
-                        return None
+                if len(output_tensors) > 1:
+                    return tuple(output_tensors)
+                elif output_tensors:
+                    return output_tensors[0]
+                else:
+                    return None
 
         # Cache miss — full meta execution
         devices: list[torch.device] = []
@@ -505,9 +512,10 @@ def _sky_kernel_fallback(
                 return obj
 
             args, kwargs = map_args_kwargs(_promote, args, kwargs)
-
-        # Collect input tensors for cache population
-        input_tensors = _collect_input_tensors(args, kwargs) if cache_key is not None else None
+            # Re-collect input tensors after promotion
+            input_tensors = _collect_input_tensors(args, kwargs) if cache_key is not None else None
+        else:
+            input_tensors = input_tensors if cache_key is not None else None
 
         return _execute_with_static_outputs(
             op, args, kwargs, sky_device, meta_result, original_tensors,

@@ -15,6 +15,25 @@ import os
 import threading
 from typing import Optional, TYPE_CHECKING
 
+_COMPRESSION_MAP = {
+    "none": None,  # grpc.Compression.NoCompression resolved after import
+    "deflate": None,
+    "gzip": None,
+}
+
+
+def _get_grpc_compression():
+    """Get gRPC compression setting from environment variable."""
+    import grpc
+
+    name = os.environ.get("SKYTORCH_GRPC_COMPRESSION", "none").lower()
+    mapping = {
+        "none": grpc.Compression.NoCompression,
+        "deflate": grpc.Compression.Deflate,
+        "gzip": grpc.Compression.Gzip,
+    }
+    return mapping.get(name, grpc.Compression.Gzip)
+
 if TYPE_CHECKING:
     from skytorch.torch.client.stream import StreamManager
 
@@ -93,7 +112,7 @@ class GRPCClient:
         if channel is None:
             channel = grpc.aio.insecure_channel(
                 self.address,
-                compression=grpc.Compression.Gzip,
+                compression=_get_grpc_compression(),
             )
             self._thread_local.channel = channel
         return channel
@@ -214,7 +233,7 @@ class GRPCClient:
         async def create_channel():
             return grpc.aio.insecure_channel(
                 self.address,
-                compression=grpc.Compression.Gzip,
+                compression=_get_grpc_compression(),
             )
 
         # Run channel creation on global loop

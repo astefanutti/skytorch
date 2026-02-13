@@ -71,6 +71,21 @@ message TensorResponse {
   string message = 2;
 }
 
+// Request to get a scalar value from a tensor
+message GetScalarRequest {
+  uint64 tensor_id = 1;
+  repeated TensorMetadata tensor_metadata = 2;
+}
+
+// Response containing a scalar value
+message GetScalarResponse {
+  oneof value {
+    double float_value = 1;
+    int64 int_value = 2;
+    bool bool_value = 3;
+  }
+}
+
 // Request to create a tensor on the server
 message CreateTensorRequest {
   uint64 tensor_id = 1;
@@ -227,6 +242,9 @@ message StreamRequest {
     GetTensorRequest get_tensor = 5;
     RegisterTensorsRequest register_tensors = 6;
     BatchedExecuteAtenRequest batched_execute_aten = 7;
+    bytes raw_execute_aten = 8;           // Binary-serialized execute_aten (C++ fast path)
+    bytes raw_batched_execute_aten = 9;   // Multiple binary-serialized ops concatenated
+    GetScalarRequest get_scalar = 12;    // Get scalar value from a tensor
   }
 
   // Chunking support for large payloads
@@ -247,6 +265,7 @@ message StreamResponse {
     TensorResponse update_tensor = 6;
     GetTensorResponse get_tensor = 7;
     TensorResponse register_tensors = 8;
+    GetScalarResponse get_scalar = 9;
   }
 
   // Chunking support for large responses (get_tensor)

@@ -26,9 +26,7 @@ try:
     from skytorch.torch.server import service_pb2
     from skytorch.torch.server import service_pb2_grpc
 except ImportError:
-    raise ImportError(
-        "Generated gRPC code not found. Run hack/gen-grpc-proto.sh first."
-    )
+    raise ImportError("Generated gRPC code not found. Run hack/gen-grpc-proto.sh first.")
 
 from grpc.aio._typing import MetadataType
 
@@ -95,6 +93,14 @@ class StreamManager:
         self._batch_buffer: list[service_pb2.ExecuteAtenRequest] = []
         self._flush_scheduled: bool = False
 
+        # Batch buffer for raw binary execute_aten operations (C++ fast path)
+        self._raw_batch_buffer: list[bytes] = []
+        self._raw_flush_scheduled: bool = False
+
+        # Buffer for batched delete tensor IDs
+        self._delete_buffer: list[int] = []
+        self._delete_flush_scheduled: bool = False
+
         # Shutdown signaling
         self._shutdown_event: Optional[asyncio.Event] = None
 
@@ -130,41 +136,100 @@ class StreamManager:
         if pending is not None:
             self._pending.append(pending)
 
+    # Flush threshold: when this many ops are buffered, flush immediately
+    _BATCH_FLUSH_THRESHOLD = 64
+
     def _enqueue_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
         """Buffer an execute_aten request for batching. Must run on the event loop thread."""
         self._batch_buffer.append(request)
-        if not self._flush_scheduled:
+        if len(self._batch_buffer) >= self._BATCH_FLUSH_THRESHOLD:
+            self._flush_batch()
+        elif not self._flush_scheduled:
             self._flush_scheduled = True
             self._loop.call_soon(self._flush_batch)
+
+    def _enqueue_execute_aten_bytes(self, raw_bytes: bytes) -> None:
+        """Buffer a raw binary execute_aten request for batching. Must run on the event loop thread."""
+        self._raw_batch_buffer.append(raw_bytes)
+        if len(self._raw_batch_buffer) >= self._BATCH_FLUSH_THRESHOLD:
+            self._flush_raw_batch()
+        elif not self._raw_flush_scheduled:
+            self._raw_flush_scheduled = True
+            self._loop.call_soon(self._flush_raw_batch)
+
+    def _enqueue_delete_ids(self, tensor_ids: list[int]) -> None:
+        """Buffer tensor IDs for batched deletion. Must run on event loop thread."""
+        self._delete_buffer.extend(tensor_ids)
+        if not self._delete_flush_scheduled:
+            self._delete_flush_scheduled = True
+            self._loop.call_soon(self._flush_deletes)
+
+    def _flush_deletes(self) -> None:
+        """Flush buffered delete tensor IDs. Must run on event loop thread."""
+        self._delete_flush_scheduled = False
+        if not self._delete_buffer:
+            return
+        request = service_pb2.DeleteTensorsRequest(tensor_ids=self._delete_buffer)
+        stream_request = service_pb2.StreamRequest(delete_tensors=request)
+        self._request_queue.put_nowait(stream_request)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Flushing batched delete of {len(self._delete_buffer)} tensors")
+        self._delete_buffer = []
 
     def _flush_batch(self) -> None:
         """Flush buffered execute_aten requests as a batch. Must run on the event loop thread."""
         self._flush_scheduled = False
         if not self._batch_buffer:
+            self._flush_deletes()
             return
 
         if len(self._batch_buffer) == 1:
             # Single request: send as regular execute_aten to avoid wrapping overhead
-            stream_request = service_pb2.StreamRequest(
-                execute_aten=self._batch_buffer[0]
-            )
+            stream_request = service_pb2.StreamRequest(execute_aten=self._batch_buffer[0])
         else:
             # Multiple requests: send as batch
-            batch = service_pb2.BatchedExecuteAtenRequest(
-                operations=self._batch_buffer
-            )
-            stream_request = service_pb2.StreamRequest(
-                batched_execute_aten=batch
-            )
+            batch = service_pb2.BatchedExecuteAtenRequest(operations=self._batch_buffer)
+            stream_request = service_pb2.StreamRequest(batched_execute_aten=batch)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"Flushing batch of {len(self._batch_buffer)} execute_aten ops")
 
         self._batch_buffer = []
         self._request_queue.put_nowait(stream_request)
+        self._flush_deletes()
+
+    def _flush_raw_batch(self) -> None:
+        """Flush buffered raw binary execute_aten requests. Must run on the event loop thread."""
+        self._raw_flush_scheduled = False
+        if not self._raw_batch_buffer:
+            self._flush_deletes()
+            return
+
+        if len(self._raw_batch_buffer) == 1:
+            # Single request: send as raw_execute_aten
+            stream_request = service_pb2.StreamRequest(raw_execute_aten=self._raw_batch_buffer[0])
+        else:
+            # Multiple requests: concatenate into raw_batched_execute_aten
+            # Each request is prefixed with its length as uint32 LE
+            import struct
+
+            parts = []
+            for raw in self._raw_batch_buffer:
+                parts.append(struct.pack("<I", len(raw)))
+                parts.append(raw)
+            stream_request = service_pb2.StreamRequest(raw_batched_execute_aten=b"".join(parts))
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Flushing raw batch of {len(self._raw_batch_buffer)} execute_aten ops"
+                )
+
+        self._raw_batch_buffer = []
+        self._request_queue.put_nowait(stream_request)
+        self._flush_deletes()
 
     async def _sender_loop(self) -> None:
         """Send requests from queue to the stream."""
         try:
+
             async def request_generator():
                 while not self._closing:
                     request = await self._request_queue.get()
@@ -211,9 +276,7 @@ class StreamManager:
 
                 # Check for deferred error from fire-and-forget operations
                 if response.error_message and not response.success:
-                    error = RuntimeError(
-                        f"Stream operation failed: {response.error_message}"
-                    )
+                    error = RuntimeError(f"Stream operation failed: {response.error_message}")
                     if pending.future is not None:
                         pending.future.set_exception(error)
                     self.record_error(error)
@@ -251,6 +314,7 @@ class StreamManager:
     def _enqueue_with_flush(self, stream_request):
         """Flush any pending batch, then enqueue a request. Must run on the event loop thread."""
         self._flush_batch()
+        self._flush_raw_batch()
         self._request_queue.put_nowait(stream_request)
 
     def _submit_request(self, stream_request: service_pb2.StreamRequest, request_type: str) -> None:
@@ -284,6 +348,15 @@ class StreamManager:
             )
         self._loop.call_soon_threadsafe(self._enqueue_execute_aten, request)
 
+    def submit_execute_aten_bytes(self, raw_bytes: bytes) -> None:
+        """Submit a fire-and-forget binary-serialized execute_aten request.
+
+        Like submit_execute_aten but takes pre-serialized bytes from
+        the C++ request builder, avoiding Python protobuf overhead entirely.
+        Callable from any thread.
+        """
+        self._loop.call_soon_threadsafe(self._enqueue_execute_aten_bytes, raw_bytes)
+
     def submit_copy_tensor(self, request: service_pb2.CopyTensorRequest) -> None:
         """Submit a fire-and-forget copy_tensor request (callable from any thread)."""
         if logger.isEnabledFor(logging.DEBUG):
@@ -301,11 +374,11 @@ class StreamManager:
         self._submit_request(stream_request, "register_tensors")
 
     def submit_delete_tensors(self, request: service_pb2.DeleteTensorsRequest) -> None:
-        """Submit a fire-and-forget delete_tensors request (callable from any thread)."""
+        """Buffer delete_tensors for batched submission (callable from any thread)."""
+        tensor_ids = list(request.tensor_ids)
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Deleting tensors {list(request.tensor_ids)}")
-        stream_request = service_pb2.StreamRequest(delete_tensors=request)
-        self._submit_request(stream_request, "delete_tensors")
+            logger.debug(f"Buffering delete for tensors {tensor_ids}")
+        self._loop.call_soon_threadsafe(self._enqueue_delete_ids, tensor_ids)
 
     def submit_update_tensor(self, request: service_pb2.UpdateTensorRequest) -> None:
         """Submit a fire-and-forget update_tensor request (callable from any thread)."""
@@ -366,6 +439,7 @@ class StreamManager:
 
         def _flush_and_enqueue_batch():
             self._flush_batch()
+            self._flush_raw_batch()
             for request in stream_requests:
                 self._request_queue.put_nowait(request)
 
@@ -390,8 +464,10 @@ class StreamManager:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Getting tensor {request.tensor_id}")
 
-        # Flush any pending execute_aten batch before sync operation
+        # Flush any pending batches before sync operation
         self._flush_batch()
+        self._flush_raw_batch()
+        self._flush_deletes()
 
         future = self._loop.create_future()
         stream_request = service_pb2.StreamRequest(get_tensor=request)
@@ -412,13 +488,58 @@ class StreamManager:
 
         return _with_error_check()
 
+    def submit_get_scalar(self, request: service_pb2.GetScalarRequest) -> asyncio.Future:
+        """
+        Submit a get_scalar request.
+
+        Must be called from the event loop thread.
+
+        Args:
+            request: GetScalarRequest to submit
+
+        Returns:
+            Awaitable that resolves to StreamResponse with scalar value,
+            after checking for deferred errors from prior operations
+        """
+        if self._loop is None:
+            raise RuntimeError("StreamManager not started")
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Getting scalar for tensor {request.tensor_id}")
+
+        # Flush any pending batches before sync operation
+        self._flush_batch()
+        self._flush_raw_batch()
+        self._flush_deletes()
+
+        future = self._loop.create_future()
+        stream_request = service_pb2.StreamRequest(get_scalar=request)
+
+        self._pending.append(
+            PendingRequest(
+                future=future,
+                request_type="get_scalar",
+            )
+        )
+        self._request_queue.put_nowait(stream_request)
+
+        async def _with_error_check():
+            response = await future
+            # FIFO ordering guarantees all prior fire-and-forget errors are recorded
+            self.check_error()
+            return response
+
+        return _with_error_check()
+
     async def close(self) -> None:
         """Gracefully close the stream."""
         if not self._started:
             return
 
-        # Flush any pending batch before closing
+        # Flush any pending batches before closing
         self._flush_batch()
+        self._flush_raw_batch()
+        self._flush_deletes()
 
         self._closing = True
 
