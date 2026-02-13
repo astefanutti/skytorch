@@ -84,10 +84,6 @@ jobs:
           cluster_name: skytorch
           version: v0.30.0
           config: tests/e2e/kind.yaml
-          registry: true
-          registry_name: registry
-          registry_port: 5001
-          registry_enable_delete: true
 
       - name: Print KinD node
         run: |
@@ -106,11 +102,10 @@ jobs:
           kubectl wait --for=condition=Established --timeout=60s crd/contourdeployments.projectcontour.io
           kubectl wait --for=condition=Available=true --timeout=60s deployment -n projectcontour contour-gateway-provisioner
 
-      - name: Build and push SkyTorch operator image
+      - name: Build and load SkyTorch operator image
         run: |
-          IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
-          make build-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
-          make push-operator-image -e IMAGE_BASE="${IMAGE_BASE}"
+          make build-operator-image -e OPERATOR_IMG="skytorch-operator:test"
+          kind load docker-image "skytorch-operator:test" --name skytorch
 
       - name: Build and load SkyTorch server image
         run: |
@@ -121,8 +116,7 @@ jobs:
       - name: Deploy SkyTorch operator
         id: deploy
         run: |
-          IMAGE_BASE=${{ steps.kind.outputs.LOCAL_REGISTRY }}
-          make deploy-operator -e IMAGE_BASE="${IMAGE_BASE}" -e ENV="e2e"
+          make deploy-operator -e OPERATOR_IMG="skytorch-operator:test" -e ENV="e2e"
           kubectl wait --for=condition=Available=true --timeout=60s deployment -n skytorch-system skytorch-operator
           kubectl wait --for=condition=Programmed --timeout=60s gateway -n skytorch-system skytorch-gateway
 
