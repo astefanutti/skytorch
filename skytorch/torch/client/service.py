@@ -220,6 +220,39 @@ class TensorClient:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Copied tensor {src_tensor_id} -> {dst_tensor_id}")
 
+    async def execute_function(
+        self,
+        callable_bytes: bytes,
+        args_bytes: bytes,
+        kwargs_bytes: bytes,
+        callable_source: str = "",
+        callable_name: str = "",
+    ) -> service_pb2.ExecuteFunctionResponse:
+        """
+        Execute a pickled function on the server.
+
+        Args:
+            callable_bytes: cloudpickle'd callable (empty when using source)
+            args_bytes: pickle'd args tuple
+            kwargs_bytes: pickle'd kwargs dict
+            callable_source: function source code from inspect.getsource()
+            callable_name: function name (fn.__name__)
+
+        Returns:
+            ExecuteFunctionResponse with tensor metadata
+
+        Raises:
+            RuntimeError: If execution fails
+        """
+        request = service_pb2.ExecuteFunctionRequest(
+            callable=callable_bytes,
+            args=args_bytes,
+            kwargs=kwargs_bytes,
+            callable_source=callable_source,
+            callable_name=callable_name,
+        )
+        return await self.stub.ExecuteFunction(request, metadata=self.metadata)
+
     async def execute_aten_operation(
         self,
         op_name: str,

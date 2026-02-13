@@ -114,6 +114,17 @@ public:
     }
 };
 
+// Advance the storage ID counter past the given ID to prevent collisions
+// with server-assigned IDs.
+void advance_storage_id_past(storage_id_t id) {
+    auto current = g_next_storage_id.load();
+    while (current <= id) {
+        if (g_next_storage_id.compare_exchange_weak(current, id + 1)) {
+            break;
+        }
+    }
+}
+
 // Global allocator instance
 static Allocator g_allocator;
 

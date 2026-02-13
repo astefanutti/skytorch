@@ -229,13 +229,81 @@ class GetTensorResponse(_message.Message):
     storage_offset: int
     def __init__(self, success: bool = ..., message: _Optional[str] = ..., data: _Optional[bytes] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ...) -> None: ...
 
+class ExecuteFunctionRequest(_message.Message):
+    __slots__ = ("callable", "args", "kwargs", "callable_source", "callable_name")
+    CALLABLE_FIELD_NUMBER: _ClassVar[int]
+    ARGS_FIELD_NUMBER: _ClassVar[int]
+    KWARGS_FIELD_NUMBER: _ClassVar[int]
+    CALLABLE_SOURCE_FIELD_NUMBER: _ClassVar[int]
+    CALLABLE_NAME_FIELD_NUMBER: _ClassVar[int]
+    callable: bytes
+    args: bytes
+    kwargs: bytes
+    callable_source: str
+    callable_name: str
+    def __init__(self, callable: _Optional[bytes] = ..., args: _Optional[bytes] = ..., kwargs: _Optional[bytes] = ..., callable_source: _Optional[str] = ..., callable_name: _Optional[str] = ...) -> None: ...
+
+class RemoteTensorInfo(_message.Message):
+    __slots__ = ("name", "storage_id", "shape", "dtype", "stride", "storage_offset", "storage_nbytes", "device_type", "device_index")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    STORAGE_ID_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
+    STRIDE_FIELD_NUMBER: _ClassVar[int]
+    STORAGE_OFFSET_FIELD_NUMBER: _ClassVar[int]
+    STORAGE_NBYTES_FIELD_NUMBER: _ClassVar[int]
+    DEVICE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    DEVICE_INDEX_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    storage_id: int
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    dtype: str
+    stride: _containers.RepeatedScalarFieldContainer[int]
+    storage_offset: int
+    storage_nbytes: int
+    device_type: str
+    device_index: int
+    def __init__(self, name: _Optional[str] = ..., storage_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., storage_nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., device_index: _Optional[int] = ...) -> None: ...
+
+class ExecuteFunctionResponse(_message.Message):
+    __slots__ = ("success", "error_message", "tensors")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    TENSORS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    error_message: str
+    tensors: _containers.RepeatedCompositeFieldContainer[RemoteTensorInfo]
+    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., tensors: _Optional[_Iterable[_Union[RemoteTensorInfo, _Mapping]]] = ...) -> None: ...
+
+class RegisterTensorsRequest(_message.Message):
+    __slots__ = ("registrations",)
+    REGISTRATIONS_FIELD_NUMBER: _ClassVar[int]
+    registrations: _containers.RepeatedCompositeFieldContainer[TensorRegistration]
+    def __init__(self, registrations: _Optional[_Iterable[_Union[TensorRegistration, _Mapping]]] = ...) -> None: ...
+
+class TensorRegistration(_message.Message):
+    __slots__ = ("storage_id", "tensor_id")
+    STORAGE_ID_FIELD_NUMBER: _ClassVar[int]
+    TENSOR_ID_FIELD_NUMBER: _ClassVar[int]
+    storage_id: int
+    tensor_id: int
+    def __init__(self, storage_id: _Optional[int] = ..., tensor_id: _Optional[int] = ...) -> None: ...
+
+class BatchedExecuteAtenRequest(_message.Message):
+    __slots__ = ("operations",)
+    OPERATIONS_FIELD_NUMBER: _ClassVar[int]
+    operations: _containers.RepeatedCompositeFieldContainer[ExecuteAtenRequest]
+    def __init__(self, operations: _Optional[_Iterable[_Union[ExecuteAtenRequest, _Mapping]]] = ...) -> None: ...
+
 class StreamRequest(_message.Message):
-    __slots__ = ("execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "chunk_number", "total_chunks", "total_bytes")
+    __slots__ = ("execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "register_tensors", "batched_execute_aten", "chunk_number", "total_chunks", "total_bytes")
     EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
     DELETE_TENSORS_FIELD_NUMBER: _ClassVar[int]
     COPY_TENSOR_FIELD_NUMBER: _ClassVar[int]
     UPDATE_TENSOR_FIELD_NUMBER: _ClassVar[int]
     GET_TENSOR_FIELD_NUMBER: _ClassVar[int]
+    REGISTER_TENSORS_FIELD_NUMBER: _ClassVar[int]
+    BATCHED_EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
     CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
     TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
     TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
@@ -244,13 +312,15 @@ class StreamRequest(_message.Message):
     copy_tensor: CopyTensorRequest
     update_tensor: UpdateTensorRequest
     get_tensor: GetTensorRequest
+    register_tensors: RegisterTensorsRequest
+    batched_execute_aten: BatchedExecuteAtenRequest
     chunk_number: int
     total_chunks: int
     total_bytes: int
-    def __init__(self, execute_aten: _Optional[_Union[ExecuteAtenRequest, _Mapping]] = ..., delete_tensors: _Optional[_Union[DeleteTensorsRequest, _Mapping]] = ..., copy_tensor: _Optional[_Union[CopyTensorRequest, _Mapping]] = ..., update_tensor: _Optional[_Union[UpdateTensorRequest, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorRequest, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., total_bytes: _Optional[int] = ...) -> None: ...
+    def __init__(self, execute_aten: _Optional[_Union[ExecuteAtenRequest, _Mapping]] = ..., delete_tensors: _Optional[_Union[DeleteTensorsRequest, _Mapping]] = ..., copy_tensor: _Optional[_Union[CopyTensorRequest, _Mapping]] = ..., update_tensor: _Optional[_Union[UpdateTensorRequest, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorRequest, _Mapping]] = ..., register_tensors: _Optional[_Union[RegisterTensorsRequest, _Mapping]] = ..., batched_execute_aten: _Optional[_Union[BatchedExecuteAtenRequest, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., total_bytes: _Optional[int] = ...) -> None: ...
 
 class StreamResponse(_message.Message):
-    __slots__ = ("success", "error_message", "execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "chunk_number", "total_chunks")
+    __slots__ = ("success", "error_message", "execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "register_tensors", "chunk_number", "total_chunks")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
     EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
@@ -258,6 +328,7 @@ class StreamResponse(_message.Message):
     COPY_TENSOR_FIELD_NUMBER: _ClassVar[int]
     UPDATE_TENSOR_FIELD_NUMBER: _ClassVar[int]
     GET_TENSOR_FIELD_NUMBER: _ClassVar[int]
+    REGISTER_TENSORS_FIELD_NUMBER: _ClassVar[int]
     CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
     TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
     success: bool
@@ -267,6 +338,7 @@ class StreamResponse(_message.Message):
     copy_tensor: TensorResponse
     update_tensor: TensorResponse
     get_tensor: GetTensorResponse
+    register_tensors: TensorResponse
     chunk_number: int
     total_chunks: int
-    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., execute_aten: _Optional[_Union[ExecuteAtenResponse, _Mapping]] = ..., delete_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., copy_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., update_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorResponse, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ...) -> None: ...
+    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., execute_aten: _Optional[_Union[ExecuteAtenResponse, _Mapping]] = ..., delete_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., copy_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., update_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorResponse, _Mapping]] = ..., register_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ...) -> None: ...

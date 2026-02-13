@@ -126,6 +126,15 @@ type ComputeSpec struct {
 	// resources for each of the Compute replicas.
 	// +optional
 	Resources corev1.ResourceList `json:"resources,omitempty"`
+
+	// volumeClaimTemplates is the list of PersistentVolumeClaims for the Compute.
+	// +listType=atomic
+	// +optional
+	VolumeClaimTemplates []corev1.PersistentVolumeClaimTemplate `json:"volumeClaimTemplates,omitempty"`
+
+	// override is the pod template spec override for the Compute.
+	// +optional
+	Override *PodTemplateSpecOverride `json:"override,omitempty"`
 }
 
 // PodTemplateSpecOverride represents the spec overrides for Pod template.

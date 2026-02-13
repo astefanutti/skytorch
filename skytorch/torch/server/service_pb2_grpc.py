@@ -65,6 +65,11 @@ class ServiceStub(object):
                 request_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.StreamRequest.SerializeToString,
                 response_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.StreamResponse.FromString,
                 _registered_method=True)
+        self.ExecuteFunction = channel.unary_unary(
+                '/skytorch.torch.Service/ExecuteFunction',
+                request_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionRequest.SerializeToString,
+                response_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionResponse.FromString,
+                _registered_method=True)
 
 
 class ServiceServicer(object):
@@ -110,6 +115,13 @@ class ServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ExecuteFunction(self, request, context):
+        """Execute a pickled function on the server
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -142,6 +154,11 @@ def add_ServiceServicer_to_server(servicer, server):
                     servicer.StreamOperations,
                     request_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.StreamRequest.FromString,
                     response_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.StreamResponse.SerializeToString,
+            ),
+            'ExecuteFunction': grpc.unary_unary_rpc_method_handler(
+                    servicer.ExecuteFunction,
+                    request_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionRequest.FromString,
+                    response_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -307,6 +324,33 @@ class Service(object):
             '/skytorch.torch.Service/StreamOperations',
             skytorch_dot_torch_dot_server_dot_service__pb2.StreamRequest.SerializeToString,
             skytorch_dot_torch_dot_server_dot_service__pb2.StreamResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ExecuteFunction(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/skytorch.torch.Service/ExecuteFunction',
+            skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionRequest.SerializeToString,
+            skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionResponse.FromString,
             options,
             channel_credentials,
             insecure,
