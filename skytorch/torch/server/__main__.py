@@ -72,9 +72,18 @@ logger.info(f"  Chunk Size: {args.chunk_size} bytes ({args.chunk_size / 1024 / 1
 logger.info(f"  Log Level: {args.log_level}")
 logger.info(f"  Metrics Sources: {', '.join(args.metrics_sources) if args.metrics_sources else 'none'}")
 
+_COMPRESSION_MAP = {
+    "none": grpc.Compression.NoCompression,
+    "deflate": grpc.Compression.Deflate,
+    "gzip": grpc.Compression.Gzip,
+}
+_compression_name = os.environ.get("SKYTORCH_GRPC_COMPRESSION", "none").lower()
+_compression = _COMPRESSION_MAP.get(_compression_name, grpc.Compression.Gzip)
+logger.info(f"  Compression: {_compression_name}")
+
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
-server = grpc.aio.server(compression=grpc.Compression.Gzip)
+server = grpc.aio.server(compression=_compression)
 
 # Initialize metrics sources based on CLI configuration
 metrics_sources = []

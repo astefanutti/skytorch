@@ -79,9 +79,9 @@ class StorageManager:
 
     def __init__(self):
         self._storages: dict[int, StorageInfo] = {}
-        self._tensor_to_storage: WeakValueDictionary[
-            int, torch.UntypedStorage
-        ] = WeakValueDictionary()
+        self._tensor_to_storage: WeakValueDictionary[int, torch.UntypedStorage] = (
+            WeakValueDictionary()
+        )
         self._storage_to_tensors: dict[int, set[int]] = defaultdict(set)
 
     def register_storage(
@@ -137,8 +137,7 @@ class StorageManager:
         compute = info.compute
         if compute is None:
             logger.warning(
-                f"Compute was garbage collected, skipping deletion of tensor(s) "
-                f"{tensor_ids}"
+                f"Compute was garbage collected, skipping deletion of tensor(s) " f"{tensor_ids}"
             )
             return
 
@@ -151,13 +150,9 @@ class StorageManager:
         # loop thread at a point where no lock is held.
         loop = get_event_loop()
         try:
-            loop.call_soon_threadsafe(
-                _delete_tensors_after_gc, compute, tensor_ids
-            )
+            loop.call_soon_threadsafe(_delete_tensors_after_gc, compute, tensor_ids)
         except RuntimeError as e:
-            logger.warning(
-                f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}"
-            )
+            logger.warning(f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}")
 
     def resize_storage(self, storage_id: int, new_nbytes: int) -> None:
         """
@@ -196,6 +191,15 @@ class StorageManager:
         storage_id = get_storage_id(tensor)
         self._tensor_to_storage[tensor_id] = tensor.untyped_storage()
         self._storage_to_tensors[storage_id].add(tensor_id)
+        # Sync to C++ registration set for fast path lookup
+        try:
+            from skytorch.torch.backend import _C
+
+            _C._register_tensor_id(tensor_id)
+            # Also register storage_id → tensor_id mapping for view detection
+            _C._register_storage_tensor_mapping(storage_id, tensor_id)
+        except (ImportError, AttributeError):
+            pass
         return tensor_id
 
     def tensor_ref(self, tensor: torch.Tensor) -> Optional[int]:

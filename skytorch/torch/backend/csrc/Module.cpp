@@ -15,6 +15,7 @@
 #include <mutex>
 
 #include "TensorImpl.h"
+#include "RequestBuilder.h"
 
 namespace py = pybind11;
 
@@ -223,6 +224,27 @@ PYBIND11_MODULE(_C, m) {
     // Cleanup function to avoid GIL issues at shutdown
     m.def("_clear_method_cache", &skytorch::clear_method_cache,
         "Clear the method cache (call before shutdown)");
+
+    // Binary request builder for fast ATen operation serialization
+    m.def("_build_execute_aten_request", &skytorch::build_execute_aten_request,
+        "Build a binary-serialized execute_aten request from Python arguments",
+        py::arg("op_name"),
+        py::arg("args"),
+        py::arg("kwargs"),
+        py::arg("output_tensors"),
+        py::arg("device_index"),
+        py::arg("remote_device_type"),
+        py::arg("remote_device_index"));
+
+    // Tensor ID registration tracking (sync C++ set with Python storage manager)
+    m.def("_register_tensor_id", &skytorch::register_tensor_id,
+        "Register a tensor ID as known to the server");
+    m.def("_unregister_tensor_id", &skytorch::unregister_tensor_id,
+        "Unregister a tensor ID");
+    m.def("_clear_registered_tensor_ids", &skytorch::clear_registered_tensor_ids,
+        "Clear all registered tensor IDs (for testing/reset)");
+    m.def("_register_storage_tensor_mapping", &skytorch::register_storage_tensor_mapping,
+        "Register a storage_id to tensor_id mapping for view detection");
 
     // Register cleanup with atexit
     py::module atexit = py::module::import("atexit");
