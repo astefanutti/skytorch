@@ -28,7 +28,9 @@ c10::intrusive_ptr<c10::StorageImpl> make_storage_impl(
     bool resizable) {
 
     // If no data_ptr provided, call allocator to create storage
-    if (data_ptr.get() == nullptr && size_bytes.as_int_unchecked() > 0) {
+    // Always call the allocator, even for 0-byte (empty) tensors, so that
+    // the DataPtr device is set correctly (otherwise it defaults to CPU).
+    if (data_ptr.get() == nullptr) {
         data_ptr = allocator->allocate(size_bytes.as_int_unchecked());
     }
 

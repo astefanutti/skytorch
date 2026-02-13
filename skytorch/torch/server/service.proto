@@ -15,6 +15,9 @@ service Service {
 
   // Bidirectional streaming for low-latency operations
   rpc StreamOperations(stream StreamRequest) returns (stream StreamResponse);
+
+  // Execute a pickled function on the server
+  rpc ExecuteFunction(ExecuteFunctionRequest) returns (ExecuteFunctionResponse);
 }
 
 // Request to delete tensors by ID
@@ -168,6 +171,51 @@ message GetTensorResponse {
   int64 storage_offset = 7;
 }
 
+// Request to execute a pickled function on the server
+message ExecuteFunctionRequest {
+  bytes callable = 1;           // cloudpickle'd callable (fallback for lambdas)
+  bytes args = 2;               // pickle'd args tuple
+  bytes kwargs = 3;             // pickle'd kwargs dict
+  string callable_source = 4;   // function source code from inspect.getsource()
+  string callable_name = 5;     // function name (fn.__name__)
+}
+
+// Information about a tensor created on the server
+message RemoteTensorInfo {
+  string name = 1;
+  int64 storage_id = 2;
+  repeated int64 shape = 3;
+  string dtype = 4;
+  repeated int64 stride = 5;
+  int64 storage_offset = 6;
+  int64 storage_nbytes = 7;
+  string device_type = 8;
+  int32 device_index = 9;
+}
+
+// Response from executing a function on the server
+message ExecuteFunctionResponse {
+  bool success = 1;
+  string error_message = 2;
+  repeated RemoteTensorInfo tensors = 3;
+}
+
+// Request to register tensor ID mappings for server-created tensors
+message RegisterTensorsRequest {
+  repeated TensorRegistration registrations = 1;
+}
+
+// Maps a server-assigned storage_id to the client-computed tensor_id
+message TensorRegistration {
+  int64 storage_id = 1;
+  uint64 tensor_id = 2;
+}
+
+// Batch of execute_aten requests for reduced per-operation overhead
+message BatchedExecuteAtenRequest {
+  repeated ExecuteAtenRequest operations = 1;
+}
+
 // Request wrapper for bidirectional streaming
 // All operations go through this single channel to ensure ordering
 message StreamRequest {
@@ -177,6 +225,8 @@ message StreamRequest {
     CopyTensorRequest copy_tensor = 3;
     UpdateTensorRequest update_tensor = 4;
     GetTensorRequest get_tensor = 5;
+    RegisterTensorsRequest register_tensors = 6;
+    BatchedExecuteAtenRequest batched_execute_aten = 7;
   }
 
   // Chunking support for large payloads
@@ -196,6 +246,7 @@ message StreamResponse {
     TensorResponse copy_tensor = 5;
     TensorResponse update_tensor = 6;
     GetTensorResponse get_tensor = 7;
+    TensorResponse register_tensors = 8;
   }
 
   // Chunking support for large responses (get_tensor)

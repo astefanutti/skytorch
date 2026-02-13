@@ -161,6 +161,14 @@
               "default": ""
             }
           },
+          "override": {
+            "description": "override is the pod template spec override for the Compute.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/compute.v1alpha1.PodTemplateSpecOverride"
+              }
+            ]
+          },
           "resources": {
             "description": "resources for each of the Compute replicas.",
             "type": "object",
@@ -171,6 +179,19 @@
           "suspend": {
             "description": "suspend defines whether to suspend the running Compute. Defaults to false.",
             "type": "boolean"
+          },
+          "volumeClaimTemplates": {
+            "description": "volumeClaimTemplates is the list of PersistentVolumeClaims for the Compute.",
+            "type": "array",
+            "items": {
+              "default": {},
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.api.core.v1.PersistentVolumeClaimTemplate"
+                }
+              ]
+            },
+            "x-kubernetes-list-type": "atomic"
           }
         }
       },

@@ -5,16 +5,20 @@ This module implements the gRPC service for tensor management and
 ATen operation execution.
 """
 
+import asyncio
 import functools
 import logging
+import pickle
+import sys
 from typing import AsyncIterator
 
 try:
+    import cloudpickle
     import grpc
     import torch
 except ImportError as e:
     raise ImportError(
-        f"Required dependency not found: {e}. Install with: pip install grpcio torch"
+        f"Required dependency not found: {e}. Install with: pip install grpcio torch cloudpickle"
     )
 
 try:
@@ -53,10 +57,14 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         self.chunk_size = chunk_size
         self.tensor_manager = TensorManager()
+        # Pending tensors from ExecuteFunction, keyed by server-assigned storage_id
+        self._pending_tensors: dict[int, torch.Tensor] = {}
+        # Counter for server-assigned storage IDs (starts above client range)
+        self._next_remote_storage_id = 2**32
+        # Deferred error from fire-and-forget operations, reported on next get_tensor
+        self._deferred_error: str | None = None
 
-    def _ensure_tensor_exists(
-        self, metadata: service_pb2.TensorMetadata
-    ) -> torch.Tensor:
+    def _ensure_tensor_exists(self, metadata: service_pb2.TensorMetadata) -> torch.Tensor:
         """
         Create tensor from metadata if it doesn't exist, or return existing.
 
@@ -201,7 +209,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         try:
             # Stream the tensor data
-            tensor_for_serialization = tensor if tensor.device.type == 'cpu' else tensor.cpu()
+            tensor_for_serialization = tensor if tensor.device.type == "cpu" else tensor.cpu()
             for chunk in serialize_tensor_to_chunks(
                 tensor_id, tensor_for_serialization.detach(), self.chunk_size
             ):
@@ -302,6 +310,117 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             success=True,
             message=f"Deleted {deleted} tensors",
         )
+
+    async def ExecuteFunction(
+        self,
+        request: service_pb2.ExecuteFunctionRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> service_pb2.ExecuteFunctionResponse:
+        """
+        Execute a pickled function on the server and return tensor metadata.
+
+        The function is deserialized via cloudpickle, executed, and any tensors
+        in the result are assigned server-side storage IDs. The actual tensor data
+        stays on the GPU; only metadata is returned to the client.
+
+        The entire operation runs in a thread to keep the asyncio event loop free
+        for health checks during long-running functions (e.g. model downloads).
+
+        Args:
+            request: ExecuteFunctionRequest with pickled callable, args, kwargs
+            context: gRPC context
+
+        Returns:
+            ExecuteFunctionResponse with tensor metadata
+        """
+        if request.callable_source:
+            logger.info(
+                f"ExecuteFunction: received request "
+                f"(source={len(request.callable_source)}B, name={request.callable_name!r}, "
+                f"args={len(request.args)}B, kwargs={len(request.kwargs)}B)"
+            )
+        else:
+            logger.info(
+                f"ExecuteFunction: received request "
+                f"(callable={len(request.callable)}B, "
+                f"args={len(request.args)}B, kwargs={len(request.kwargs)}B)"
+            )
+        try:
+            return await asyncio.to_thread(self._execute_function_sync, request)
+        except Exception as e:
+            logger.error(f"Error executing function: {e}")
+            return service_pb2.ExecuteFunctionResponse(success=False, error_message=str(e))
+
+    def _execute_function_sync(
+        self,
+        request: service_pb2.ExecuteFunctionRequest,
+    ) -> service_pb2.ExecuteFunctionResponse:
+        if request.callable_source:
+            namespace = {}
+            exec(request.callable_source, namespace)
+            fn = namespace[request.callable_name]
+        else:
+            fn = cloudpickle.loads(request.callable)
+        args = pickle.loads(request.args) if request.args else ()
+        kwargs = pickle.loads(request.kwargs) if request.kwargs else {}
+
+        logger.info(f"ExecuteFunction: calling {fn!r}")
+        try:
+            result = fn(*args, **kwargs)
+        except Exception:
+            sys.stdout.flush()
+            raise
+        sys.stdout.flush()
+
+        # Extract tensors from result
+        if result is None:
+            tensors = {}
+        elif isinstance(result, torch.nn.Module):
+            tensors = result.state_dict()
+            # Include non-persistent buffers (e.g., inv_freq in rotary embeddings)
+            for name, buffer in result.named_buffers():
+                if name not in tensors and buffer is not None:
+                    tensors[name] = buffer
+        elif isinstance(result, dict):
+            tensors = {k: v for k, v in result.items() if isinstance(v, torch.Tensor)}
+        elif isinstance(result, torch.Tensor):
+            tensors = {"tensor": result}
+        else:
+            return service_pb2.ExecuteFunctionResponse(
+                success=False,
+                error_message=f"Unsupported result type: {type(result).__name__}. "
+                "Expected nn.Module, dict of tensors, tensor, or None.",
+            )
+
+        # Assign storage_ids, detect shared storage
+        storage_map: dict[int, int] = {}  # GPU data_ptr → storage_id
+        tensor_infos = []
+        for name, tensor in tensors.items():
+            data_ptr = tensor.untyped_storage().data_ptr()
+            if data_ptr not in storage_map:
+                storage_map[data_ptr] = self._next_remote_storage_id
+                self._next_remote_storage_id += 1
+            sid = storage_map[data_ptr]
+            self._pending_tensors[sid] = tensor
+            tensor_infos.append(
+                service_pb2.RemoteTensorInfo(
+                    name=name,
+                    storage_id=sid,
+                    shape=list(tensor.shape),
+                    dtype=str(tensor.dtype),
+                    stride=list(tensor.stride()),
+                    storage_offset=tensor.storage_offset(),
+                    storage_nbytes=tensor.untyped_storage().nbytes(),
+                    device_type=tensor.device.type,
+                    device_index=tensor.device.index or 0,
+                )
+            )
+
+        logger.info(
+            f"ExecuteFunction: {len(tensors)} tensors, " f"{len(storage_map)} unique storages"
+        )
+
+        return service_pb2.ExecuteFunctionResponse(success=True, tensors=tensor_infos)
 
     async def ExecuteAtenOperation(
         self,
@@ -573,6 +692,12 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             logger.error(f"Error getting tensor via stream: {e}")
             return service_pb2.GetTensorResponse(success=False, message=str(e))
 
+    # Request types that are fire-and-forget (no response sent to client)
+    _FIRE_AND_FORGET_TYPES = frozenset({
+        "execute_aten", "delete_tensors", "copy_tensor",
+        "update_tensor", "register_tensors", "batched_execute_aten",
+    })
+
     async def StreamOperations(
         self,
         request_iterator: AsyncIterator[service_pb2.StreamRequest],
@@ -581,20 +706,19 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         Bidirectional streaming handler for low-latency operations.
 
-        Processes StreamRequest messages and yields StreamResponse messages
-        in FIFO order. All operations go through this single channel to
-        ensure proper sequencing.
+        Fire-and-forget operations (execute_aten, delete_tensors, copy_tensor,
+        update_tensor, register_tensors) are processed without yielding a
+        response. Errors from these operations are deferred and reported on
+        the next get_tensor response.
 
-        Supports chunked requests for large payloads (>1MB). Intermediate
-        chunks are buffered; only the final chunk triggers processing and
-        generates a response.
+        Only get_tensor operations yield a response.
 
         Args:
             request_iterator: Async iterator of StreamRequest messages
             context: gRPC context
 
         Yields:
-            StreamResponse messages with operation results (in request order)
+            StreamResponse messages for get_tensor operations only
         """
         # Per-stream state for the current chunked request being assembled
         # Only one chunked request can be in-flight at a time per stream (FIFO)
@@ -604,57 +728,89 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             total_chunks = request.total_chunks
 
             if total_chunks <= 1:
-                # Single message (existing behavior)
-                response = await self._handle_single_request(request, context)
-                yield response
-            else:
-                # Chunked request
-                response = await self._handle_chunked_request(request, context, current_chunk_state)
-                if response is not None:
+                # Single message
+                request_type = request.WhichOneof("request")
+
+                if request_type in self._FIRE_AND_FORGET_TYPES:
+                    # Fire-and-forget: process but don't yield a response
+                    await self._handle_fire_and_forget(request, context)
+                else:
+                    # Sync operation (get_tensor): yield response
+                    response = await self._handle_single_request(request, context)
                     yield response
+            else:
+                # Chunked request (always fire-and-forget update_tensor)
+                await self._handle_chunked_request(request, context, current_chunk_state)
+
+    async def _handle_fire_and_forget(
+        self,
+        request: service_pb2.StreamRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> None:
+        """Handle a fire-and-forget request. Errors are deferred."""
+        try:
+            request_type = request.WhichOneof("request")
+
+            if request_type == "execute_aten":
+                result = await self.ExecuteAtenOperation(request.execute_aten, context)
+                if not result.success:
+                    self._deferred_error = result.message
+
+            elif request_type == "delete_tensors":
+                result = await self.DeleteTensors(request.delete_tensors, context)
+                if not result.success:
+                    self._deferred_error = result.message
+
+            elif request_type == "copy_tensor":
+                result = await self.CopyTensor(request.copy_tensor, context)
+                if not result.success:
+                    self._deferred_error = result.message
+
+            elif request_type == "update_tensor":
+                result = await self._handle_update_tensor(request.update_tensor)
+                if not result.success:
+                    self._deferred_error = result.message
+
+            elif request_type == "register_tensors":
+                for reg in request.register_tensors.registrations:
+                    tensor = self._pending_tensors.pop(reg.storage_id, None)
+                    if tensor is not None:
+                        self.tensor_manager.register(reg.tensor_id, tensor)
+
+            elif request_type == "batched_execute_aten":
+                for op in request.batched_execute_aten.operations:
+                    result = await self.ExecuteAtenOperation(op, context)
+                    if not result.success:
+                        self._deferred_error = result.message
+                        break
+
+        except Exception as e:
+            logger.error(f"Error in fire-and-forget operation: {e}")
+            self._deferred_error = str(e)
 
     async def _handle_single_request(
         self,
         request: service_pb2.StreamRequest,
         context: grpc.aio.ServicerContext,
     ) -> service_pb2.StreamResponse:
-        """Handle a single (non-chunked) stream request."""
+        """Handle a single sync stream request (get_tensor).
+
+        Checks for deferred errors from prior fire-and-forget operations
+        and reports them instead of the normal response.
+        """
         response = service_pb2.StreamResponse()
+
+        # Report deferred error from fire-and-forget operations
+        if self._deferred_error is not None:
+            response.success = False
+            response.error_message = self._deferred_error
+            self._deferred_error = None
+            return response
 
         try:
             request_type = request.WhichOneof("request")
 
-            if request_type == "execute_aten":
-                result = await self.ExecuteAtenOperation(
-                    request.execute_aten, context
-                )
-                response.success = result.success
-                if not result.success:
-                    response.error_message = result.message
-                response.execute_aten.CopyFrom(result)
-
-            elif request_type == "delete_tensors":
-                result = await self.DeleteTensors(request.delete_tensors, context)
-                response.success = result.success
-                if not result.success:
-                    response.error_message = result.message
-                response.delete_tensors.CopyFrom(result)
-
-            elif request_type == "copy_tensor":
-                result = await self.CopyTensor(request.copy_tensor, context)
-                response.success = result.success
-                if not result.success:
-                    response.error_message = result.message
-                response.copy_tensor.CopyFrom(result)
-
-            elif request_type == "update_tensor":
-                result = await self._handle_update_tensor(request.update_tensor)
-                response.success = result.success
-                if not result.success:
-                    response.error_message = result.message
-                response.update_tensor.CopyFrom(result)
-
-            elif request_type == "get_tensor":
+            if request_type == "get_tensor":
                 result = await self._handle_get_tensor(request.get_tensor)
                 response.success = result.success
                 if not result.success:
@@ -677,12 +833,12 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         request: service_pb2.StreamRequest,
         context: grpc.aio.ServicerContext,
         chunk_state: list,
-    ) -> service_pb2.StreamResponse | None:
+    ) -> None:
         """
-        Handle a chunked stream request.
+        Handle a chunked stream request (fire-and-forget).
 
-        Buffers intermediate chunks and returns None. When the final chunk
-        is received, processes the assembled request and returns the response.
+        Buffers intermediate chunks. When the final chunk is received,
+        processes the assembled request. Errors are deferred.
 
         Only one chunked request can be in-flight at a time per stream (FIFO).
 
@@ -690,9 +846,6 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             request: StreamRequest with chunking metadata
             context: gRPC context
             chunk_state: Mutable list holding [buffer, first_request, chunk_size] or [None]
-
-        Returns:
-            StreamResponse for final chunk, None for intermediate chunks
         """
         chunk_number = request.chunk_number
         total_chunks = request.total_chunks
@@ -705,25 +858,25 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             chunk_state[0] = (buffer, request, chunk_size)
 
         if chunk_state[0] is None:
-            return service_pb2.StreamResponse(
-                success=False,
-                error_message="Missing first chunk for chunked request"
-            )
+            self._deferred_error = "Missing first chunk for chunked request"
+            return
 
         buffer, first_request, chunk_size = chunk_state[0]
 
         # Write chunk to buffer at correct offset
         start = chunk_number * chunk_size
-        buffer[start:start + len(update_req.data)] = update_req.data
+        buffer[start : start + len(update_req.data)] = update_req.data
 
         if chunk_number < total_chunks - 1:
-            # Intermediate chunk: buffer and continue (no response)
-            return None
+            # Intermediate chunk: buffer and continue
+            return
 
         # Last chunk: clear state and process complete request
         chunk_state[0] = None
 
-        return await self._process_assembled_update_tensor(first_request, buffer, context)
+        response = await self._process_assembled_update_tensor(first_request, buffer, context)
+        if not response.success:
+            self._deferred_error = response.error_message
 
     async def _process_assembled_update_tensor(
         self,

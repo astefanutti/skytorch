@@ -41,6 +41,7 @@ STREAM_CHUNK_SIZE = 1024 * 1024
 @dataclass
 class PendingRequest:
     """Tracks a pending request awaiting response."""
+
     future: Optional[asyncio.Future]
     request_type: str
 
@@ -90,6 +91,10 @@ class StreamManager:
         # Deferred error from fire-and-forget operations
         self._last_error: Optional[Exception] = None
 
+        # Batch buffer for execute_aten operations
+        self._batch_buffer: list[service_pb2.ExecuteAtenRequest] = []
+        self._flush_scheduled: bool = False
+
         # Shutdown signaling
         self._shutdown_event: Optional[asyncio.Event] = None
 
@@ -114,14 +119,48 @@ class StreamManager:
 
     def _enqueue(self, pending, stream_request):
         """Enqueue a single request. Must run on the event loop thread."""
-        self._pending.append(pending)
+        if pending is not None:
+            self._pending.append(pending)
         self._request_queue.put_nowait(stream_request)
 
     def _enqueue_batch(self, pending, stream_requests):
         """Enqueue multiple requests with one pending entry. Must run on the event loop thread."""
         for request in stream_requests:
             self._request_queue.put_nowait(request)
-        self._pending.append(pending)
+        if pending is not None:
+            self._pending.append(pending)
+
+    def _enqueue_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
+        """Buffer an execute_aten request for batching. Must run on the event loop thread."""
+        self._batch_buffer.append(request)
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            self._loop.call_soon(self._flush_batch)
+
+    def _flush_batch(self) -> None:
+        """Flush buffered execute_aten requests as a batch. Must run on the event loop thread."""
+        self._flush_scheduled = False
+        if not self._batch_buffer:
+            return
+
+        if len(self._batch_buffer) == 1:
+            # Single request: send as regular execute_aten to avoid wrapping overhead
+            stream_request = service_pb2.StreamRequest(
+                execute_aten=self._batch_buffer[0]
+            )
+        else:
+            # Multiple requests: send as batch
+            batch = service_pb2.BatchedExecuteAtenRequest(
+                operations=self._batch_buffer
+            )
+            stream_request = service_pb2.StreamRequest(
+                batched_execute_aten=batch
+            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Flushing batch of {len(self._batch_buffer)} execute_aten ops")
+
+        self._batch_buffer = []
+        self._request_queue.put_nowait(stream_request)
 
     async def _sender_loop(self) -> None:
         """Send requests from queue to the stream."""
@@ -170,22 +209,16 @@ class StreamManager:
                     continue
                 pending = self._pending.popleft()
 
-                if pending.future is None:
-                    # Fire-and-forget: log errors but don't raise
-                    if not response.success:
-                        logger.error(
-                            f"Fire-and-forget {pending.request_type} failed: "
-                            f"{response.error_message}"
-                        )
-                        self._last_error = RuntimeError(response.error_message)
-                elif response.success:
-                    pending.future.set_result(response)
-                else:
+                # Check for deferred error from fire-and-forget operations
+                if response.error_message and not response.success:
                     error = RuntimeError(
                         f"Stream operation failed: {response.error_message}"
                     )
-                    pending.future.set_exception(error)
+                    if pending.future is not None:
+                        pending.future.set_exception(error)
                     self.record_error(error)
+                elif pending.future is not None:
+                    pending.future.set_result(response)
 
         except grpc.RpcError as e:
             if not self._closing:
@@ -212,69 +245,69 @@ class StreamManager:
         """Fail all pending requests with an error."""
         for pending in self._pending:
             if pending.future is not None and not pending.future.done():
-                pending.future.set_exception(
-                    RuntimeError(f"Stream error: {error_message}")
-                )
+                pending.future.set_exception(RuntimeError(f"Stream error: {error_message}"))
         self._pending.clear()
 
-    def _submit_request(
-        self, stream_request: service_pb2.StreamRequest, request_type: str
-    ) -> None:
+    def _enqueue_with_flush(self, stream_request):
+        """Flush any pending batch, then enqueue a request. Must run on the event loop thread."""
+        self._flush_batch()
+        self._request_queue.put_nowait(stream_request)
+
+    def _submit_request(self, stream_request: service_pb2.StreamRequest, request_type: str) -> None:
         """
         Submit a fire-and-forget request to the stream (callable from any thread).
 
-        No future is created — the request is enqueued and the response is
-        discarded (errors are logged by the receiver loop).
+        Flushes any pending execute_aten batch first to maintain ordering,
+        then enqueues the request. No future is created — the server does
+        not send responses for fire-and-forget operations.
 
         Args:
             stream_request: StreamRequest to submit
             request_type: Type of request for tracking
         """
-        pending = PendingRequest(future=None, request_type=request_type)
-        self._loop.call_soon_threadsafe(self._enqueue, pending, stream_request)
+        self._loop.call_soon_threadsafe(self._enqueue_with_flush, stream_request)
 
-    def submit_execute_aten(
-        self, request: service_pb2.ExecuteAtenRequest
-    ) -> None:
-        """Submit a fire-and-forget execute_aten request (callable from any thread)."""
+    def submit_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
+        """Submit a fire-and-forget execute_aten request (callable from any thread).
+
+        Requests are buffered and flushed as a batch when the event loop
+        processes pending callbacks, reducing per-operation gRPC overhead.
+        """
         if logger.isEnabledFor(logging.DEBUG):
             input_tensor_ids = [
-                arg.tensor.tensor_id
-                for arg in request.args
-                if arg.WhichOneof("value") == "tensor"
+                arg.tensor.tensor_id for arg in request.args if arg.WhichOneof("value") == "tensor"
             ]
             output_tensor_ids = [ref.tensor_id for ref in request.outputs]
             logger.debug(
                 f"Executing {request.op_name} | "
                 f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
             )
-        stream_request = service_pb2.StreamRequest(execute_aten=request)
-        self._submit_request(stream_request, "execute_aten")
+        self._loop.call_soon_threadsafe(self._enqueue_execute_aten, request)
 
-    def submit_copy_tensor(
-        self, request: service_pb2.CopyTensorRequest
-    ) -> None:
+    def submit_copy_tensor(self, request: service_pb2.CopyTensorRequest) -> None:
         """Submit a fire-and-forget copy_tensor request (callable from any thread)."""
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                f"Copying tensor {request.src_tensor_id} "
-                f"to tensor {request.dst_tensor_id}"
+                f"Copying tensor {request.src_tensor_id} " f"to tensor {request.dst_tensor_id}"
             )
         stream_request = service_pb2.StreamRequest(copy_tensor=request)
         self._submit_request(stream_request, "copy_tensor")
 
-    def submit_delete_tensors(
-        self, request: service_pb2.DeleteTensorsRequest
-    ) -> None:
+    def submit_register_tensors(self, request: service_pb2.RegisterTensorsRequest) -> None:
+        """Submit a fire-and-forget register_tensors request (callable from any thread)."""
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Registering {len(request.registrations)} tensors")
+        stream_request = service_pb2.StreamRequest(register_tensors=request)
+        self._submit_request(stream_request, "register_tensors")
+
+    def submit_delete_tensors(self, request: service_pb2.DeleteTensorsRequest) -> None:
         """Submit a fire-and-forget delete_tensors request (callable from any thread)."""
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Deleting tensors {list(request.tensor_ids)}")
         stream_request = service_pb2.StreamRequest(delete_tensors=request)
         self._submit_request(stream_request, "delete_tensors")
 
-    def submit_update_tensor(
-        self, request: service_pb2.UpdateTensorRequest
-    ) -> None:
+    def submit_update_tensor(self, request: service_pb2.UpdateTensorRequest) -> None:
         """Submit a fire-and-forget update_tensor request (callable from any thread)."""
         data_size = len(request.data)
 
@@ -296,9 +329,7 @@ class StreamManager:
         else:
             self._submit_chunked_update_tensor(request)
 
-    def _submit_chunked_update_tensor(
-        self, request: service_pb2.UpdateTensorRequest
-    ) -> None:
+    def _submit_chunked_update_tensor(self, request: service_pb2.UpdateTensorRequest) -> None:
         """Submit a large update_tensor request as multiple fire-and-forget chunks."""
         data = request.data
         total_size = len(data)
@@ -324,21 +355,23 @@ class StreamManager:
                 if request.HasField("metadata"):
                     chunk_request.metadata.CopyFrom(request.metadata)
 
-            stream_requests.append(service_pb2.StreamRequest(
-                update_tensor=chunk_request,
-                chunk_number=chunk_number,
-                total_chunks=total_chunks,
-                total_bytes=total_size if chunk_number == 0 else 0,
-            ))
+            stream_requests.append(
+                service_pb2.StreamRequest(
+                    update_tensor=chunk_request,
+                    chunk_number=chunk_number,
+                    total_chunks=total_chunks,
+                    total_bytes=total_size if chunk_number == 0 else 0,
+                )
+            )
 
-        pending = PendingRequest(future=None, request_type="update_tensor")
-        self._loop.call_soon_threadsafe(
-            self._enqueue_batch, pending, stream_requests
-        )
+        def _flush_and_enqueue_batch():
+            self._flush_batch()
+            for request in stream_requests:
+                self._request_queue.put_nowait(request)
 
-    def submit_get_tensor(
-        self, request: service_pb2.GetTensorRequest
-    ) -> asyncio.Future:
+        self._loop.call_soon_threadsafe(_flush_and_enqueue_batch)
+
+    def submit_get_tensor(self, request: service_pb2.GetTensorRequest) -> asyncio.Future:
         """
         Submit a get_tensor request.
 
@@ -357,13 +390,18 @@ class StreamManager:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Getting tensor {request.tensor_id}")
 
+        # Flush any pending execute_aten batch before sync operation
+        self._flush_batch()
+
         future = self._loop.create_future()
         stream_request = service_pb2.StreamRequest(get_tensor=request)
 
-        self._pending.append(PendingRequest(
-            future=future,
-            request_type="get_tensor",
-        ))
+        self._pending.append(
+            PendingRequest(
+                future=future,
+                request_type="get_tensor",
+            )
+        )
         self._request_queue.put_nowait(stream_request)
 
         async def _with_error_check():
@@ -378,6 +416,9 @@ class StreamManager:
         """Gracefully close the stream."""
         if not self._started:
             return
+
+        # Flush any pending batch before closing
+        self._flush_batch()
 
         self._closing = True
 

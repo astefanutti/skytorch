@@ -190,6 +190,16 @@ py::object get_metadata_hash(py::object tensor_obj) {
     }
 }
 
+// Forward declaration for create_remote_tensor (defined in RemoteTensor.cpp)
+torch::Tensor create_remote_tensor(
+    int64_t storage_id,
+    std::vector<int64_t> shape,
+    std::string dtype_str,
+    std::vector<int64_t> stride,
+    int64_t storage_offset,
+    int64_t nbytes,
+    int64_t device_index);
+
 }  // namespace skytorch
 
 // Python module definition
@@ -205,6 +215,10 @@ PYBIND11_MODULE(_C, m) {
         "Get the default generator for a SkyTorch device");
     m.def("_get_metadata_hash", &skytorch::get_metadata_hash,
         "Get the metadata hash for a SkyTorch tensor");
+
+    // Remote tensor creation
+    m.def("_create_remote_tensor", &skytorch::create_remote_tensor,
+        "Create a sky tensor with a server-assigned storage ID");
 
     // Cleanup function to avoid GIL issues at shutdown
     m.def("_clear_method_cache", &skytorch::clear_method_cache,

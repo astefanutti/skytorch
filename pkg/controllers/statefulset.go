@@ -17,6 +17,7 @@ limitations under the License.
 package controllers
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	appsv1apply "k8s.io/client-go/applyconfigurations/apps/v1"
@@ -129,9 +130,105 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 		container.WithArgs(compute.Spec.Args...)
 	}
 
+	// Apply container overrides (volume mounts, env) from Override spec
+	if compute.Spec.Override != nil {
+		for _, co := range compute.Spec.Override.Containers {
+			if co.Name == "server" {
+				// Merge volume mounts
+				for _, vm := range co.VolumeMounts {
+					volumeMount := corev1apply.VolumeMount().
+						WithName(vm.Name).
+						WithMountPath(vm.MountPath)
+					if vm.SubPath != "" {
+						volumeMount.WithSubPath(vm.SubPath)
+					}
+					if vm.ReadOnly {
+						volumeMount.WithReadOnly(vm.ReadOnly)
+					}
+					container.WithVolumeMounts(volumeMount)
+				}
+				// Merge env vars
+				for _, e := range co.Env {
+					envVar := corev1apply.EnvVar().WithName(e.Name)
+					if e.Value != "" {
+						envVar.WithValue(e.Value)
+					}
+					env = append(env, envVar)
+					container.WithEnv(env...)
+				}
+			}
+		}
+	}
+
 	replicas := int32(1)
 	if ptr.Deref(compute.Spec.Suspend, false) {
 		replicas = 0
+	}
+
+	// Build pod spec
+	podSpec := corev1apply.PodSpec().
+		WithContainers(container)
+
+	// Add volumes from Override spec
+	if compute.Spec.Override != nil {
+		for _, v := range compute.Spec.Override.Volumes {
+			volume := corev1apply.Volume().WithName(v.Name)
+			if v.PersistentVolumeClaim != nil {
+				volume.WithPersistentVolumeClaim(
+					corev1apply.PersistentVolumeClaimVolumeSource().
+						WithClaimName(v.PersistentVolumeClaim.ClaimName).
+						WithReadOnly(v.PersistentVolumeClaim.ReadOnly),
+				)
+			}
+			if v.EmptyDir != nil {
+				volume.WithEmptyDir(corev1apply.EmptyDirVolumeSource())
+			}
+			podSpec.WithVolumes(volume)
+		}
+	}
+
+	// Build StatefulSet spec
+	statefulSetSpec := appsv1apply.StatefulSetSpec().
+		WithPodManagementPolicy(appsv1.ParallelPodManagement).
+		WithReplicas(replicas).
+		WithServiceName(compute.Name).
+		WithSelector(
+			metav1apply.LabelSelector().
+				WithMatchLabels(map[string]string{
+					"app.kubernetes.io/name":     "skytorch-server",
+					"app.kubernetes.io/instance": compute.Name,
+				}),
+		).
+		WithTemplate(
+			corev1apply.PodTemplateSpec().
+				WithLabels(labels).
+				WithAnnotations(annotations).
+				WithSpec(podSpec),
+		)
+
+	// Add VolumeClaimTemplates
+	for _, pvc := range compute.Spec.VolumeClaimTemplates {
+		pvcApply := corev1apply.PersistentVolumeClaim(pvc.Name, compute.Namespace).
+			WithSpec(
+				corev1apply.PersistentVolumeClaimSpec().
+					WithAccessModes(pvc.Spec.AccessModes...).
+					WithResources(
+						corev1apply.VolumeResourceRequirements().
+							WithRequests(pvc.Spec.Resources.Requests),
+					),
+			)
+		if pvc.Spec.StorageClassName != nil {
+			pvcApply.WithSpec(
+				corev1apply.PersistentVolumeClaimSpec().
+					WithAccessModes(pvc.Spec.AccessModes...).
+					WithStorageClassName(*pvc.Spec.StorageClassName).
+					WithResources(
+						corev1apply.VolumeResourceRequirements().
+							WithRequests(pvc.Spec.Resources.Requests),
+					),
+			)
+		}
+		statefulSetSpec.WithVolumeClaimTemplates(pvcApply)
 	}
 
 	// Build StatefulSet apply configuration
@@ -147,27 +244,7 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 				WithController(true).
 				WithBlockOwnerDeletion(true),
 		).
-		WithSpec(
-			appsv1apply.StatefulSetSpec().
-				WithReplicas(replicas).
-				WithServiceName(compute.Name).
-				WithSelector(
-					metav1apply.LabelSelector().
-						WithMatchLabels(map[string]string{
-							"app.kubernetes.io/name":     "skytorch-server",
-							"app.kubernetes.io/instance": compute.Name,
-						}),
-				).
-				WithTemplate(
-					corev1apply.PodTemplateSpec().
-						WithLabels(labels).
-						WithAnnotations(annotations).
-						WithSpec(
-							corev1apply.PodSpec().
-								WithContainers(container),
-						),
-				),
-		)
+		WithSpec(statefulSetSpec)
 
 	return statefulSet
 }

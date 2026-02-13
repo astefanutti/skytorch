@@ -24,14 +24,16 @@ import (
 // ComputeSpecApplyConfiguration represents a declarative configuration of the ComputeSpec type for use
 // with apply.
 type ComputeSpecApplyConfiguration struct {
-	Labels      map[string]string             `json:"labels,omitempty"`
-	Annotations map[string]string             `json:"annotations,omitempty"`
-	Suspend     *bool                         `json:"suspend,omitempty"`
-	Image       *string                       `json:"image,omitempty"`
-	Command     []string                      `json:"command,omitempty"`
-	Args        []string                      `json:"args,omitempty"`
-	Env         []v1.EnvVarApplyConfiguration `json:"env,omitempty"`
-	Resources   *corev1.ResourceList          `json:"resources,omitempty"`
+	Labels               map[string]string                          `json:"labels,omitempty"`
+	Annotations          map[string]string                          `json:"annotations,omitempty"`
+	Suspend              *bool                                      `json:"suspend,omitempty"`
+	Image                *string                                    `json:"image,omitempty"`
+	Command              []string                                   `json:"command,omitempty"`
+	Args                 []string                                   `json:"args,omitempty"`
+	Env                  []v1.EnvVarApplyConfiguration              `json:"env,omitempty"`
+	Resources            *corev1.ResourceList                       `json:"resources,omitempty"`
+	VolumeClaimTemplates []corev1.PersistentVolumeClaimTemplate     `json:"volumeClaimTemplates,omitempty"`
+	Override             *PodTemplateSpecOverrideApplyConfiguration `json:"override,omitempty"`
 }
 
 // ComputeSpecApplyConfiguration constructs a declarative configuration of the ComputeSpec type for use with
@@ -122,5 +124,23 @@ func (b *ComputeSpecApplyConfiguration) WithEnv(values ...*v1.EnvVarApplyConfigu
 // If called multiple times, the Resources field is set to the value of the last call.
 func (b *ComputeSpecApplyConfiguration) WithResources(value corev1.ResourceList) *ComputeSpecApplyConfiguration {
 	b.Resources = &value
+	return b
+}
+
+// WithVolumeClaimTemplates adds the given value to the VolumeClaimTemplates field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the VolumeClaimTemplates field.
+func (b *ComputeSpecApplyConfiguration) WithVolumeClaimTemplates(values ...corev1.PersistentVolumeClaimTemplate) *ComputeSpecApplyConfiguration {
+	for i := range values {
+		b.VolumeClaimTemplates = append(b.VolumeClaimTemplates, values[i])
+	}
+	return b
+}
+
+// WithOverride sets the Override field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Override field is set to the value of the last call.
+func (b *ComputeSpecApplyConfiguration) WithOverride(value *PodTemplateSpecOverrideApplyConfiguration) *ComputeSpecApplyConfiguration {
+	b.Override = value
 	return b
 }

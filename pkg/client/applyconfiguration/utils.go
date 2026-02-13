@@ -38,6 +38,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &computev1alpha1.ComputeSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComputeStatus"):
 		return &computev1alpha1.ComputeStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ContainerOverride"):
+		return &computev1alpha1.ContainerOverrideApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("PodTemplateSpecOverride"):
+		return &computev1alpha1.PodTemplateSpecOverrideApplyConfiguration{}
 
 	}
 	return nil

@@ -13,8 +13,7 @@ try:
     from kubernetes.client import CoreV1Event
 except ImportError as e:
     raise ImportError(
-        f"kubernetes package is required: {e}\n"
-        "Install with: pip install kubernetes"
+        f"kubernetes package is required: {e}\n" "Install with: pip install kubernetes"
     )
 
 
@@ -29,6 +28,7 @@ def compute(
     labels: Optional[Dict[str, str]] = None,
     annotations: Optional[Dict[str, str]] = None,
     suspend: bool = False,
+    volumes: Optional[List[Dict[str, str]]] = None,
     on_events: Optional[Callable[[CoreV1Event], None]] = None,
     on_metrics: Optional[Callable[[object], None]] = None,
 ):
@@ -49,6 +49,8 @@ def compute(
         labels: Labels to apply to the Compute resources
         annotations: Annotations to apply to the Compute resources
         suspend: Whether to create the Compute in suspended state
+        volumes: Simplified volume definitions as list of dicts with keys:
+                 name (volume name), storage (e.g. "10Gi"), path (mount path)
         on_events: Optional callback to receive events for this Compute resource
         on_metrics: Optional callback to receive metrics from this Compute resource
 
@@ -68,6 +70,7 @@ def compute(
         >>>
         >>> await process_data()
     """
+
     def decorator(func):
         # Import here to avoid circular import
         from skytorch.client.compute import Compute
@@ -80,8 +83,7 @@ def compute(
             if param.annotation is not inspect.Parameter.empty:
                 # Check if the annotation is Compute or references Compute
                 if param.annotation is Compute or (
-                    hasattr(param.annotation, '__name__') and
-                    param.annotation.__name__ == 'Compute'
+                    hasattr(param.annotation, "__name__") and param.annotation.__name__ == "Compute"
                 ):
                     compute_param_name = param_name
                     break
@@ -98,6 +100,7 @@ def compute(
                 labels=labels,
                 annotations=annotations,
                 suspend=suspend,
+                volumes=volumes,
                 on_events=on_events,
                 on_metrics=on_metrics,
             )
@@ -114,4 +117,5 @@ def compute(
                     return await func(c, *func_args, **func_kwargs)
 
         return wrapper
+
     return decorator
