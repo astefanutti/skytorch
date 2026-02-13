@@ -29,9 +29,10 @@ class TensorManager:
         Raises:
             ValueError: If tensor does not exist
         """
-        if tensor_id not in self._tensors:
+        try:
+            return self._tensors[tensor_id]
+        except KeyError:
             raise ValueError(f"Tensor {tensor_id} does not exist")
-        return self._tensors[tensor_id]
 
     def register(self, tensor_id: int, tensor: torch.Tensor) -> None:
         """Register an existing tensor with a specific ID.
@@ -71,6 +72,10 @@ class TensorManager:
             del self._tensors[tensor_id]
             return True
         return False
+
+    def clear(self) -> None:
+        """Remove all tensors from the manager."""
+        self._tensors.clear()
 
     def __contains__(self, tensor_id: int) -> bool:
         """Check if tensor exists."""

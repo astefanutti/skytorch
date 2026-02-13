@@ -12,7 +12,7 @@ ENV PATH=$VIRTUAL_ENV/bin:$PATH
 
 # Install external dependencies
 RUN pip install --no-cache-dir "torch==2.9.1+cu128" --index-url https://download.pytorch.org/whl/cu128
-RUN pip install --no-cache-dir "nvidia-ml-py"
+RUN pip install --no-cache-dir "nvidia-ml-py" "transformers"
 
 # Copy the skytorch Python package
 COPY --chown=1000:root pyproject.toml README.md VERSION.md ./
@@ -23,6 +23,9 @@ RUN pip install --no-cache-dir "."
 
 # Set Python path to include the app directory
 ENV PYTHONPATH=/app
+
+# Disable stdout/stderr buffering so print() output appears immediately in container logs
+ENV PYTHONUNBUFFERED=1
 
 # Server configuration via environment variables
 ENV SKYTORCH_PORT=50051
