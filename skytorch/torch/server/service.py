@@ -215,10 +215,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             TensorChunk messages containing the tensor data
         """
         tensor_id = request.tensor_id
-        shape = tuple(request.shape)
-        dtype = parse_dtype(request.dtype)
-        stride = tuple(request.stride) if request.stride else None
-        offset = request.storage_offset
+        # shape = tuple(request.shape)
+        # dtype = parse_dtype(request.dtype)
+        # stride = tuple(request.stride) if request.stride else None
+        # offset = request.storage_offset
 
         try:
             # Auto-create tensor from metadata if provided
@@ -1081,6 +1081,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             _sprof = ServerProfiler()
             _sprof.stream_start_ns = time.perf_counter_ns()
             _t_prev_end = _sprof.stream_start_ns
+            _cycle_backlog_ops = 0
+            _cycle_backlog_time_ns = 0
+            _cycle_first_idle_ns = 0
+            _cycle_started = False
 
         try:
             async for request in request_iterator:
@@ -1103,6 +1107,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     try:
                         if PROFILING_ENABLED:
                             _t0 = time.perf_counter_ns()
+                            if not _cycle_started:
+                                _cycle_first_idle_ns = _t_recv - _t_prev_end
+                                _cycle_started = True
 
                         if _USE_CPP_PARSER:
                             _cpp_execute_raw_aten_inline(
@@ -1116,6 +1123,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                             _t1 = time.perf_counter_ns()
                             _sprof.raw_execute.add(_t1 - _t0)
                             _sprof.total_ops += 1
+                            _cycle_backlog_ops += 1
+                            _cycle_backlog_time_ns += _t1 - _t0
                     except Exception as e:
                         logger.error(f"Error in fire-and-forget operation: {e}")
                         self._deferred_error = str(e)
@@ -1123,6 +1132,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     try:
                         if PROFILING_ENABLED:
                             _t0 = time.perf_counter_ns()
+                            if not _cycle_started:
+                                _cycle_first_idle_ns = _t_recv - _t_prev_end
+                                _cycle_started = True
 
                         if _USE_CPP_PARSER:
                             _cpp_execute_raw_batched_aten_inline(
@@ -1151,22 +1163,20 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                                 _pos += 4 + _op_len
                                 _n_ops += 1
                             _sprof.total_ops += _n_ops
+                            _cycle_backlog_ops += _n_ops
+                            _cycle_backlog_time_ns += _t1 - _t0
                     except Exception as e:
                         logger.error(f"Error in fire-and-forget operation: {e}")
                         self._deferred_error = str(e)
                 elif request.HasField("batched_execute_aten"):
                     try:
-                        self._execute_batch_inline(
-                            request.batched_execute_aten.operations
-                        )
+                        self._execute_batch_inline(request.batched_execute_aten.operations)
                     except Exception as e:
                         logger.error(f"Error in fire-and-forget operation: {e}")
                         self._deferred_error = str(e)
                 elif request.HasField("execute_aten"):
                     try:
-                        result = await self.ExecuteAtenOperation(
-                            request.execute_aten, context
-                        )
+                        result = await self.ExecuteAtenOperation(request.execute_aten, context)
                         if not result.success:
                             self._deferred_error = result.message
                     except Exception as e:
@@ -1174,9 +1184,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                         self._deferred_error = str(e)
                 elif request.HasField("delete_tensors"):
                     try:
-                        result = await self.DeleteTensors(
-                            request.delete_tensors, context
-                        )
+                        result = await self.DeleteTensors(request.delete_tensors, context)
                         if not result.success:
                             self._deferred_error = result.message
                     except Exception as e:
@@ -1210,6 +1218,17 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 else:
                     # Sync operation (get_tensor, get_scalar): yield response
                     if PROFILING_ENABLED:
+                        _sprof.sync_cycle_count += 1
+                        _sprof.sync_backlog_ops.add_count(_cycle_backlog_ops)
+                        if _cycle_backlog_time_ns > 0:
+                            _sprof.sync_backlog_time.add(_cycle_backlog_time_ns)
+                        if _cycle_started:
+                            _sprof.sync_idle_before.add(_cycle_first_idle_ns)
+                        _cycle_backlog_ops = 0
+                        _cycle_backlog_time_ns = 0
+                        _cycle_first_idle_ns = 0
+                        _cycle_started = False
+
                         _t0 = time.perf_counter_ns()
 
                     response = await self._handle_single_request(

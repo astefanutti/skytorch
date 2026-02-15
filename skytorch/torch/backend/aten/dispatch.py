@@ -28,12 +28,12 @@ logger = logging.getLogger(__name__)
 # Disabled until the streaming client has proper flow control/backpressure.
 # See: https://github.com/astefanutti/skytorch/issues/XXX
 
-# try:
-#     from skytorch.torch.backend._C import _compute_dispatch_context
-# except ImportError:
-#     _compute_dispatch_context = None
+try:
+    from skytorch.torch.backend._C import _compute_dispatch_context
+except ImportError:
+    _compute_dispatch_context = None
 
-_compute_dispatch_context = None
+# _compute_dispatch_context = None
 
 _SHAPE_CACHE_MAX_SIZE = 4096
 _sky_device_cache: dict[int, torch.device] = {}

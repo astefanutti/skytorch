@@ -15,6 +15,7 @@ import asyncio
 import collections
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -95,10 +96,12 @@ class StreamManager:
         # Batch buffer for execute_aten operations
         self._batch_buffer: list[service_pb2.ExecuteAtenRequest] = []
         self._flush_scheduled: bool = False
+        self._batch_flush_timer = None
 
         # Batch buffer for raw binary execute_aten operations (C++ fast path)
         self._raw_batch_buffer: list[bytes] = []
         self._raw_flush_scheduled: bool = False
+        self._raw_flush_timer = None
 
         # Main-thread submission buffer: collects ops from all submit methods
         # under a single lock, preserving FIFO ordering while reducing
@@ -151,6 +154,12 @@ class StreamManager:
     # Flush threshold: when this many ops are buffered, flush immediately
     _BATCH_FLUSH_THRESHOLD = 64
 
+    # Coalescing delay: defer partial-batch flush by this many seconds,
+    # allowing more ops to accumulate and amortize per-message gRPC overhead.
+    # At C++ dispatch rate (~17 us/op), 1 ms ≈ 59 ops per batch.
+    # Sync points force an immediate flush, so this never adds sync latency.
+    _BATCH_COALESCE_DELAY = 0.002
+
     def _enqueue_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
         """Buffer an execute_aten request for batching. Must run on the event loop thread."""
         self._batch_buffer.append(request)
@@ -158,7 +167,9 @@ class StreamManager:
             self._flush_batch()
         elif not self._flush_scheduled:
             self._flush_scheduled = True
-            self._loop.call_soon(self._flush_batch)
+            self._batch_flush_timer = self._loop.call_later(
+                self._BATCH_COALESCE_DELAY, self._flush_batch
+            )
 
     def _enqueue_execute_aten_bytes(self, raw_bytes: bytes) -> None:
         """Buffer a raw binary execute_aten request for batching. Must run on the event loop thread."""
@@ -167,7 +178,9 @@ class StreamManager:
             self._flush_raw_batch()
         elif not self._raw_flush_scheduled:
             self._raw_flush_scheduled = True
-            self._loop.call_soon(self._flush_raw_batch)
+            self._raw_flush_timer = self._loop.call_later(
+                self._BATCH_COALESCE_DELAY, self._flush_raw_batch
+            )
 
     def _enqueue_delete_ids(self, tensor_ids: list[int]) -> None:
         """Buffer tensor IDs for batched deletion. Must run on event loop thread."""
@@ -181,6 +194,12 @@ class StreamManager:
         self._delete_flush_scheduled = False
         if not self._delete_buffer:
             return
+        # If a batch flush is pending, defer: the pending _flush_raw_batch or
+        # _flush_batch will call _flush_deletes after sending the batch,
+        # ensuring deletes arrive at the server AFTER ops that still reference
+        # those tensors.
+        if self._raw_flush_scheduled or self._flush_scheduled:
+            return
         request = service_pb2.DeleteTensorsRequest(tensor_ids=self._delete_buffer)
         stream_request = service_pb2.StreamRequest(delete_tensors=request)
         self._request_queue.put_nowait(stream_request)
@@ -191,6 +210,9 @@ class StreamManager:
     def _flush_batch(self) -> None:
         """Flush buffered execute_aten requests as a batch. Must run on the event loop thread."""
         self._flush_scheduled = False
+        if self._batch_flush_timer is not None:
+            self._batch_flush_timer.cancel()
+            self._batch_flush_timer = None
         if not self._batch_buffer:
             self._flush_deletes()
             return
@@ -212,6 +234,9 @@ class StreamManager:
     def _flush_raw_batch(self) -> None:
         """Flush buffered raw binary execute_aten requests. Must run on the event loop thread."""
         self._raw_flush_scheduled = False
+        if self._raw_flush_timer is not None:
+            self._raw_flush_timer.cancel()
+            self._raw_flush_timer = None
         if not self._raw_batch_buffer:
             self._flush_deletes()
             return
@@ -528,11 +553,27 @@ class StreamManager:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Getting tensor {request.tensor_id}")
 
+        if PROFILING_ENABLED:
+            _t_flush_start = time.perf_counter_ns()
+            _mt_ops_count = len(self._mt_ops)
+
         # Flush any pending batches before sync operation
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
         self._flush_deletes()
+
+        if PROFILING_ENABLED:
+            from skytorch.torch.profiler import ClientProfiler
+
+            _t_flush_end = time.perf_counter_ns()
+            _prof = ClientProfiler.get()
+            _prof.sync_flush.add(_t_flush_end - _t_flush_start)
+            _prof.sync_mt_ops_total += _mt_ops_count
+            _qdepth = self._request_queue.qsize()
+            _prof.sync_queue_depth_total += _qdepth
+            if _qdepth > _prof.sync_queue_depth_max:
+                _prof.sync_queue_depth_max = _qdepth
 
         future = self._loop.create_future()
         stream_request = service_pb2.StreamRequest(get_tensor=request)
@@ -545,8 +586,14 @@ class StreamManager:
         )
         self._request_queue.put_nowait(stream_request)
 
+        if PROFILING_ENABLED:
+            _t_enqueue = time.perf_counter_ns()
+
         async def _with_error_check():
             response = await future
+            if PROFILING_ENABLED:
+                _t_resolved = time.perf_counter_ns()
+                _prof.sync_wait.add(_t_resolved - _t_enqueue)
             # FIFO ordering guarantees all prior fire-and-forget errors are recorded
             self.check_error()
             return response
@@ -572,11 +619,27 @@ class StreamManager:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Getting scalar for tensor {request.tensor_id}")
 
+        if PROFILING_ENABLED:
+            _t_flush_start = time.perf_counter_ns()
+            _mt_ops_count = len(self._mt_ops)
+
         # Flush any pending batches before sync operation
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
         self._flush_deletes()
+
+        if PROFILING_ENABLED:
+            from skytorch.torch.profiler import ClientProfiler
+
+            _t_flush_end = time.perf_counter_ns()
+            _prof = ClientProfiler.get()
+            _prof.sync_flush.add(_t_flush_end - _t_flush_start)
+            _prof.sync_mt_ops_total += _mt_ops_count
+            _qdepth = self._request_queue.qsize()
+            _prof.sync_queue_depth_total += _qdepth
+            if _qdepth > _prof.sync_queue_depth_max:
+                _prof.sync_queue_depth_max = _qdepth
 
         future = self._loop.create_future()
         stream_request = service_pb2.StreamRequest(get_scalar=request)
@@ -589,8 +652,14 @@ class StreamManager:
         )
         self._request_queue.put_nowait(stream_request)
 
+        if PROFILING_ENABLED:
+            _t_enqueue = time.perf_counter_ns()
+
         async def _with_error_check():
             response = await future
+            if PROFILING_ENABLED:
+                _t_resolved = time.perf_counter_ns()
+                _prof.sync_wait.add(_t_resolved - _t_enqueue)
             # FIFO ordering guarantees all prior fire-and-forget errors are recorded
             self.check_error()
             return response

@@ -7,7 +7,6 @@ Overhead: ~200ns/op when enabled (~12ms total for 58K ops), zero-cost when disab
 
 import os
 import sys
-import time
 
 PROFILING_ENABLED = os.environ.get("SKYTORCH_PROFILE", "0") == "1"
 
@@ -63,6 +62,15 @@ class ClientProfiler:
 
         # Sync counters
         self.sync_total = Counter()
+
+        # Sync phase breakdown
+        self.sync_flush = Counter()
+        self.sync_wait = Counter()
+
+        # Sync buffer state (non-timing accumulators)
+        self.sync_mt_ops_total: int = 0
+        self.sync_queue_depth_total: int = 0
+        self.sync_queue_depth_max: int = 0
 
         # Batch counters
         self.batch_count = Counter()
@@ -126,16 +134,41 @@ class ClientProfiler:
             f"  Avg / Max:          {self.sync_total.avg_ms:.1f} ms / "
             f"{self.sync_total.max_ms:.1f} ms",
             "",
-            "Batching:",
-            f"  Batches: {self.batch_count.count:,}  |  "
-            f"Avg size: {(self.batch_size_total / self.batch_count.count):.1f}"
-            if self.batch_count.count > 0
-            else "  Batches: 0",
-            f"  Max: {self.batch_size_max}" if self.batch_count.count > 0 else "",
-            "",
-            f"Wall time: {wall_ms:,.0f} ms",
-            "",
         ]
+
+        if self.sync_flush.count > 0:
+            _sync_count = self.sync_flush.count
+            _avg_ops = self.sync_mt_ops_total / _sync_count
+            _avg_qdepth = self.sync_queue_depth_total / _sync_count
+            lines.extend(
+                [
+                    "Sync phases (per-sync avg / total):",
+                    f"  Flush (buffers->queue): {self.sync_flush.avg_ms:.2f} ms  |  "
+                    f"{self.sync_flush.total_ms:,.0f} ms",
+                    f"  Wait (enqueue->result): {self.sync_wait.avg_ms:.2f} ms  |  "
+                    f"{self.sync_wait.total_ms:,.0f} ms",
+                    f"  Ops drained at sync:   {_avg_ops:.0f} avg",
+                    f"  Queue depth at sync:   {_avg_qdepth:.1f} avg  |  "
+                    f"max {self.sync_queue_depth_max}",
+                    "",
+                ]
+            )
+
+        lines.extend(
+            [
+                "Batching:",
+                (
+                    f"  Batches: {self.batch_count.count:,}  |  "
+                    f"Avg size: {(self.batch_size_total / self.batch_count.count):.1f}"
+                    if self.batch_count.count > 0
+                    else "  Batches: 0"
+                ),
+                f"  Max: {self.batch_size_max}" if self.batch_count.count > 0 else "",
+                "",
+                f"Wall time: {wall_ms:,.0f} ms",
+                "",
+            ]
+        )
         sys.stderr.write("\n".join(lines))
         sys.stderr.flush()
 
@@ -156,6 +189,12 @@ class ServerProfiler:
 
         # Idle time
         self.idle_time = Counter()
+
+        # Per-sync-cycle breakdown
+        self.sync_backlog_ops = Counter()
+        self.sync_backlog_time = Counter()
+        self.sync_idle_before = Counter()
+        self.sync_cycle_count: int = 0
 
         # Wall time
         self.stream_start_ns: int = 0
@@ -205,8 +244,28 @@ class ServerProfiler:
                 f"{self.scalar_lookup.total_ms:,.0f} ms total"
             )
 
+        if self.sync_cycle_count > 0:
+            _sc = self.sync_cycle_count
+            lines.extend(
+                [
+                    "",
+                    f"Sync cycles: {_sc}",
+                    f"  Backlog ops/cycle:  " f"{(self.sync_backlog_ops.count / _sc):.0f} avg",
+                    f"  Backlog exec time:  "
+                    f"{self.sync_backlog_time.avg_ms:.2f} ms avg  |  "
+                    f"{self.sync_backlog_time.total_ms:,.0f} ms total",
+                    f"  Server idle before: "
+                    f"{self.sync_idle_before.avg_ms:.2f} ms avg  |  "
+                    f"{self.sync_idle_before.total_ms:,.0f} ms total",
+                    f"  Scalar handle:      "
+                    f"{self.sync_handle.avg_ms:.2f} ms avg  |  "
+                    f"{self.sync_handle.total_ms:,.0f} ms total",
+                ]
+            )
+
         lines.extend(
             [
+                "",
                 f"  Idle (between req): {self.idle_time.total_ms:,.0f} ms ({idle_pct:.0f}%)",
                 "",
                 f"Wall time: {wall_ms:,.0f} ms",
