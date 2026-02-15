@@ -1,8 +1,10 @@
 # SkyTorch
 
-Run PyTorch locally with the Power of Cloud GPUs.
+Run PyTorch locally with GPUs in the cloud.
 
-SkyTorch registers a `"sky"` device backend in PyTorch that transparently streams tensor operations to cloud GPUs managed by Kubernetes.
+SkyTorch registers a `sky` device backend in PyTorch that virtualizes remote GPUs and transparently streams tensor operations.
+
+## Examples
 
 ### MNIST Training
 
@@ -12,7 +14,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from skytorch.client import Compute, compute
+from skytorch.client import compute
 
 class MNISTNet(nn.Module):
     def __init__(self):
@@ -30,10 +32,10 @@ class MNISTNet(nn.Module):
 
 @compute(
     name="mnist",
-    image="ghcr.io/astefanutti/skytorch-server:latest",
-    resources={"nvidia.com/gpu": "1"},
+    image="ghcr.io/astefanutti/skytorch-server",
+    resources={"cpu": "1", "memory": "8Gi", "nvidia.com/gpu": "1"},
 )
-async def train(node: Compute, epochs: int = 10):
+async def train(node, epochs: int = 10):
     device = node.device("cuda")
 
     transform = transforms.Compose([
@@ -60,36 +62,38 @@ async def train(node: Compute, epochs: int = 10):
 asyncio.run(train())
 ```
 
-### Multi-GPU GRPO Training
+### GRPO Training
 
 ```python
-import asyncio
 import copy
 from transformers import AutoModelForCausalLM
 from skytorch.client import Compute, Cluster
 
-async def main():
-    async with Cluster(
-        Compute(name="trainer"),
-        Compute(name="vllm"),
-    ) as (trainer, vllm):
-        trainer_device = trainer.device("cuda")
-        vllm_device = vllm.device("cuda")
+async with Cluster(
+    Compute(
+        name="trainer",
+        resources={"nvidia.com/gpu": "1"},
+    ),
+    Compute(
+        name="vllm",
+        resources={"nvidia.com/gpu": "1"},
+    ),
+) as (trainer, vllm):
+    trainer_device = trainer.device("cuda")
+    vllm_device = vllm.device("cuda")
 
-        # Load the policy model on the trainer and copy it to vLLM
-        model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B")
-        model.to(trainer_device)
-        ref_model = copy.deepcopy(model).to(vllm_device)
+    # Load the policy model on the trainer and copy it to vLLM
+    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B")
+    model.to(trainer_device)
+    ref_model = copy.deepcopy(model).to(vllm_device)
 
-        for step in range(10):
-            # GRPO training step on the trainer device
-            # ...
+    for step in range(10):
+        # GRPO training step on the trainer device
+        # ...
 
-            # Sync weights from trainer to vLLM
-            for p, ref_p in zip(model.parameters(), ref_model.parameters()):
-                ref_p.data.copy_(p.data)
-
-asyncio.run(main())
+        # Sync weights from trainer to vLLM
+        for p, ref_p in zip(model.parameters(), ref_model.parameters()):
+            ref_p.data.copy_(p.data)
 ```
 
 > **Note:** Cross-compute tensor copy is not supported yet. This example illustrates a future capability.
@@ -102,3 +106,14 @@ pip install --no-build-isolation skytorch
 ```
 
 `--no-build-isolation` is required because the C++ extension needs PyTorch headers at build time, so PyTorch must be installed first.
+
+SkyTorch requires a Kubernetes cluster with [Gateway API](https://gateway-api.sigs.k8s.io/) support and the SkyTorch operator deployed.
+You can install the operator using Kustomize, choosing the overlay that matches your cluster:
+
+```bash
+# Vanilla Kubernetes / KinD (includes Contour as the Gateway API controller)
+kubectl apply --server-side -k config/e2e
+
+# OpenShift (uses the built-in gateway controller)
+kubectl apply --server-side -k config/openshift
+```
