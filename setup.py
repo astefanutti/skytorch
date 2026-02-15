@@ -75,6 +75,21 @@ ext_modules = [
     ),
 ]
 
+# Server-side C++ extension (binary request parser)
+SERVER_CSRC_DIR = ROOT_DIR / "skytorch" / "torch" / "server" / "csrc"
+SERVER_CSRC_DIR_REL = Path("skytorch") / "torch" / "server" / "csrc"
+SERVER_CPP_SOURCES = sorted(
+    str(SERVER_CSRC_DIR_REL / f.name) for f in SERVER_CSRC_DIR.glob("*.cpp")
+) if SERVER_CSRC_DIR.exists() else []
+
+if SERVER_CPP_SOURCES:
+    ext_modules.append(CppExtension(
+        name="skytorch.torch.server._C",
+        sources=SERVER_CPP_SOURCES,
+        include_dirs=[str(SERVER_CSRC_DIR_REL)],
+        extra_compile_args=CXX_FLAGS,
+    ))
+
 setup(
     ext_modules=ext_modules,
     cmdclass={

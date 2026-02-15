@@ -7,6 +7,7 @@ output tensors on the SkyTorch device and executes operations remotely.
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,10 +16,27 @@ import torch._dynamo  # Pre-import to avoid circular import issues during debugg
 
 from skytorch.torch.backend import _client
 from skytorch.torch.backend._client import map_args_kwargs
+from skytorch.torch.profiler import PROFILING_ENABLED
 
 logger = logging.getLogger(__name__)
 
+# C++ _compute_dispatch_context is ~12x faster at computing cache keys than
+# the Python _build_cache_key_with_context, but it fills the gRPC streaming
+# pipeline faster. This increases latency at synchronous scalar fetch points
+# (_local_scalar_dense), resulting in a net regression for workloads with
+# frequent sync points (e.g., LLM inference with model.generate).
+# Disabled until the streaming client has proper flow control/backpressure.
+# See: https://github.com/astefanutti/skytorch/issues/XXX
+
+# try:
+#     from skytorch.torch.backend._C import _compute_dispatch_context
+# except ImportError:
+#     _compute_dispatch_context = None
+
+_compute_dispatch_context = None
+
 _SHAPE_CACHE_MAX_SIZE = 4096
+_sky_device_cache: dict[int, torch.device] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +52,23 @@ class _OutputMeta:
 
 
 # Cache: op signature -> list of output metadata
-_shape_cache: dict[tuple, list[_OutputMeta | None]] = {}
+# Key is int (C++ 64-bit hash) when C++ extension available, else tuple (Python)
+_shape_cache: dict = {}
 
 
 _UNCACHEABLE = object()
+
+# Cache for str(op) conversion — avoids ~1μs per call (called twice on cache hit)
+_op_name_cache: dict = {}
+
+
+def _get_op_name(op: torch._ops.OpOverload) -> str:
+    try:
+        return _op_name_cache[op]
+    except KeyError:
+        name = str(op)
+        _op_name_cache[op] = name
+        return name
 
 
 def _build_cache_key_with_context(
@@ -52,7 +83,7 @@ def _build_cache_key_with_context(
     sky_device is the first sky device found in args/kwargs.
     input_tensors is a list of unique sky tensors (by storage ptr).
     """
-    parts: list = [str(op)]
+    parts: list = [_get_op_name(op)]
     sky_device: torch.device | None = None
     input_tensors: list[torch.Tensor] = []
     seen_ptrs: set[int] = set()
@@ -68,7 +99,8 @@ def _build_cache_key_with_context(
             if obj.device.type == "sky":
                 if sky_device is None:
                     sky_device = obj.device
-                ptr = obj.untyped_storage().data_ptr()
+                storage = obj.untyped_storage()
+                ptr = storage.data_ptr()
                 if ptr not in seen_ptrs:
                     seen_ptrs.add(ptr)
                     input_tensors.append(obj)
@@ -81,11 +113,12 @@ def _build_cache_key_with_context(
                     obj.dtype,
                     tuple(obj.stride()),
                     obj.storage_offset(),
-                    obj.untyped_storage().nbytes(),
+                    storage.nbytes(),
                     storage_groups[ptr],
                 )
             # Non-sky tensor (e.g., cpu scalar) — still build key
-            ptr = obj.untyped_storage().data_ptr()
+            storage = obj.untyped_storage()
+            ptr = storage.data_ptr()
             if ptr not in storage_groups:
                 storage_groups[ptr] = next_group
                 next_group += 1
@@ -95,7 +128,7 @@ def _build_cache_key_with_context(
                 obj.dtype,
                 tuple(obj.stride()),
                 obj.storage_offset(),
-                obj.untyped_storage().nbytes(),
+                storage.nbytes(),
                 storage_groups[ptr],
             )
         if isinstance(obj, (list, tuple)):
@@ -122,11 +155,12 @@ def _build_cache_key_with_context(
             return None, sky_device, input_tensors
         parts.append(k)
 
-    for key in sorted(kwargs):
-        k = _process(kwargs[key])
-        if uncacheable:
-            return None, sky_device, input_tensors
-        parts.append((key, k))
+    if kwargs:
+        for key in sorted(kwargs):
+            k = _process(kwargs[key])
+            if uncacheable:
+                return None, sky_device, input_tensors
+            parts.append((key, k))
 
     return tuple(parts), sky_device, input_tensors
 
@@ -268,7 +302,7 @@ def _execute_with_static_outputs(
     sky_device: torch.device,
     meta_result: Any,
     original_tensors: dict[torch.UntypedStorage, torch.Tensor],
-    cache_key: tuple | None = None,
+    cache_key: Any = None,
     input_tensors: list[torch.Tensor] | None = None,
 ) -> Any:
     """Execute operation using meta tensors for shape inference."""
@@ -294,7 +328,7 @@ def _execute_with_static_outputs(
     # Execute operation remotely via gRPC
     _client.execute_aten_operation(
         sky_device=sky_device,
-        op_name=str(op),
+        op_name=_get_op_name(op),
         args=args,
         kwargs=kwargs,
         output_tensors=output_tensors,
@@ -310,7 +344,7 @@ def _execute_with_static_outputs(
 
 
 def _populate_cache(
-    cache_key: tuple,
+    cache_key: Any,
     meta_outputs: list,
     original_tensors: dict[torch.UntypedStorage, torch.Tensor],
     input_tensors: list[torch.Tensor],
@@ -448,7 +482,6 @@ def _collect_input_tensors(args: tuple[Any, ...], kwargs: dict[str, Any]) -> lis
     return tensors
 
 
-
 def _sky_kernel_fallback(
     op: torch._ops.OpOverload,
     *args: Any,
@@ -459,10 +492,42 @@ def _sky_kernel_fallback(
         logger.debug(f"Dispatching {op}")
 
     try:
-        # Build cache key, resolve device, and collect tensors in one pass
-        cache_key, sky_device, input_tensors = _build_cache_key_with_context(
-            op, args, kwargs
-        )
+        op_name = _get_op_name(op)
+
+        if PROFILING_ENABLED:
+            from skytorch.torch.profiler import ClientProfiler
+
+            _prof = ClientProfiler.get()
+            _t0 = time.perf_counter_ns()
+            if _prof.last_dispatch_end > 0:
+                _prof.inter_op_gap.add(_t0 - _prof.last_dispatch_end)
+            if _prof.first_dispatch_ns == 0:
+                _prof.first_dispatch_ns = _t0
+            _prof.total_ops += 1
+
+        # Compute cache key, resolve device, and collect tensors
+        if _compute_dispatch_context is not None:
+            # C++ fast path: single walk of args/kwargs
+            cache_hash, input_tensors, sky_device_idx = _compute_dispatch_context(
+                op_name, args, kwargs
+            )
+            cache_key = cache_hash if cache_hash != 0 else None
+            if sky_device_idx >= 0:
+                sky_device = _sky_device_cache.get(sky_device_idx)
+                if sky_device is None:
+                    sky_device = torch.device("sky", sky_device_idx)
+                    _sky_device_cache[sky_device_idx] = sky_device
+            else:
+                sky_device = None
+        else:
+            # Python fallback
+            cache_key, sky_device, input_tensors = _build_cache_key_with_context(
+                op, args, kwargs
+            )
+
+        if PROFILING_ENABLED:
+            _t1 = time.perf_counter_ns()
+            _prof.cache_key_build.add(_t1 - _t0)
 
         # Try shape cache first
         if cache_key is not None:
@@ -472,13 +537,24 @@ def _sky_kernel_fallback(
                     cached, input_tensors, sky_device
                 )
 
+                if PROFILING_ENABLED:
+                    _t2 = time.perf_counter_ns()
+                    _prof.output_creation.add(_t2 - _t1)
+                    _prof.cache_hits += 1
+
                 _client.execute_aten_operation(
                     sky_device=sky_device,
-                    op_name=str(op),
+                    op_name=op_name,
                     args=args,
                     kwargs=kwargs,
                     output_tensors=output_tensors,
                 )
+
+                if PROFILING_ENABLED:
+                    _t3 = time.perf_counter_ns()
+                    _prof.execute_dispatch.add(_t3 - _t2)
+                    _prof.last_dispatch_end = _t3
+                    _prof.last_dispatch_ns = _t3
 
                 if len(output_tensors) > 1:
                     return tuple(output_tensors)
@@ -486,6 +562,9 @@ def _sky_kernel_fallback(
                     return output_tensors[0]
                 else:
                     return None
+
+        if PROFILING_ENABLED:
+            _prof.cache_misses += 1
 
         # Cache miss — full meta execution
         devices: list[torch.device] = []
@@ -513,14 +592,23 @@ def _sky_kernel_fallback(
 
             args, kwargs = map_args_kwargs(_promote, args, kwargs)
             # Re-collect input tensors after promotion
-            input_tensors = _collect_input_tensors(args, kwargs) if cache_key is not None else None
+            input_tensors = (
+                _collect_input_tensors(args, kwargs) if cache_key is not None else None
+            )
         else:
             input_tensors = input_tensors if cache_key is not None else None
 
-        return _execute_with_static_outputs(
+        result = _execute_with_static_outputs(
             op, args, kwargs, sky_device, meta_result, original_tensors,
             cache_key=cache_key, input_tensors=input_tensors,
         )
+
+        if PROFILING_ENABLED:
+            _tend = time.perf_counter_ns()
+            _prof.last_dispatch_end = _tend
+            _prof.last_dispatch_ns = _tend
+
+        return result
     except RuntimeError as e:
         if "Cannot mix" in str(e):
             location = _find_offending_arg(args, kwargs)

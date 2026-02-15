@@ -14,8 +14,11 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Optional
+
+from skytorch.torch.profiler import PROFILING_ENABLED
 
 try:
     import grpc
@@ -96,6 +99,15 @@ class StreamManager:
         # Batch buffer for raw binary execute_aten operations (C++ fast path)
         self._raw_batch_buffer: list[bytes] = []
         self._raw_flush_scheduled: bool = False
+
+        # Main-thread submission buffer: collects ops from all submit methods
+        # under a single lock, preserving FIFO ordering while reducing
+        # call_soon_threadsafe calls by ~98%. Each entry is either:
+        #   ("raw", bytes)    — raw binary execute_aten
+        #   ("req", StreamRequest) — non-batched request (copy, update, register)
+        self._mt_ops: list[tuple] = []
+        self._mt_lock = threading.Lock()
+        self._mt_wake_pending: bool = False
 
         # Buffer for batched delete tensor IDs
         self._delete_buffer: list[int] = []
@@ -204,6 +216,16 @@ class StreamManager:
             self._flush_deletes()
             return
 
+        if PROFILING_ENABLED:
+            from skytorch.torch.profiler import ClientProfiler
+
+            _prof = ClientProfiler.get()
+            _batch_size = len(self._raw_batch_buffer)
+            _prof.batch_count.add_count()
+            _prof.batch_size_total += _batch_size
+            if _batch_size > _prof.batch_size_max:
+                _prof.batch_size_max = _batch_size
+
         if len(self._raw_batch_buffer) == 1:
             # Single request: send as raw_execute_aten
             stream_request = service_pb2.StreamRequest(raw_execute_aten=self._raw_batch_buffer[0])
@@ -311,6 +333,36 @@ class StreamManager:
                 pending.future.set_exception(RuntimeError(f"Stream error: {error_message}"))
         self._pending.clear()
 
+    def _drain_mt_ops(self) -> None:
+        """Drain the main-thread ops buffer. Must run on the event loop thread."""
+        with self._mt_lock:
+            if not self._mt_ops:
+                self._mt_wake_pending = False
+                return
+            batch = self._mt_ops
+            self._mt_ops = []
+            self._mt_wake_pending = False
+        self._process_mt_ops(batch)
+
+    def _process_mt_ops(self, ops: list[tuple]) -> None:
+        """Process a list of (type, data) ops in order. Must run on the event loop thread."""
+        for op_type, data in ops:
+            if op_type == "raw":
+                self._enqueue_execute_aten_bytes(data)
+            elif op_type == "req":
+                self._enqueue_with_flush(data)
+
+    def _flush_mt_ops(self) -> None:
+        """Drain main-thread ops buffer at sync points. Must run on the event loop thread."""
+        with self._mt_lock:
+            if not self._mt_ops:
+                self._mt_wake_pending = False
+                return
+            batch = self._mt_ops
+            self._mt_ops = []
+            self._mt_wake_pending = False
+        self._process_mt_ops(batch)
+
     def _enqueue_with_flush(self, stream_request):
         """Flush any pending batch, then enqueue a request. Must run on the event loop thread."""
         self._flush_batch()
@@ -321,15 +373,18 @@ class StreamManager:
         """
         Submit a fire-and-forget request to the stream (callable from any thread).
 
-        Flushes any pending execute_aten batch first to maintain ordering,
-        then enqueues the request. No future is created — the server does
-        not send responses for fire-and-forget operations.
+        Routes through the unified main-thread ops buffer to preserve FIFO
+        ordering with submit_execute_aten_bytes calls.
 
         Args:
             stream_request: StreamRequest to submit
             request_type: Type of request for tracking
         """
-        self._loop.call_soon_threadsafe(self._enqueue_with_flush, stream_request)
+        with self._mt_lock:
+            self._mt_ops.append(("req", stream_request))
+            if not self._mt_wake_pending:
+                self._mt_wake_pending = True
+                self._loop.call_soon_threadsafe(self._drain_mt_ops)
 
     def submit_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
         """Submit a fire-and-forget execute_aten request (callable from any thread).
@@ -354,8 +409,16 @@ class StreamManager:
         Like submit_execute_aten but takes pre-serialized bytes from
         the C++ request builder, avoiding Python protobuf overhead entirely.
         Callable from any thread.
+
+        Ops are collected in a unified main-thread buffer along with other
+        submit calls, preserving FIFO ordering while reducing
+        call_soon_threadsafe wake-ups by ~98%.
         """
-        self._loop.call_soon_threadsafe(self._enqueue_execute_aten_bytes, raw_bytes)
+        with self._mt_lock:
+            self._mt_ops.append(("raw", raw_bytes))
+            if not self._mt_wake_pending:
+                self._mt_wake_pending = True
+                self._loop.call_soon_threadsafe(self._drain_mt_ops)
 
     def submit_copy_tensor(self, request: service_pb2.CopyTensorRequest) -> None:
         """Submit a fire-and-forget copy_tensor request (callable from any thread)."""
@@ -438,6 +501,7 @@ class StreamManager:
             )
 
         def _flush_and_enqueue_batch():
+            self._flush_mt_ops()
             self._flush_batch()
             self._flush_raw_batch()
             for request in stream_requests:
@@ -465,6 +529,7 @@ class StreamManager:
             logger.debug(f"Getting tensor {request.tensor_id}")
 
         # Flush any pending batches before sync operation
+        self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
         self._flush_deletes()
@@ -508,6 +573,7 @@ class StreamManager:
             logger.debug(f"Getting scalar for tensor {request.tensor_id}")
 
         # Flush any pending batches before sync operation
+        self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
         self._flush_deletes()
@@ -537,6 +603,7 @@ class StreamManager:
             return
 
         # Flush any pending batches before closing
+        self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
         self._flush_deletes()
@@ -574,3 +641,9 @@ class StreamManager:
         self._fail_all_pending("Stream closed")
 
         self._started = False
+
+        if PROFILING_ENABLED:
+            from skytorch.torch.profiler import ClientProfiler
+
+            ClientProfiler.get().print_summary()
+            ClientProfiler.reset()

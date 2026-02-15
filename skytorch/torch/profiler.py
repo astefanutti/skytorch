@@ -1,0 +1,217 @@
+"""
+SkyTorch profiling instrumentation.
+
+Lightweight profiling gated by SKYTORCH_PROFILE=1 environment variable.
+Overhead: ~200ns/op when enabled (~12ms total for 58K ops), zero-cost when disabled.
+"""
+
+import os
+import sys
+import time
+
+PROFILING_ENABLED = os.environ.get("SKYTORCH_PROFILE", "0") == "1"
+
+
+class Counter:
+    """Accumulates timing and count data."""
+
+    __slots__ = ("total_ns", "count", "max_ns")
+
+    def __init__(self):
+        self.total_ns: int = 0
+        self.count: int = 0
+        self.max_ns: int = 0
+
+    def add(self, ns: int) -> None:
+        self.total_ns += ns
+        self.count += 1
+        if ns > self.max_ns:
+            self.max_ns = ns
+
+    def add_count(self, n: int = 1) -> None:
+        self.count += n
+
+    @property
+    def avg_us(self) -> float:
+        return (self.total_ns / self.count / 1000) if self.count else 0.0
+
+    @property
+    def total_ms(self) -> float:
+        return self.total_ns / 1_000_000
+
+    @property
+    def max_ms(self) -> float:
+        return self.max_ns / 1_000_000
+
+    @property
+    def avg_ms(self) -> float:
+        return (self.total_ns / self.count / 1_000_000) if self.count else 0.0
+
+
+class ClientProfiler:
+    """Singleton profiler for client-side dispatch breakdown."""
+
+    _instance = None
+
+    def __init__(self):
+        # Dispatch counters
+        self.cache_key_build = Counter()
+        self.output_creation = Counter()
+        self.execute_dispatch = Counter()
+        self.cpp_serialization = Counter()
+        self.event_loop_submit = Counter()
+
+        # Sync counters
+        self.sync_total = Counter()
+
+        # Batch counters
+        self.batch_count = Counter()
+        self.batch_size_total: int = 0
+        self.batch_size_max: int = 0
+
+        # Inter-op gap
+        self.inter_op_gap = Counter()
+        self.last_dispatch_end: int = 0
+
+        # Cache stats
+        self.cache_hits: int = 0
+        self.cache_misses: int = 0
+        self.total_ops: int = 0
+
+        # Wall time
+        self.first_dispatch_ns: int = 0
+        self.last_dispatch_ns: int = 0
+
+    @classmethod
+    def get(cls) -> "ClientProfiler":
+        if cls._instance is None:
+            cls._instance = ClientProfiler()
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        cls._instance = None
+
+    def print_summary(self) -> None:
+        if self.total_ops == 0:
+            return
+
+        wall_ms = (self.last_dispatch_ns - self.first_dispatch_ns) / 1_000_000
+        sync_pct = (self.sync_total.total_ms / wall_ms * 100) if wall_ms > 0 else 0
+
+        lines = [
+            "",
+            "=== SkyTorch Client Profile ===",
+            f"Ops: {self.total_ops:,} ({self.cache_hits:,} cache hits, "
+            f"{self.cache_misses:,} misses)",
+            f"Syncs: {self.sync_total.count:,}",
+            "",
+            "Dispatch (per-op avg / total):",
+            f"  Cache key build:    {self.cache_key_build.avg_us:6.1f} us  |  "
+            f"{self.cache_key_build.total_ms:,.0f} ms",
+            f"  Output creation:    {self.output_creation.avg_us:6.1f} us  |  "
+            f"{self.output_creation.total_ms:,.0f} ms",
+            f"  Execute dispatch:   {self.execute_dispatch.avg_us:6.1f} us  |  "
+            f"{self.execute_dispatch.total_ms:,.0f} ms",
+            f"    C++ serialize:    {self.cpp_serialization.avg_us:6.1f} us  |  "
+            f"{self.cpp_serialization.total_ms:,.0f} ms",
+            f"    Event loop sub:   {self.event_loop_submit.avg_us:6.1f} us  |  "
+            f"{self.event_loop_submit.total_ms:,.0f} ms",
+            f"  Inter-op gap:       {self.inter_op_gap.avg_us:6.1f} us  |  "
+            f"{self.inter_op_gap.total_ms:,.0f} ms",
+            "",
+            "Sync points:",
+            f"  Total wait:         {self.sync_total.total_ms:,.0f} ms "
+            f"({sync_pct:.0f}% of wall time)",
+            f"  Avg / Max:          {self.sync_total.avg_ms:.1f} ms / "
+            f"{self.sync_total.max_ms:.1f} ms",
+            "",
+            "Batching:",
+            f"  Batches: {self.batch_count.count:,}  |  "
+            f"Avg size: {(self.batch_size_total / self.batch_count.count):.1f}"
+            if self.batch_count.count > 0
+            else "  Batches: 0",
+            f"  Max: {self.batch_size_max}" if self.batch_count.count > 0 else "",
+            "",
+            f"Wall time: {wall_ms:,.0f} ms",
+            "",
+        ]
+        sys.stderr.write("\n".join(lines))
+        sys.stderr.flush()
+
+
+class ServerProfiler:
+    """Per-stream profiler for server-side processing."""
+
+    def __init__(self):
+        # Execution counters
+        self.raw_execute = Counter()
+        self.raw_batched_execute = Counter()
+        self.total_ops: int = 0
+
+        # Sync counters
+        self.sync_handle = Counter()
+        self.scalar_gpu_sync = Counter()
+        self.scalar_lookup = Counter()
+
+        # Idle time
+        self.idle_time = Counter()
+
+        # Wall time
+        self.stream_start_ns: int = 0
+        self.stream_end_ns: int = 0
+
+    def print_summary(self) -> None:
+        if self.stream_start_ns == 0:
+            return
+
+        wall_ms = (self.stream_end_ns - self.stream_start_ns) / 1_000_000
+        if wall_ms <= 0:
+            return
+
+        fire_and_forget = self.raw_execute.count + self.raw_batched_execute.count
+        sync_count = self.sync_handle.count
+
+        exec_ms = self.raw_execute.total_ms + self.raw_batched_execute.total_ms
+        exec_pct = (exec_ms / wall_ms * 100) if wall_ms > 0 else 0
+        sync_pct = (self.sync_handle.total_ms / wall_ms * 100) if wall_ms > 0 else 0
+        idle_pct = (self.idle_time.total_ms / wall_ms * 100) if wall_ms > 0 else 0
+
+        lines = [
+            "",
+            "=== SkyTorch Server Profile ===",
+            f"Requests: {fire_and_forget + sync_count:,} "
+            f"({fire_and_forget:,} fire-and-forget, {sync_count:,} sync)",
+            f"Ops: {self.total_ops:,}",
+            "",
+            "Execution:",
+            f"  Raw execute:        {self.raw_execute.count:,} calls | "
+            f"{self.raw_execute.total_ms:,.0f} ms",
+            f"  Batched execute:    {self.raw_batched_execute.count:,} calls | "
+            f"{self.raw_batched_execute.total_ms:,.0f} ms",
+            f"  Total execution:    {exec_ms:,.0f} ms ({exec_pct:.0f}%)",
+            f"  Sync handle:        {sync_count:,} calls | "
+            f"{self.sync_handle.total_ms:,.0f} ms ({sync_pct:.0f}%)",
+        ]
+
+        if self.scalar_gpu_sync.count > 0:
+            lines.append(
+                f"    GPU sync (item):  {self.scalar_gpu_sync.avg_ms:.1f} ms avg | "
+                f"{self.scalar_gpu_sync.total_ms:,.0f} ms total"
+            )
+        if self.scalar_lookup.count > 0:
+            lines.append(
+                f"    Tensor lookup:    {self.scalar_lookup.avg_us:.1f} us avg | "
+                f"{self.scalar_lookup.total_ms:,.0f} ms total"
+            )
+
+        lines.extend(
+            [
+                f"  Idle (between req): {self.idle_time.total_ms:,.0f} ms ({idle_pct:.0f}%)",
+                "",
+                f"Wall time: {wall_ms:,.0f} ms",
+                "",
+            ]
+        )
+        sys.stderr.write("\n".join(lines))
+        sys.stderr.flush()

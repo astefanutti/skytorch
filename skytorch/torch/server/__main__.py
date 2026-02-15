@@ -83,7 +83,15 @@ logger.info(f"  Compression: {_compression_name}")
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
-server = grpc.aio.server(compression=_compression)
+server = grpc.aio.server(
+    compression=_compression,
+    options=[
+        ("grpc.http2.initial_window_size", 1 * 1024 * 1024),              # 1MB (default 64KB)
+        ("grpc.http2.initial_connection_window_size", 2 * 1024 * 1024),   # 2MB
+        ("grpc.max_send_message_length", 16 * 1024 * 1024),               # 16MB
+        ("grpc.max_receive_message_length", 16 * 1024 * 1024),            # 16MB
+    ],
+)
 
 # Initialize metrics sources based on CLI configuration
 metrics_sources = []

@@ -55,6 +55,15 @@ logger = logging.getLogger(__name__)
 # (BlockingIOError when debugger pauses the event loop)
 logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 
+# gRPC channel options: larger HTTP/2 flow control windows reduce head-of-line
+# blocking when the client produces ops faster than the network can drain them.
+_GRPC_CHANNEL_OPTIONS = [
+    ("grpc.http2.initial_window_size", 1 * 1024 * 1024),              # 1MB (default 64KB)
+    ("grpc.http2.initial_connection_window_size", 2 * 1024 * 1024),   # 2MB
+    ("grpc.max_send_message_length", 16 * 1024 * 1024),               # 16MB
+    ("grpc.max_receive_message_length", 16 * 1024 * 1024),            # 16MB
+]
+
 
 class GRPCClient:
     """
@@ -113,6 +122,7 @@ class GRPCClient:
             channel = grpc.aio.insecure_channel(
                 self.address,
                 compression=_get_grpc_compression(),
+                options=_GRPC_CHANNEL_OPTIONS,
             )
             self._thread_local.channel = channel
         return channel
@@ -234,6 +244,7 @@ class GRPCClient:
             return grpc.aio.insecure_channel(
                 self.address,
                 compression=_get_grpc_compression(),
+                options=_GRPC_CHANNEL_OPTIONS,
             )
 
         # Run channel creation on global loop

@@ -122,4 +122,22 @@ void clear_registered_tensor_ids();
  */
 void register_storage_tensor_mapping(int64_t storage_id, uint64_t tensor_id);
 
+/**
+ * Compute dispatch context for cache key + tensor collection in one C++ pass.
+ *
+ * Walks args/kwargs once to:
+ *   1. Compute a 64-bit hash of the op signature (op_name + all arg shapes/values)
+ *   2. Collect unique sky input tensors (by storage pointer)
+ *   3. Find the first sky device index
+ *
+ * Returns: (cache_key_hash, input_tensors_list, sky_device_index)
+ *   - cache_key_hash: 64-bit hash (0 = uncacheable args)
+ *   - input_tensors_list: list of unique sky tensors
+ *   - sky_device_index: first sky device index found (-1 if none)
+ */
+py::tuple compute_dispatch_context(
+    py::str op_name,
+    py::tuple args,
+    py::dict kwargs);
+
 }  // namespace skytorch

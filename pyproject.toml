@@ -65,7 +65,7 @@ demo = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["skytorch*"]
-exclude = ["skytorch.torch.backend.csrc"]
+exclude = ["skytorch.torch.backend.csrc", "skytorch.torch.server.csrc"]
 
 [tool.setuptools.dynamic]
 version = { file = ["VERSION.md"] }
@@ -74,7 +74,7 @@ readme = { file = ["README.md"], content-type = "text/markdown" }
 [tool.setuptools.package-data]
 "skytorch.server.health" = ["*.proto"]
 "skytorch.server.metrics" = ["*.proto"]
-"skytorch.torch.server" = ["*.proto"]
+"skytorch.torch.server" = ["*.proto", "csrc/*.cpp", "csrc/*.h"]
 "skytorch.torch.backend" = ["csrc/*.cpp", "csrc/*.h"]
 
 [project.entry-points."torch.backends"]

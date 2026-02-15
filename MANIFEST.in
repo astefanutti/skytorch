@@ -2,3 +2,4 @@ include VERSION.md
 include README.md
 include setup.py
 recursive-include skytorch/torch/backend/csrc *.cpp *.h
+recursive-include skytorch/torch/server/csrc *.cpp *.h

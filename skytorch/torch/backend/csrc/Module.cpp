@@ -246,6 +246,13 @@ PYBIND11_MODULE(_C, m) {
     m.def("_register_storage_tensor_mapping", &skytorch::register_storage_tensor_mapping,
         "Register a storage_id to tensor_id mapping for view detection");
 
+    // Dispatch context computation (cache key + tensor collection in one C++ pass)
+    m.def("_compute_dispatch_context", &skytorch::compute_dispatch_context,
+        "Compute dispatch context: cache key hash, input tensors, and sky device index",
+        py::arg("op_name"),
+        py::arg("args"),
+        py::arg("kwargs"));
+
     // Register cleanup with atexit
     py::module atexit = py::module::import("atexit");
     atexit.attr("register")(py::cpp_function(&skytorch::clear_method_cache));

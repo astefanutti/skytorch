@@ -5,6 +5,8 @@ This module implements scalar operations that require fetching
 values from sky tensors to the local host.
 """
 
+import time
+
 import torch
 
 from skytorch.torch.backend._async import run_async
@@ -17,6 +19,7 @@ from skytorch.torch.backend._client import (
 )
 from skytorch.torch.client.request import tensor_metadata_to_proto
 from skytorch.torch.client.tensor import get_tensor_id
+from skytorch.torch.profiler import PROFILING_ENABLED
 
 
 def _local_scalar_dense(self: torch.Tensor):
@@ -40,6 +43,9 @@ def _local_scalar_dense(self: torch.Tensor):
             f"a Tensor with {self.numel()} elements cannot be converted to Scalar"
         )
 
+    if PROFILING_ENABLED:
+        _t0 = time.perf_counter_ns()
+
     if ENABLE_STREAMING:
         compute = _require_compute(self)
         tensor_id = get_tensor_id(self)
@@ -53,6 +59,12 @@ def _local_scalar_dense(self: torch.Tensor):
 
         if meta is not None:
             _register_tensor_locally(self)
+
+        if PROFILING_ENABLED:
+            from skytorch.torch.profiler import ClientProfiler
+
+            _t1 = time.perf_counter_ns()
+            ClientProfiler.get().sync_total.add(_t1 - _t0)
 
         return result
     else:

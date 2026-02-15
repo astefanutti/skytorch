@@ -8,6 +8,7 @@ remote ATen operation execution via gRPC, and Compute resolution.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Callable, Optional
 
 import torch
@@ -33,6 +34,7 @@ from skytorch.torch.client.request import (
     build_copy_tensor_request,
     build_execute_aten_request,
 )
+from skytorch.torch.profiler import PROFILING_ENABLED
 
 
 def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
@@ -352,12 +354,14 @@ def execute_aten_operation(
         kwargs: Keyword arguments (may contain sky tensors)
         output_tensors: Pre-allocated output tensors, or None for server-created
     """
-    compute = device_manager.get_compute(sky_device.index)
-    if compute is None:
+    device_index = sky_device.index or 0
+    remote_info = device_manager._local_to_remote.get(device_index)
+    if remote_info is None:
         raise RuntimeError(
             "No Compute context available for ATen operation. "
             "Ensure you are within an 'async with Compute(...):' block."
         )
+    compute = remote_info.compute
 
     if compute._grpc_client is None:
         raise RuntimeError(
@@ -365,7 +369,9 @@ def execute_aten_operation(
         )
 
     if ENABLE_STREAMING and ENABLE_CPP_REQUEST_BUILDER:
-        _execute_aten_cpp_fast_path(compute, sky_device, op_name, args, kwargs, output_tensors)
+        _execute_aten_cpp_fast_path(
+            compute, sky_device, op_name, args, kwargs, output_tensors, remote_info
+        )
     elif ENABLE_STREAMING:
         _execute_aten_python_path(compute, sky_device, op_name, args, kwargs, output_tensors)
     else:
@@ -379,11 +385,16 @@ def _execute_aten_cpp_fast_path(
     args: tuple,
     kwargs: dict,
     output_tensors: list[torch.Tensor] | None,
+    remote_info=None,
 ) -> None:
     """Fast path: C++ binary serialization + raw bytes submission."""
     from skytorch.torch.backend._C import _build_execute_aten_request
 
-    remote_info = device_manager.get_remote_device_info(sky_device.index or 0)
+    if remote_info is None:
+        remote_info = device_manager.get_remote_device_info(sky_device.index or 0)
+
+    if PROFILING_ENABLED:
+        _t0 = time.perf_counter_ns()
 
     # C++ builds binary request + identifies new tensors
     raw_bytes, new_tensor_ids, new_storage_ids = _build_execute_aten_request(
@@ -396,8 +407,19 @@ def _execute_aten_cpp_fast_path(
         remote_info.device_index,
     )
 
+    if PROFILING_ENABLED:
+        _t1 = time.perf_counter_ns()
+
     stream_manager = compute._grpc_client.stream
     stream_manager.submit_execute_aten_bytes(raw_bytes)
+
+    if PROFILING_ENABLED:
+        from skytorch.torch.profiler import ClientProfiler
+
+        _t2 = time.perf_counter_ns()
+        _prof = ClientProfiler.get()
+        _prof.cpp_serialization.add(_t1 - _t0)
+        _prof.event_loop_submit.add(_t2 - _t1)
 
     # Register new tensors locally (C++ already updated its tracking set)
     for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids):

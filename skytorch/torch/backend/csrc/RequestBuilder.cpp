@@ -531,4 +531,291 @@ py::tuple build_execute_aten_request(
     );
 }
 
+// --- Dispatch context computation (cache key + tensor collection) ---
+
+static inline uint64_t hash_combine(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 12) + (h >> 4);
+    return h;
+}
+
+static inline uint64_t hash_bytes(const char* data, Py_ssize_t len) {
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (Py_ssize_t i = 0; i < len; i++) {
+        h ^= static_cast<uint64_t>(static_cast<unsigned char>(data[i]));
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
+// Forward declaration
+static bool hash_arg(
+    py::handle obj,
+    uint64_t& h,
+    std::vector<py::object>& input_tensors,
+    std::unordered_map<int64_t, int>& storage_groups,
+    int& next_group,
+    std::unordered_set<int64_t>& seen_ptrs,
+    int64_t& sky_device_index);
+
+static bool hash_arg(
+    py::handle obj,
+    uint64_t& h,
+    std::vector<py::object>& input_tensors,
+    std::unordered_map<int64_t, int>& storage_groups,
+    int& next_group,
+    std::unordered_set<int64_t>& seen_ptrs,
+    int64_t& sky_device_index)
+{
+    PyObject* ptr = obj.ptr();
+
+    // None
+    if (ptr == Py_None) {
+        h = hash_combine(h, 0xFFULL);
+        return true;
+    }
+
+    // Tensor
+    if (THPVariable_Check(ptr)) {
+        const auto& tensor = THPVariable_Unpack(ptr);
+        auto device_type = tensor.device().type();
+
+        // Get storage key for group tracking
+        int64_t storage_key;
+        auto* impl = dynamic_cast<TensorImpl*>(tensor.unsafeGetTensorImpl());
+        if (impl) {
+            storage_key = impl->get_storage_id();
+        } else {
+            storage_key = reinterpret_cast<int64_t>(tensor.storage().data_ptr().get());
+        }
+
+        if (device_type == c10::DeviceType::PrivateUse1) {
+            // Sky tensor
+            if (sky_device_index < 0) {
+                sky_device_index = tensor.device().index();
+            }
+
+            // Collect unique input tensors by storage
+            if (seen_ptrs.find(storage_key) == seen_ptrs.end()) {
+                seen_ptrs.insert(storage_key);
+                input_tensors.push_back(py::reinterpret_borrow<py::object>(obj));
+            }
+        }
+
+        // Storage group (for both sky and non-sky tensors)
+        int group;
+        auto git = storage_groups.find(storage_key);
+        if (git == storage_groups.end()) {
+            group = next_group++;
+            storage_groups[storage_key] = group;
+        } else {
+            group = git->second;
+        }
+
+        // Hash tensor metadata
+        h = hash_combine(h, 0x01ULL);  // tensor marker
+        auto sizes = tensor.sizes();
+        for (auto s : sizes) {
+            h = hash_combine(h, static_cast<uint64_t>(s));
+        }
+        h = hash_combine(h, static_cast<uint64_t>(tensor.scalar_type()));
+        auto strides = tensor.strides();
+        for (auto s : strides) {
+            h = hash_combine(h, static_cast<uint64_t>(s));
+        }
+        h = hash_combine(h, static_cast<uint64_t>(tensor.storage_offset()));
+        h = hash_combine(h, static_cast<uint64_t>(tensor.storage().nbytes()));
+        h = hash_combine(h, static_cast<uint64_t>(group));
+        return true;
+    }
+
+    // Bool (must check before int since PyBool is subclass of PyLong)
+    if (PyBool_Check(ptr)) {
+        h = hash_combine(h, 0x04ULL);
+        h = hash_combine(h, ptr == Py_True ? 1ULL : 0ULL);
+        return true;
+    }
+
+    // Int
+    if (PyLong_Check(ptr)) {
+        h = hash_combine(h, 0x02ULL);
+        h = hash_combine(h, static_cast<uint64_t>(PyLong_AsLongLong(ptr)));
+        return true;
+    }
+
+    // Float
+    if (PyFloat_Check(ptr)) {
+        h = hash_combine(h, 0x03ULL);
+        uint64_t bits;
+        double val = PyFloat_AsDouble(ptr);
+        std::memcpy(&bits, &val, 8);
+        h = hash_combine(h, bits);
+        return true;
+    }
+
+    // String
+    if (PyUnicode_Check(ptr)) {
+        h = hash_combine(h, 0x08ULL);
+        Py_ssize_t len;
+        const char* data = PyUnicode_AsUTF8AndSize(ptr, &len);
+        h = hash_combine(h, hash_bytes(data, len));
+        return true;
+    }
+
+    // torch.device
+    if (THPDevice_Check(ptr)) {
+        const auto& device_obj = reinterpret_cast<THPDevice*>(ptr)->device;
+        if (device_obj.type() == c10::DeviceType::PrivateUse1 && sky_device_index < 0) {
+            sky_device_index = device_obj.has_index() ? device_obj.index() : 0;
+        }
+        h = hash_combine(h, 0x0DULL);
+        h = hash_combine(h, static_cast<uint64_t>(device_obj.type()));
+        h = hash_combine(h, device_obj.has_index()
+            ? static_cast<uint64_t>(device_obj.index()) : 0xFFFFFFFFULL);
+        return true;
+    }
+
+    // torch.dtype — hash enum value directly (no string conversion)
+    if (THPDtype_Check(ptr)) {
+        h = hash_combine(h, 0x05ULL);
+        h = hash_combine(h, static_cast<uint64_t>(
+            reinterpret_cast<THPDtype*>(ptr)->scalar_type));
+        return true;
+    }
+
+    // torch.memory_format — hash enum value directly
+    if (THPMemoryFormat_Check(ptr)) {
+        h = hash_combine(h, 0x06ULL);
+        h = hash_combine(h, static_cast<uint64_t>(
+            reinterpret_cast<THPMemoryFormat*>(ptr)->memory_format));
+        return true;
+    }
+
+    // torch.layout — hash enum value directly
+    if (THPLayout_Check(ptr)) {
+        h = hash_combine(h, 0x07ULL);
+        h = hash_combine(h, static_cast<uint64_t>(
+            reinterpret_cast<THPLayout*>(ptr)->layout));
+        return true;
+    }
+
+    // List
+    if (PyList_Check(ptr)) {
+        Py_ssize_t n = PyList_GET_SIZE(ptr);
+        h = hash_combine(h, 0x09ULL);
+        h = hash_combine(h, static_cast<uint64_t>(n));
+        for (Py_ssize_t i = 0; i < n; i++) {
+            if (!hash_arg(py::handle(PyList_GET_ITEM(ptr, i)), h, input_tensors,
+                         storage_groups, next_group, seen_ptrs, sky_device_index)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Tuple
+    if (PyTuple_Check(ptr)) {
+        Py_ssize_t n = PyTuple_GET_SIZE(ptr);
+        h = hash_combine(h, 0x0AULL);
+        h = hash_combine(h, static_cast<uint64_t>(n));
+        for (Py_ssize_t i = 0; i < n; i++) {
+            if (!hash_arg(py::handle(PyTuple_GET_ITEM(ptr, i)), h, input_tensors,
+                         storage_groups, next_group, seen_ptrs, sky_device_index)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Unsupported type — uncacheable
+    return false;
+}
+
+// Helper to build the (hash, tensors_list, device_index) return tuple via raw C API
+static inline py::tuple build_context_result(
+    uint64_t h,
+    const std::vector<py::object>& input_tensors,
+    int64_t sky_device_index)
+{
+    PyObject* tensors_list = PyList_New(static_cast<Py_ssize_t>(input_tensors.size()));
+    for (size_t i = 0; i < input_tensors.size(); i++) {
+        PyObject* t = input_tensors[i].ptr();
+        Py_INCREF(t);
+        PyList_SET_ITEM(tensors_list, static_cast<Py_ssize_t>(i), t);
+    }
+    PyObject* result = PyTuple_New(3);
+    PyTuple_SET_ITEM(result, 0, PyLong_FromUnsignedLongLong(h));
+    PyTuple_SET_ITEM(result, 1, tensors_list);
+    PyTuple_SET_ITEM(result, 2, PyLong_FromLongLong(sky_device_index));
+    return py::reinterpret_steal<py::tuple>(result);
+}
+
+py::tuple compute_dispatch_context(
+    py::str op_name,
+    py::tuple args,
+    py::dict kwargs)
+{
+    uint64_t h = 0;
+
+    // Hash op_name using raw C API (zero-copy)
+    Py_ssize_t name_len;
+    const char* name_data = PyUnicode_AsUTF8AndSize(op_name.ptr(), &name_len);
+    h = hash_combine(h, hash_bytes(name_data, name_len));
+
+    std::vector<py::object> input_tensors;
+    std::unordered_map<int64_t, int> storage_groups;
+    int next_group = 0;
+    std::unordered_set<int64_t> seen_ptrs;
+    int64_t sky_device_index = -1;
+
+    // Check kwargs "device" first (matches Python behavior)
+    PyObject* dev = PyDict_GetItemString(kwargs.ptr(), "device");
+    if (dev && THPDevice_Check(dev)) {
+        const auto& device_obj = reinterpret_cast<THPDevice*>(dev)->device;
+        if (device_obj.type() == c10::DeviceType::PrivateUse1) {
+            sky_device_index = device_obj.has_index() ? device_obj.index() : 0;
+        }
+    }
+
+    // Hash positional args using raw C API
+    Py_ssize_t n_args = PyTuple_GET_SIZE(args.ptr());
+    for (Py_ssize_t i = 0; i < n_args; i++) {
+        if (!hash_arg(py::handle(PyTuple_GET_ITEM(args.ptr(), i)), h, input_tensors,
+                     storage_groups, next_group, seen_ptrs, sky_device_index)) {
+            return build_context_result(0, input_tensors, sky_device_index);
+        }
+    }
+
+    // Hash kwargs (sorted by key for deterministic ordering)
+    Py_ssize_t n_kwargs = PyDict_Size(kwargs.ptr());
+    if (n_kwargs > 0) {
+        // Collect key-value pairs using PyDict_Next (avoids string copies)
+        std::vector<std::pair<PyObject*, PyObject*>> sorted_items;
+        sorted_items.reserve(n_kwargs);
+        PyObject *key, *value;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(kwargs.ptr(), &pos, &key, &value)) {
+            sorted_items.push_back({key, value});
+        }
+        std::sort(sorted_items.begin(), sorted_items.end(),
+            [](const auto& a, const auto& b) {
+                return PyUnicode_Compare(a.first, b.first) < 0;
+            });
+
+        for (const auto& [k, v] : sorted_items) {
+            Py_ssize_t klen;
+            const char* kdata = PyUnicode_AsUTF8AndSize(k, &klen);
+            h = hash_combine(h, hash_bytes(kdata, klen));
+            if (!hash_arg(py::handle(v), h, input_tensors, storage_groups,
+                         next_group, seen_ptrs, sky_device_index)) {
+                return build_context_result(0, input_tensors, sky_device_index);
+            }
+        }
+    }
+
+    // Ensure hash is never 0 (reserved for uncacheable)
+    if (h == 0) h = 1;
+
+    return build_context_result(h, input_tensors, sky_device_index);
+}
+
 }  // namespace skytorch

@@ -11,6 +11,7 @@ import logging
 import pickle
 import struct
 import sys
+import time
 from typing import AsyncIterator
 
 try:
@@ -39,9 +40,30 @@ from skytorch.torch.server.serialization import (
     tensor_to_bytes,
     parse_dtype,
 )
+from skytorch.torch.profiler import PROFILING_ENABLED
 from skytorch.torch.server.tensor import TensorManager
 
+try:
+    from skytorch.torch.server._C import (
+        execute_raw_aten_inline as _cpp_execute_raw_aten_inline,
+        execute_raw_batched_aten_inline as _cpp_execute_raw_batched_aten_inline,
+    )
+
+    _USE_CPP_PARSER = True
+except ImportError:
+    _USE_CPP_PARSER = False
+
 logger = logging.getLogger(__name__)
+
+# Pre-compiled struct formats for binary parsing (avoids per-call format string parsing)
+_STRUCT_Q = struct.Struct("<Q")  # uint64
+_STRUCT_q = struct.Struct("<q")  # int64
+_STRUCT_d = struct.Struct("<d")  # float64
+_STRUCT_H = struct.Struct("<H")  # uint16
+_STRUCT_I = struct.Struct("<I")  # uint32
+_STRUCT_i = struct.Struct("<i")  # int32
+# Pre-compiled shape/stride formats for common dimensions (0-dim to 8-dim)
+_STRUCT_SHAPE: dict[int, struct.Struct] = {i: struct.Struct(f"<{i}q") for i in range(9)}
 
 
 class TensorServicer(service_pb2_grpc.ServiceServicer):
@@ -622,20 +644,25 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         pos = 4
 
         # Op name
-        op_name_len = struct.unpack_from("<H", data, pos)[0]
+        op_name_len = _STRUCT_H.unpack_from(data, pos)[0]
         pos += 2
         op_name = data[pos : pos + op_name_len].decode("utf-8")
         pos += op_name_len
 
         # Parse metadata and auto-create tensors (now immediately after op_name)
+        tensors = self.tensor_manager._tensors
         for _ in range(num_metadata):
-            meta, pos = self._parse_raw_tensor_metadata(data, pos)
-            self._ensure_tensor_exists(meta)
+            # Peek at tensor_id to skip already-registered tensors
+            tensor_id = _STRUCT_Q.unpack_from(data, pos)[0]
+            if tensor_id in tensors:
+                pos = self._skip_raw_tensor_metadata(data, pos)
+            else:
+                pos = self._parse_and_create_tensor(data, pos)
 
         # Parse output tensor IDs
         output_tensor_ids = []
         for _ in range(num_outputs):
-            tid = struct.unpack_from("<Q", data, pos)[0]
+            tid = _STRUCT_Q.unpack_from(data, pos)[0]
             pos += 8
             output_tensor_ids.append(tid)
 
@@ -662,17 +689,15 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         arg_type = data[pos]
         pos += 1
 
-        if arg_type == 0x00:  # NONE
-            return None, pos
-        elif arg_type == 0x01:  # TENSOR_ID
-            tid = struct.unpack_from("<Q", data, pos)[0]
+        if arg_type == 0x01:  # TENSOR_ID (most common — checked first)
+            tid = _STRUCT_Q.unpack_from(data, pos)[0]
             return self.tensor_manager.get(tid), pos + 8
+        elif arg_type == 0x00:  # NONE
+            return None, pos
         elif arg_type == 0x02:  # INT64
-            val = struct.unpack_from("<q", data, pos)[0]
-            return val, pos + 8
+            return _STRUCT_q.unpack_from(data, pos)[0], pos + 8
         elif arg_type == 0x03:  # FLOAT64
-            val = struct.unpack_from("<d", data, pos)[0]
-            return val, pos + 8
+            return _STRUCT_d.unpack_from(data, pos)[0], pos + 8
         elif arg_type == 0x04:  # BOOL
             return data[pos] != 0, pos + 1
         elif arg_type == 0x05:  # DTYPE
@@ -694,11 +719,11 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 return getattr(torch, s[6:]), pos + 1 + slen
             raise ValueError(f"Invalid layout string: {s}")
         elif arg_type == 0x08:  # STRING
-            slen = struct.unpack_from("<H", data, pos)[0]
+            slen = _STRUCT_H.unpack_from(data, pos)[0]
             s = data[pos + 2 : pos + 2 + slen].decode("utf-8")
             return s, pos + 2 + slen
         elif arg_type == 0x09:  # LIST
-            count = struct.unpack_from("<H", data, pos)[0]
+            count = _STRUCT_H.unpack_from(data, pos)[0]
             pos += 2
             items = []
             for _ in range(count):
@@ -706,7 +731,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 items.append(val)
             return items, pos
         elif arg_type == 0x0A:  # TUPLE
-            count = struct.unpack_from("<H", data, pos)[0]
+            count = _STRUCT_H.unpack_from(data, pos)[0]
             pos += 2
             items = []
             for _ in range(count):
@@ -716,17 +741,45 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         else:
             raise ValueError(f"Unknown arg type: 0x{arg_type:02x}")
 
-    def _parse_raw_tensor_metadata(self, data: bytes, pos: int):
-        """Parse tensor metadata from binary format. Returns (metadata_proto, new_pos)."""
-        tensor_id = struct.unpack_from("<Q", data, pos)[0]
+    def _skip_raw_tensor_metadata(self, data: bytes, pos: int) -> int:
+        """Skip past tensor metadata in binary format without parsing. Returns new position."""
+        pos += 8  # tensor_id (uint64)
+        ndim = data[pos]
+        pos += 1  # ndim (uint8)
+        pos += ndim * 16  # shape + stride (ndim * 2 * int64)
+        dtype_len = data[pos]
+        pos += 1 + dtype_len  # dtype_str_len + dtype_str
+        pos += 16  # storage_offset + nbytes (2 * int64)
+        dt_len = data[pos]
+        pos += 1 + dt_len  # device_type_len + device_type
+        pos += 4  # device_index (int32)
+        has_ref = data[pos]
+        pos += 1  # has_tensor_ref (uint8)
+        if has_ref:
+            pos += 8  # tensor_ref (uint64)
+        return pos
+
+    def _parse_and_create_tensor(self, data: bytes, pos: int) -> int:
+        """Parse tensor metadata from binary and create tensor directly. Returns new position.
+
+        Bypasses protobuf TensorMetadata construction for faster tensor creation.
+        """
+        tensor_id = _STRUCT_Q.unpack_from(data, pos)[0]
         pos += 8
         ndim = data[pos]
         pos += 1
 
-        shape = list(struct.unpack_from(f"<{ndim}q", data, pos))
-        pos += ndim * 8
-        stride = list(struct.unpack_from(f"<{ndim}q", data, pos))
-        pos += ndim * 8
+        fmt = _STRUCT_SHAPE.get(ndim)
+        if fmt is not None:
+            shape = list(fmt.unpack_from(data, pos))
+            pos += ndim * 8
+            stride = list(fmt.unpack_from(data, pos))
+            pos += ndim * 8
+        else:
+            shape = list(struct.unpack_from(f"<{ndim}q", data, pos))
+            pos += ndim * 8
+            stride = list(struct.unpack_from(f"<{ndim}q", data, pos))
+            pos += ndim * 8
 
         # dtype string (uint8 len + bytes)
         dtype_len = data[pos]
@@ -734,9 +787,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         dtype_str = data[pos : pos + dtype_len].decode("utf-8")
         pos += dtype_len
 
-        storage_offset = struct.unpack_from("<q", data, pos)[0]
+        storage_offset = _STRUCT_q.unpack_from(data, pos)[0]
         pos += 8
-        nbytes = struct.unpack_from("<q", data, pos)[0]
+        nbytes = _STRUCT_q.unpack_from(data, pos)[0]
         pos += 8
 
         # device_type string (uint8 len + bytes)
@@ -745,7 +798,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         device_type = data[pos : pos + dt_len].decode("utf-8")
         pos += dt_len
 
-        device_index = struct.unpack_from("<i", data, pos)[0]
+        device_index = _STRUCT_i.unpack_from(data, pos)[0]
         pos += 4
 
         # tensor_ref (optional)
@@ -753,24 +806,38 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         pos += 1
         tensor_ref = None
         if has_tensor_ref:
-            tensor_ref = struct.unpack_from("<Q", data, pos)[0]
+            tensor_ref = _STRUCT_Q.unpack_from(data, pos)[0]
             pos += 8
 
-        # Build a metadata proto
-        meta = service_pb2.TensorMetadata(
-            tensor_id=tensor_id,
-            shape=shape,
-            dtype=dtype_str,
-            nbytes=nbytes,
-            device_type=device_type,
-            stride=stride,
-            storage_offset=storage_offset,
-            device_index=device_index,
-        )
+        # Create tensor directly (no protobuf intermediary)
+        dtype = parse_dtype(dtype_str)
         if tensor_ref is not None:
-            meta.tensor_ref = tensor_ref
+            base_tensor = self.tensor_manager.get(tensor_ref)
+            storage = base_tensor.untyped_storage()
+            tensor = torch.empty(0, dtype=dtype, device=base_tensor.device).set_(
+                storage, storage_offset, shape, stride
+            )
+        else:
+            device = torch.device(device_type, device_index)
+            storage = torch.UntypedStorage(nbytes, device=device)
+            tensor = torch.empty(0, dtype=dtype, device=device).set_(
+                storage, storage_offset, shape, stride
+            )
 
-        return meta, pos
+        self.tensor_manager.register(tensor_id, tensor)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            if tensor_ref is not None:
+                logger.debug(
+                    f"Auto-created tensor {tensor_id} "
+                    f"(view of {tensor_ref}, shape={shape}, dtype={dtype})"
+                )
+            else:
+                logger.debug(
+                    f"Auto-created tensor {tensor_id} (nbytes={nbytes}, dtype={dtype})"
+                )
+
+        return pos
 
     def _execute_raw_aten_inline(self, data: bytes) -> None:
         """Execute a raw binary execute_aten request inline (no response construction).
@@ -919,7 +986,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             return service_pb2.GetTensorResponse(success=False, message=str(e))
 
     async def _handle_get_scalar(
-        self, request: service_pb2.GetScalarRequest
+        self,
+        request: service_pb2.GetScalarRequest,
+        server_profiler=None,
     ) -> service_pb2.GetScalarResponse:
         """Handle get_scalar request in streaming context.
 
@@ -927,6 +996,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         Args:
             request: GetScalarRequest with tensor ID
+            server_profiler: Optional ServerProfiler for timing
 
         Returns:
             GetScalarResponse with the scalar value
@@ -935,8 +1005,20 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             for metadata in request.tensor_metadata:
                 self._ensure_tensor_exists(metadata)
 
+            if server_profiler is not None:
+                _t0 = time.perf_counter_ns()
+
             tensor = self.tensor_manager.get(request.tensor_id)
+
+            if server_profiler is not None:
+                _t1 = time.perf_counter_ns()
+                server_profiler.scalar_lookup.add(_t1 - _t0)
+
             value = tensor.item()
+
+            if server_profiler is not None:
+                _t2 = time.perf_counter_ns()
+                server_profiler.scalar_gpu_sync.add(_t2 - _t1)
 
             if isinstance(value, bool):
                 return service_pb2.GetScalarResponse(bool_value=value)
@@ -991,33 +1073,84 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         # Only one chunked request can be in-flight at a time per stream (FIFO)
         current_chunk_state: list = [None]  # [buffer, first_request, chunk_size] or None
 
+        # Per-stream profiler (created only when profiling is enabled)
+        _sprof = None
+        if PROFILING_ENABLED:
+            from skytorch.torch.profiler import ServerProfiler
+
+            _sprof = ServerProfiler()
+            _sprof.stream_start_ns = time.perf_counter_ns()
+            _t_prev_end = _sprof.stream_start_ns
+
         try:
             async for request in request_iterator:
+                if PROFILING_ENABLED:
+                    _t_recv = time.perf_counter_ns()
+                    _sprof.idle_time.add(_t_recv - _t_prev_end)
+
                 total_chunks = request.total_chunks
 
                 if total_chunks > 1:
                     # Chunked request (always fire-and-forget update_tensor)
                     await self._handle_chunked_request(request, context, current_chunk_state)
+                    if PROFILING_ENABLED:
+                        _t_prev_end = time.perf_counter_ns()
                     continue
 
                 # Inline hot-path: check fire-and-forget types with HasField
                 # instead of WhichOneof + frozenset lookup
                 if request.HasField("raw_execute_aten"):
                     try:
-                        self._execute_raw_aten_inline(request.raw_execute_aten)
+                        if PROFILING_ENABLED:
+                            _t0 = time.perf_counter_ns()
+
+                        if _USE_CPP_PARSER:
+                            _cpp_execute_raw_aten_inline(
+                                request.raw_execute_aten,
+                                self.tensor_manager._tensors,
+                            )
+                        else:
+                            self._execute_raw_aten_inline(request.raw_execute_aten)
+
+                        if PROFILING_ENABLED:
+                            _t1 = time.perf_counter_ns()
+                            _sprof.raw_execute.add(_t1 - _t0)
+                            _sprof.total_ops += 1
                     except Exception as e:
                         logger.error(f"Error in fire-and-forget operation: {e}")
                         self._deferred_error = str(e)
                 elif request.HasField("raw_batched_execute_aten"):
                     try:
-                        raw_data = request.raw_batched_execute_aten
-                        pos = 0
-                        while pos < len(raw_data):
-                            op_len = struct.unpack_from("<I", raw_data, pos)[0]
-                            pos += 4
-                            op_data = raw_data[pos : pos + op_len]
-                            pos += op_len
-                            self._execute_raw_aten_inline(op_data)
+                        if PROFILING_ENABLED:
+                            _t0 = time.perf_counter_ns()
+
+                        if _USE_CPP_PARSER:
+                            _cpp_execute_raw_batched_aten_inline(
+                                request.raw_batched_execute_aten,
+                                self.tensor_manager._tensors,
+                            )
+                        else:
+                            raw_data = request.raw_batched_execute_aten
+                            pos = 0
+                            while pos < len(raw_data):
+                                op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
+                                pos += 4
+                                op_data = raw_data[pos : pos + op_len]
+                                pos += op_len
+                                self._execute_raw_aten_inline(op_data)
+
+                        if PROFILING_ENABLED:
+                            _t1 = time.perf_counter_ns()
+                            _sprof.raw_batched_execute.add(_t1 - _t0)
+                            # Count ops by scanning length prefixes
+                            raw_data = request.raw_batched_execute_aten
+                            _n_ops = 0
+                            _pos = 0
+                            while _pos < len(raw_data):
+                                _op_len = _STRUCT_I.unpack_from(raw_data, _pos)[0]
+                                _pos += 4 + _op_len
+                                _n_ops += 1
+                            _sprof.total_ops += _n_ops
                     except Exception as e:
                         logger.error(f"Error in fire-and-forget operation: {e}")
                         self._deferred_error = str(e)
@@ -1076,9 +1209,26 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                         self._deferred_error = str(e)
                 else:
                     # Sync operation (get_tensor, get_scalar): yield response
-                    response = await self._handle_single_request(request, context)
+                    if PROFILING_ENABLED:
+                        _t0 = time.perf_counter_ns()
+
+                    response = await self._handle_single_request(
+                        request, context, server_profiler=_sprof
+                    )
+
+                    if PROFILING_ENABLED:
+                        _t1 = time.perf_counter_ns()
+                        _sprof.sync_handle.add(_t1 - _t0)
+
                     yield response
+
+                if PROFILING_ENABLED:
+                    _t_prev_end = time.perf_counter_ns()
         finally:
+            if PROFILING_ENABLED:
+                _sprof.stream_end_ns = time.perf_counter_ns()
+                _sprof.print_summary()
+
             # Release all tensor memory when the client disconnects
             self.tensor_manager.clear()
             self._pending_tensors.clear()
@@ -1129,7 +1279,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 raw_data = request.raw_batched_execute_aten
                 pos = 0
                 while pos < len(raw_data):
-                    op_len = struct.unpack_from("<I", raw_data, pos)[0]
+                    op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
                     pos += 4
                     op_data = raw_data[pos : pos + op_len]
                     pos += op_len
@@ -1143,6 +1293,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         self,
         request: service_pb2.StreamRequest,
         context: grpc.aio.ServicerContext,
+        server_profiler=None,
     ) -> service_pb2.StreamResponse:
         """Handle a single sync stream request (get_tensor).
 
@@ -1169,7 +1320,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 response.get_tensor.CopyFrom(result)
 
             elif request_type == "get_scalar":
-                result = await self._handle_get_scalar(request.get_scalar)
+                result = await self._handle_get_scalar(
+                    request.get_scalar, server_profiler=server_profiler
+                )
                 response.success = True
                 response.get_scalar.CopyFrom(result)
 
