@@ -48,6 +48,7 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <c10/core/ScalarType.h>
 #include <cstdint>
 #include <string>
 #include <unordered_set>
@@ -56,6 +57,15 @@
 namespace py = pybind11;
 
 namespace skytorch {
+
+// Cached output metadata for a single output tensor
+struct OutputMeta {
+    std::vector<int64_t> shape;
+    std::vector<int64_t> stride;
+    c10::ScalarType dtype;
+    int64_t storage_offset;
+    int alias_input;  // -1 = new storage, -2 = None output, >=0 = input index
+};
 
 // Arg type tags for binary serialization
 enum class ArgType : uint8_t {
@@ -139,5 +149,43 @@ py::tuple compute_dispatch_context(
     py::str op_name,
     py::tuple args,
     py::dict kwargs);
+
+/**
+ * Fused dispatch for cache hits: hash + cache lookup + output creation + serialization.
+ *
+ * Returns:
+ *   None → uncacheable args (Python does full meta execution without caching)
+ *   Tuple(3) → cache miss: (cache_hash, input_tensors, sky_device_index)
+ *   Tuple(5) → cache hit: (output_tensors_list, raw_bytes, new_tensor_ids, new_storage_ids, sky_device_index)
+ */
+py::object dispatch_cached_aten(
+    py::str op_name,
+    py::tuple args,
+    py::dict kwargs);
+
+/**
+ * Populate the C++ shape cache after a meta execution miss.
+ *
+ * output_metas: list of (shape, stride, dtype_int, storage_offset, alias_input) tuples,
+ *               or None for None outputs.
+ */
+void populate_shape_cache(uint64_t cache_key, py::list output_metas);
+
+/**
+ * Clear all shape cache entries.
+ */
+void clear_shape_cache();
+
+/**
+ * Register a local sky device index → (remote_device_type, remote_device_index) mapping.
+ */
+void register_device_mapping(int64_t local_index,
+                              const std::string& remote_type,
+                              int64_t remote_index);
+
+/**
+ * Clear all device mappings.
+ */
+void clear_device_mappings();
 
 }  // namespace skytorch

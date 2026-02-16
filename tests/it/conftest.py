@@ -103,6 +103,13 @@ def reset_sky_state():
         _clear_registered_tensor_ids()
     except (ImportError, AttributeError):
         pass
+    try:
+        from skytorch.torch.backend._C import _clear_device_mappings, _clear_shape_cache
+
+        _clear_shape_cache()
+        _clear_device_mappings()
+    except (ImportError, AttributeError):
+        pass
 
     yield
 
@@ -113,6 +120,13 @@ def reset_sky_state():
         from skytorch.torch.backend._C import _clear_registered_tensor_ids
 
         _clear_registered_tensor_ids()
+    except (ImportError, AttributeError):
+        pass
+    try:
+        from skytorch.torch.backend._C import _clear_device_mappings, _clear_shape_cache
+
+        _clear_shape_cache()
+        _clear_device_mappings()
     except (ImportError, AttributeError):
         pass
 

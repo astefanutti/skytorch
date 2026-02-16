@@ -35,6 +35,17 @@ except ImportError:
 
 # _compute_dispatch_context = None
 
+try:
+    from skytorch.torch.backend._C import (
+        _clear_shape_cache,
+        _dispatch_cached_aten,
+        _populate_shape_cache,
+    )
+except ImportError:
+    _dispatch_cached_aten = None
+    _populate_shape_cache = None
+    _clear_shape_cache = None
+
 _SHAPE_CACHE_MAX_SIZE = 4096
 _sky_device_cache: dict[int, torch.device] = {}
 
@@ -175,9 +186,7 @@ def _create_meta_tensor_from_sky(
     # Create or reuse meta storage to preserve storage sharing relationships
     if original_storage not in meta_storage_cache:
         nbytes = original_storage.nbytes()
-        meta_storage_cache[original_storage] = torch.UntypedStorage(
-            nbytes, device="meta"
-        )
+        meta_storage_cache[original_storage] = torch.UntypedStorage(nbytes, device="meta")
 
     meta_storage = meta_storage_cache[original_storage]
 
@@ -304,6 +313,7 @@ def _execute_with_static_outputs(
     original_tensors: dict[torch.UntypedStorage, torch.Tensor],
     cache_key: Any = None,
     input_tensors: list[torch.Tensor] | None = None,
+    fused_cache_hash: int | None = None,
 ) -> Any:
     """Execute operation using meta tensors for shape inference."""
     # Normalize meta_result to list
@@ -316,14 +326,15 @@ def _execute_with_static_outputs(
 
     # Create output tensors based on meta shapes
     output_tensors = (
-        _create_output_tensors(meta_outputs, original_tensors, sky_device)
-        if meta_outputs
-        else []
+        _create_output_tensors(meta_outputs, original_tensors, sky_device) if meta_outputs else []
     )
 
     # Populate the shape cache
     if cache_key is not None and input_tensors is not None:
         _populate_cache(cache_key, meta_outputs, original_tensors, input_tensors)
+        # Also populate the C++ shape cache for fused dispatch
+        if fused_cache_hash is not None:
+            _populate_cpp_cache(fused_cache_hash, meta_outputs, original_tensors, input_tensors)
 
     # Execute operation remotely via gRPC
     _client.execute_aten_operation(
@@ -482,6 +493,125 @@ def _collect_input_tensors(args: tuple[Any, ...], kwargs: dict[str, Any]) -> lis
     return tensors
 
 
+def _submit_and_register(
+    raw_bytes: bytes,
+    new_tensor_ids: list,
+    new_storage_ids: list,
+    dev_idx: int,
+) -> None:
+    """Submit serialized request and register new tensors locally."""
+    from skytorch.torch.backend._device import device_manager
+    from skytorch.torch.backend._storage import storage_manager
+
+    remote_info = device_manager._local_to_remote.get(dev_idx)
+    if remote_info is None:
+        raise RuntimeError(
+            "No Compute context available for ATen operation. "
+            "Ensure you are within an 'async with Compute(...):' block."
+        )
+    compute = remote_info.compute
+    if compute._grpc_client is None:
+        raise RuntimeError(
+            f"Compute '{compute.name}' is not ready. The gRPC client has not been initialized."
+        )
+
+    stream_manager = compute._grpc_client.stream
+    stream_manager.submit_execute_aten_bytes(raw_bytes)
+
+    # Register new tensors locally (C++ already updated its tracking set)
+    for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids, strict=True):
+        storage_manager.register_storage(
+            storage_id=storage_id,
+            nbytes=0,
+            device_index=dev_idx,
+        )
+        storage_manager._storage_to_tensors[storage_id].add(tensor_id)
+
+
+def _unpack_outputs(output_tensors: list) -> Any:
+    """Unpack output tensors list into the expected return format."""
+    if len(output_tensors) > 1:
+        return tuple(output_tensors)
+    elif output_tensors:
+        return output_tensors[0]
+    else:
+        return None
+
+
+def _populate_cpp_cache(
+    cache_hash: int,
+    meta_outputs: list,
+    original_tensors: dict,
+    input_tensors: list,
+) -> None:
+    """Populate the C++ shape cache alongside the Python cache."""
+    if _populate_shape_cache is None:
+        return
+
+    # Build storage -> input index mapping for alias detection
+    storage_to_input: dict[int, int] = {}
+    for i, t in enumerate(input_tensors):
+        ptr = t.untyped_storage().data_ptr()
+        if ptr not in storage_to_input:
+            storage_to_input[ptr] = i
+
+    cpp_metas = []
+    for meta_output in meta_outputs:
+        if meta_output is None:
+            cpp_metas.append(None)
+            continue
+
+        meta_storage = meta_output.untyped_storage()
+        alias_input = -1
+
+        if meta_storage in original_tensors:
+            original = original_tensors[meta_storage]
+            ptr = original.untyped_storage().data_ptr()
+            alias_input = storage_to_input.get(ptr, -1)
+
+        cpp_metas.append(
+            (
+                list(meta_output.shape),
+                list(meta_output.stride()),
+                _dtype_to_scalar_type_int(meta_output.dtype),
+                meta_output.storage_offset(),
+                alias_input,
+            )
+        )
+
+    _populate_shape_cache(cache_hash, cpp_metas)
+
+
+# Map torch.dtype to c10::ScalarType integer value
+_DTYPE_TO_SCALAR_TYPE: dict[torch.dtype, int] = {
+    torch.float32: 6,
+    torch.float64: 7,
+    torch.float16: 5,
+    torch.bfloat16: 15,
+    torch.int32: 3,
+    torch.int64: 4,
+    torch.int16: 2,
+    torch.int8: 1,
+    torch.uint8: 0,
+    torch.bool: 11,
+    torch.complex64: 9,
+    torch.complex128: 10,
+}
+
+
+def _dtype_to_scalar_type_int(dtype: torch.dtype) -> int:
+    """Convert torch.dtype to c10::ScalarType integer."""
+    result = _DTYPE_TO_SCALAR_TYPE.get(dtype)
+    if result is not None:
+        return result
+    # Fallback for newer dtypes
+    if hasattr(torch, "float8_e5m2") and dtype == torch.float8_e5m2:
+        return 23
+    if hasattr(torch, "float8_e4m3fn") and dtype == torch.float8_e4m3fn:
+        return 24
+    raise ValueError(f"Unsupported dtype for cache: {dtype}")
+
+
 def _sky_kernel_fallback(
     op: torch._ops.OpOverload,
     *args: Any,
@@ -505,6 +635,37 @@ def _sky_kernel_fallback(
                 _prof.first_dispatch_ns = _t0
             _prof.total_ops += 1
 
+        # Fused C++ path: hash + cache lookup + output creation + serialization
+        # Only handles cache hits; misses/uncacheable fall through to existing path
+        fused_cache_hash = None
+        if _dispatch_cached_aten is not None:
+            fused_result = _dispatch_cached_aten(op_name, args, kwargs)
+
+            if fused_result is not None and len(fused_result) == 5:
+                # Cache hit — single C++ call did everything
+                output_tensors, raw_bytes, new_tensor_ids, new_storage_ids, dev_idx = fused_result
+
+                if PROFILING_ENABLED:
+                    _t1 = time.perf_counter_ns()
+                    _prof.cache_key_build.add(_t1 - _t0)
+                    _prof.cache_hits += 1
+
+                _submit_and_register(raw_bytes, new_tensor_ids, new_storage_ids, dev_idx)
+
+                if PROFILING_ENABLED:
+                    _t3 = time.perf_counter_ns()
+                    _prof.execute_dispatch.add(_t3 - _t1)
+                    _prof.last_dispatch_end = _t3
+                    _prof.last_dispatch_ns = _t3
+
+                return _unpack_outputs(output_tensors)
+
+            if fused_result is not None and len(fused_result) == 3:
+                # Cache miss — save hash so we can dual-populate C++ cache below
+                fused_cache_hash = fused_result[0]
+
+            # Fall through to existing path for cache misses and uncacheable
+
         # Compute cache key, resolve device, and collect tensors
         if _compute_dispatch_context is not None:
             # C++ fast path: single walk of args/kwargs
@@ -521,9 +682,7 @@ def _sky_kernel_fallback(
                 sky_device = None
         else:
             # Python fallback
-            cache_key, sky_device, input_tensors = _build_cache_key_with_context(
-                op, args, kwargs
-            )
+            cache_key, sky_device, input_tensors = _build_cache_key_with_context(op, args, kwargs)
 
         if PROFILING_ENABLED:
             _t1 = time.perf_counter_ns()
@@ -533,9 +692,7 @@ def _sky_kernel_fallback(
         if cache_key is not None:
             cached = _shape_cache.get(cache_key)
             if cached is not None and sky_device is not None:
-                output_tensors = _create_outputs_from_cache(
-                    cached, input_tensors, sky_device
-                )
+                output_tensors = _create_outputs_from_cache(cached, input_tensors, sky_device)
 
                 if PROFILING_ENABLED:
                     _t2 = time.perf_counter_ns()
@@ -592,15 +749,20 @@ def _sky_kernel_fallback(
 
             args, kwargs = map_args_kwargs(_promote, args, kwargs)
             # Re-collect input tensors after promotion
-            input_tensors = (
-                _collect_input_tensors(args, kwargs) if cache_key is not None else None
-            )
+            input_tensors = _collect_input_tensors(args, kwargs) if cache_key is not None else None
         else:
             input_tensors = input_tensors if cache_key is not None else None
 
         result = _execute_with_static_outputs(
-            op, args, kwargs, sky_device, meta_result, original_tensors,
-            cache_key=cache_key, input_tensors=input_tensors,
+            op,
+            args,
+            kwargs,
+            sky_device,
+            meta_result,
+            original_tensors,
+            cache_key=cache_key,
+            input_tensors=input_tensors,
+            fused_cache_hash=fused_cache_hash,
         )
 
         if PROFILING_ENABLED:

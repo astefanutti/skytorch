@@ -253,6 +253,30 @@ PYBIND11_MODULE(_C, m) {
         py::arg("args"),
         py::arg("kwargs"));
 
+    // Fused dispatch: hash + cache lookup + output creation + serialization in one C++ call
+    m.def("_dispatch_cached_aten", &skytorch::dispatch_cached_aten,
+        "Fused dispatch for cache hits: hash, cache lookup, output creation, and serialization",
+        py::arg("op_name"),
+        py::arg("args"),
+        py::arg("kwargs"));
+
+    // Shape cache management
+    m.def("_populate_shape_cache", &skytorch::populate_shape_cache,
+        "Populate the C++ shape cache after meta execution",
+        py::arg("cache_key"),
+        py::arg("output_metas"));
+    m.def("_clear_shape_cache", &skytorch::clear_shape_cache,
+        "Clear all shape cache entries");
+
+    // Device mapping registry
+    m.def("_register_device_mapping", &skytorch::register_device_mapping,
+        "Register a local sky device index to remote device mapping",
+        py::arg("local_index"),
+        py::arg("remote_type"),
+        py::arg("remote_index"));
+    m.def("_clear_device_mappings", &skytorch::clear_device_mappings,
+        "Clear all device mappings");
+
     // Register cleanup with atexit
     py::module atexit = py::module::import("atexit");
     atexit.attr("register")(py::cpp_function(&skytorch::clear_method_cache));

@@ -97,6 +97,14 @@ class DeviceManager:
         if self._next_index > runtime_manager.get_device_count():
             runtime_manager.set_device_count(self._next_index)
 
+        # Register device mapping in C++ for fused dispatch
+        try:
+            from skytorch.torch.backend._C import _register_device_mapping
+
+            _register_device_mapping(local_index, device_type, device_index)
+        except (ImportError, AttributeError):
+            pass
+
         return torch.device("sky", local_index)
 
     def get_remote_device_info(self, device_index: int) -> RemoteDeviceInfo:
@@ -149,9 +157,7 @@ class DeviceManager:
         removed_indices = []
 
         # Find all mappings for this Compute
-        keys_to_remove = [
-            key for key in self._remote_to_local if key[0] == compute_id
-        ]
+        keys_to_remove = [key for key in self._remote_to_local if key[0] == compute_id]
 
         for key in keys_to_remove:
             local_index = self._remote_to_local.pop(key)
@@ -170,6 +176,15 @@ class DeviceManager:
         self._local_to_remote.clear()
         self._remote_to_local.clear()
         self._next_index = 0
+
+        # Clear C++ device mappings and shape cache
+        try:
+            from skytorch.torch.backend._C import _clear_device_mappings, _clear_shape_cache
+
+            _clear_device_mappings()
+            _clear_shape_cache()
+        except (ImportError, AttributeError):
+            pass
 
 
 # Global device manager instance
