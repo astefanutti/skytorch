@@ -67,6 +67,15 @@ class ClientProfiler:
         self.sync_flush = Counter()
         self.sync_wait = Counter()
 
+        # Sync wait decomposition (server-provided timing)
+        self.sync_network_rtt = Counter()
+        self.sync_server_backlog = Counter()
+        self.sync_server_handle = Counter()
+
+        # Scalar speculation stats
+        self.scalar_speculative_hits: int = 0
+        self.scalar_speculative_misses: int = 0
+
         # Sync buffer state (non-timing accumulators)
         self.sync_mt_ops_total: int = 0
         self.sync_queue_depth_total: int = 0
@@ -150,6 +159,33 @@ class ClientProfiler:
                     f"  Ops drained at sync:   {_avg_ops:.0f} avg",
                     f"  Queue depth at sync:   {_avg_qdepth:.1f} avg  |  "
                     f"max {self.sync_queue_depth_max}",
+                    "",
+                ]
+            )
+
+        if self.sync_network_rtt.count > 0:
+            lines.extend(
+                [
+                    "Sync wait decomposition (per-sync avg / total):",
+                    f"  Network RTT:          {self.sync_network_rtt.avg_ms:.2f} ms  |  "
+                    f"{self.sync_network_rtt.total_ms:,.0f} ms",
+                    f"  Server backlog:       {self.sync_server_backlog.avg_ms:.2f} ms  |  "
+                    f"{self.sync_server_backlog.total_ms:,.0f} ms",
+                    f"  Server handle (GPU):  {self.sync_server_handle.avg_ms:.2f} ms  |  "
+                    f"{self.sync_server_handle.total_ms:,.0f} ms",
+                    "",
+                ]
+            )
+
+        if self.scalar_speculative_hits > 0 or self.scalar_speculative_misses > 0:
+            _total_spec = self.scalar_speculative_hits + self.scalar_speculative_misses
+            _hit_pct = (self.scalar_speculative_hits / _total_spec * 100) if _total_spec else 0
+            lines.extend(
+                [
+                    "Scalar speculation:",
+                    f"  Hits: {self.scalar_speculative_hits:,}  |  "
+                    f"Misses: {self.scalar_speculative_misses:,}  |  "
+                    f"Rate: {_hit_pct:.0f}%",
                     "",
                 ]
             )

@@ -271,4 +271,8 @@ message StreamResponse {
   // Chunking support for large responses (get_tensor)
   uint32 chunk_number = 10;
   uint32 total_chunks = 11;
+
+  // Server-side timing for sync_wait decomposition (profiling)
+  uint64 server_backlog_ns = 14;
+  uint64 server_handle_ns = 15;
 }

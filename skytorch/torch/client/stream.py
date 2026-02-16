@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -151,14 +152,16 @@ class StreamManager:
         if pending is not None:
             self._pending.append(pending)
 
-    # Flush threshold: when this many ops are buffered, flush immediately
-    _BATCH_FLUSH_THRESHOLD = 64
+    # Flush threshold: when this many ops are buffered, flush immediately.
+    # Override with SKYTORCH_BATCH_THRESHOLD env var.
+    _BATCH_FLUSH_THRESHOLD = int(os.environ.get("SKYTORCH_BATCH_THRESHOLD", "64"))
 
     # Coalescing delay: defer partial-batch flush by this many seconds,
     # allowing more ops to accumulate and amortize per-message gRPC overhead.
     # At C++ dispatch rate (~17 us/op), 1 ms ≈ 59 ops per batch.
     # Sync points force an immediate flush, so this never adds sync latency.
-    _BATCH_COALESCE_DELAY = 0.002
+    # Override with SKYTORCH_BATCH_COALESCE_MS env var (in milliseconds).
+    _BATCH_COALESCE_DELAY = float(os.environ.get("SKYTORCH_BATCH_COALESCE_MS", "2")) / 1000.0
 
     def _enqueue_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
         """Buffer an execute_aten request for batching. Must run on the event loop thread."""
@@ -593,7 +596,14 @@ class StreamManager:
             response = await future
             if PROFILING_ENABLED:
                 _t_resolved = time.perf_counter_ns()
-                _prof.sync_wait.add(_t_resolved - _t_enqueue)
+                _wait_ns = _t_resolved - _t_enqueue
+                _prof.sync_wait.add(_wait_ns)
+                # Decompose sync_wait using server-provided timing
+                _server_total = response.server_backlog_ns + response.server_handle_ns
+                _network_rtt = _wait_ns - _server_total
+                _prof.sync_network_rtt.add(max(0, _network_rtt))
+                _prof.sync_server_backlog.add(response.server_backlog_ns)
+                _prof.sync_server_handle.add(response.server_handle_ns)
             # FIFO ordering guarantees all prior fire-and-forget errors are recorded
             self.check_error()
             return response
@@ -659,7 +669,14 @@ class StreamManager:
             response = await future
             if PROFILING_ENABLED:
                 _t_resolved = time.perf_counter_ns()
-                _prof.sync_wait.add(_t_resolved - _t_enqueue)
+                _wait_ns = _t_resolved - _t_enqueue
+                _prof.sync_wait.add(_wait_ns)
+                # Decompose sync_wait using server-provided timing
+                _server_total = response.server_backlog_ns + response.server_handle_ns
+                _network_rtt = _wait_ns - _server_total
+                _prof.sync_network_rtt.add(max(0, _network_rtt))
+                _prof.sync_server_backlog.add(response.server_backlog_ns)
+                _prof.sync_server_handle.add(response.server_handle_ns)
             # FIFO ordering guarantees all prior fire-and-forget errors are recorded
             self.check_error()
             return response
@@ -671,7 +688,7 @@ class StreamManager:
         if not self._started:
             return
 
-        # Flush any pending batches before closing
+        # Flush pending batches before closing
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()

@@ -531,6 +531,21 @@ py::tuple build_execute_aten_request(
     );
 }
 
+// --- Submit callback for fused dispatch ---
+
+static PyObject* g_submit_callback = nullptr;
+
+void set_submit_callback(py::object callback) {
+    Py_XDECREF(g_submit_callback);
+    g_submit_callback = callback.ptr();
+    Py_INCREF(g_submit_callback);
+}
+
+void clear_submit_callback() {
+    Py_XDECREF(g_submit_callback);
+    g_submit_callback = nullptr;
+}
+
 // --- Device mapping registry ---
 
 static std::unordered_map<int64_t, std::pair<std::string, int64_t>> g_device_mappings;
@@ -1446,17 +1461,70 @@ py::object dispatch_cached_aten(
         register_tensor_with_storage(info.tensor_id, info.storage_id);
     }
 
-    // Build output tensors list
-    PyObject* out_list = PyList_New(static_cast<Py_ssize_t>(output_tensors_py.size()));
-    for (size_t i = 0; i < output_tensors_py.size(); i++) {
-        PyObject* t = output_tensors_py[i].ptr();
-        Py_INCREF(t);
-        PyList_SET_ITEM(out_list, static_cast<Py_ssize_t>(i), t);
+    // Phase 5: Submit directly from C++ if callback is registered
+    if (g_submit_callback) {
+        // Call submit callback with (raw_bytes, new_tensor_ids, new_storage_ids, dev_idx)
+        PyObject* raw = PyBytes_FromStringAndSize(
+            reinterpret_cast<const char*>(buffer.data()),
+            static_cast<Py_ssize_t>(buffer.size()));
+        PyObject* cb_args = PyTuple_New(4);
+        PyTuple_SET_ITEM(cb_args, 0, raw);
+        PyTuple_SET_ITEM(cb_args, 1, new_tensor_ids.release().ptr());
+        PyTuple_SET_ITEM(cb_args, 2, new_storage_ids.release().ptr());
+        PyTuple_SET_ITEM(cb_args, 3, PyLong_FromLongLong(sky_device_index));
+        PyObject* cb_result = PyObject_Call(g_submit_callback, cb_args, nullptr);
+        Py_DECREF(cb_args);
+        if (cb_result == nullptr) {
+            throw py::error_already_set();
+        }
+        Py_DECREF(cb_result);
+
+        // Build unpacked output directly
+        PyObject* unpacked_output;
+        if (output_tensors_py.size() > 1) {
+            PyObject* tup = PyTuple_New(static_cast<Py_ssize_t>(output_tensors_py.size()));
+            for (size_t i = 0; i < output_tensors_py.size(); i++) {
+                PyObject* t = output_tensors_py[i].ptr();
+                Py_INCREF(t);
+                PyTuple_SET_ITEM(tup, static_cast<Py_ssize_t>(i), t);
+            }
+            unpacked_output = tup;
+        } else if (output_tensors_py.size() == 1) {
+            unpacked_output = output_tensors_py[0].ptr();
+            Py_INCREF(unpacked_output);
+        } else {
+            unpacked_output = Py_None;
+            Py_INCREF(unpacked_output);
+        }
+
+        // Return 1-tuple (unpacked_output,) to signal "cache hit, already submitted"
+        PyObject* wrapper = PyTuple_New(1);
+        PyTuple_SET_ITEM(wrapper, 0, unpacked_output);
+        return py::reinterpret_steal<py::object>(wrapper);
     }
 
-    // Return (output_tensors_list, raw_bytes, new_tensor_ids, new_storage_ids, sky_device_index)
+    // Fallback: return tuple for Python-side submission
+    // Build unpacked output: single tensor, tuple of tensors, or None
+    PyObject* unpacked_output;
+    if (output_tensors_py.size() > 1) {
+        PyObject* tup = PyTuple_New(static_cast<Py_ssize_t>(output_tensors_py.size()));
+        for (size_t i = 0; i < output_tensors_py.size(); i++) {
+            PyObject* t = output_tensors_py[i].ptr();
+            Py_INCREF(t);
+            PyTuple_SET_ITEM(tup, static_cast<Py_ssize_t>(i), t);
+        }
+        unpacked_output = tup;
+    } else if (output_tensors_py.size() == 1) {
+        unpacked_output = output_tensors_py[0].ptr();
+        Py_INCREF(unpacked_output);
+    } else {
+        unpacked_output = Py_None;
+        Py_INCREF(unpacked_output);
+    }
+
+    // Return (unpacked_output, raw_bytes, new_tensor_ids, new_storage_ids, sky_device_index)
     PyObject* result = PyTuple_New(5);
-    PyTuple_SET_ITEM(result, 0, out_list);
+    PyTuple_SET_ITEM(result, 0, unpacked_output);
     PyTuple_SET_ITEM(result, 1,
         PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(buffer.data()),

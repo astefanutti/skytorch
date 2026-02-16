@@ -198,7 +198,11 @@ def _stream_worker(work_queue, servicer, loop, server_profiler):
 
             if server_profiler is not None:
                 _t1 = time.perf_counter_ns()
-                server_profiler.sync_handle.add(_t1 - _t0)
+                _handle_ns = _t1 - _t0
+                server_profiler.sync_handle.add(_handle_ns)
+                # Embed server-side timing in response for client decomposition
+                response.server_backlog_ns = _cycle_backlog_time_ns
+                response.server_handle_ns = _handle_ns
 
             loop.call_soon_threadsafe(future.set_result, response)
             if server_profiler is not None:

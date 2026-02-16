@@ -344,7 +344,7 @@ class StreamRequest(_message.Message):
     def __init__(self, execute_aten: _Optional[_Union[ExecuteAtenRequest, _Mapping]] = ..., delete_tensors: _Optional[_Union[DeleteTensorsRequest, _Mapping]] = ..., copy_tensor: _Optional[_Union[CopyTensorRequest, _Mapping]] = ..., update_tensor: _Optional[_Union[UpdateTensorRequest, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorRequest, _Mapping]] = ..., register_tensors: _Optional[_Union[RegisterTensorsRequest, _Mapping]] = ..., batched_execute_aten: _Optional[_Union[BatchedExecuteAtenRequest, _Mapping]] = ..., raw_execute_aten: _Optional[bytes] = ..., raw_batched_execute_aten: _Optional[bytes] = ..., get_scalar: _Optional[_Union[GetScalarRequest, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., total_bytes: _Optional[int] = ...) -> None: ...
 
 class StreamResponse(_message.Message):
-    __slots__ = ("success", "error_message", "execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "register_tensors", "get_scalar", "chunk_number", "total_chunks")
+    __slots__ = ("success", "error_message", "execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "register_tensors", "get_scalar", "chunk_number", "total_chunks", "server_backlog_ns", "server_handle_ns")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
     EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
@@ -356,6 +356,8 @@ class StreamResponse(_message.Message):
     GET_SCALAR_FIELD_NUMBER: _ClassVar[int]
     CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
     TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
+    SERVER_BACKLOG_NS_FIELD_NUMBER: _ClassVar[int]
+    SERVER_HANDLE_NS_FIELD_NUMBER: _ClassVar[int]
     success: bool
     error_message: str
     execute_aten: ExecuteAtenResponse
@@ -367,4 +369,6 @@ class StreamResponse(_message.Message):
     get_scalar: GetScalarResponse
     chunk_number: int
     total_chunks: int
-    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., execute_aten: _Optional[_Union[ExecuteAtenResponse, _Mapping]] = ..., delete_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., copy_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., update_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorResponse, _Mapping]] = ..., register_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_scalar: _Optional[_Union[GetScalarResponse, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ...) -> None: ...
+    server_backlog_ns: int
+    server_handle_ns: int
+    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., execute_aten: _Optional[_Union[ExecuteAtenResponse, _Mapping]] = ..., delete_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., copy_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., update_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorResponse, _Mapping]] = ..., register_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_scalar: _Optional[_Union[GetScalarResponse, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., server_backlog_ns: _Optional[int] = ..., server_handle_ns: _Optional[int] = ...) -> None: ...

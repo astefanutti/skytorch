@@ -188,4 +188,17 @@ void register_device_mapping(int64_t local_index,
  */
 void clear_device_mappings();
 
+/**
+ * Set callback for submitting raw bytes to the stream manager.
+ * Called from dispatch_cached_aten on cache hits to avoid returning to Python.
+ * The callback receives (raw_bytes, dev_idx) and calls
+ * stream_manager.submit_execute_aten_bytes(raw_bytes).
+ */
+void set_submit_callback(py::object callback);
+
+/**
+ * Clear the submit callback. Called during reset/shutdown.
+ */
+void clear_submit_callback();
+
 }  // namespace skytorch

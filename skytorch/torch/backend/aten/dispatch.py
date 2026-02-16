@@ -46,8 +46,21 @@ except ImportError:
     _populate_shape_cache = None
     _clear_shape_cache = None
 
+try:
+    from skytorch.torch.backend._C import _set_submit_callback, _clear_submit_callback
+except ImportError:
+    _set_submit_callback = None
+    _clear_submit_callback = None
+
+_submit_callback_registered = False
+
 _SHAPE_CACHE_MAX_SIZE = 4096
 _sky_device_cache: dict[int, torch.device] = {}
+
+# Cached stream_manager per device index — stable after device creation.
+# Eliminates device_manager -> remote_info -> compute -> _grpc_client.stream
+# attribute chain on every dispatch (~3 dict/attribute lookups per op).
+_cached_stream_managers: dict[int, object] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,15 +506,13 @@ def _collect_input_tensors(args: tuple[Any, ...], kwargs: dict[str, Any]) -> lis
     return tensors
 
 
-def _submit_and_register(
-    raw_bytes: bytes,
-    new_tensor_ids: list,
-    new_storage_ids: list,
-    dev_idx: int,
-) -> None:
-    """Submit serialized request and register new tensors locally."""
+def _get_stream_manager(dev_idx: int):
+    """Get cached stream manager for a device index."""
+    sm = _cached_stream_managers.get(dev_idx)
+    if sm is not None:
+        return sm
+
     from skytorch.torch.backend._device import device_manager
-    from skytorch.torch.backend._storage import storage_manager
 
     remote_info = device_manager._local_to_remote.get(dev_idx)
     if remote_info is None:
@@ -515,7 +526,31 @@ def _submit_and_register(
             f"Compute '{compute.name}' is not ready. The gRPC client has not been initialized."
         )
 
-    stream_manager = compute._grpc_client.stream
+    sm = compute._grpc_client.stream
+    _cached_stream_managers[dev_idx] = sm
+
+    # Register C++ submit callback on first stream manager resolution
+    global _submit_callback_registered
+    if not _submit_callback_registered and _set_submit_callback is not None:
+        _set_submit_callback(_submit_and_register)
+        _submit_callback_registered = True
+
+    return sm
+
+
+def _submit_and_register(
+    raw_bytes: bytes,
+    new_tensor_ids: list,
+    new_storage_ids: list,
+    dev_idx: int,
+) -> None:
+    """Submit serialized request and register new tensors locally."""
+    from skytorch.torch.backend._storage import storage_manager
+    from skytorch.torch.backend.aten import scalar as _scalar_mod
+
+    _scalar_mod._ops_since_last_sync += 1
+
+    stream_manager = _get_stream_manager(dev_idx)
     stream_manager.submit_execute_aten_bytes(raw_bytes)
 
     # Register new tensors locally (C++ already updated its tracking set)
@@ -641,9 +676,25 @@ def _sky_kernel_fallback(
         if _dispatch_cached_aten is not None:
             fused_result = _dispatch_cached_aten(op_name, args, kwargs)
 
+            if fused_result is not None and len(fused_result) == 1:
+                # Cache hit with C++ submit callback — already submitted
+                from skytorch.torch.backend.aten import scalar as _scalar_mod
+
+                _scalar_mod._ops_since_last_sync += 1
+
+                if PROFILING_ENABLED:
+                    _t1 = time.perf_counter_ns()
+                    _prof.cache_key_build.add(_t1 - _t0)
+                    _prof.execute_dispatch.add(0)
+                    _prof.cache_hits += 1
+                    _prof.last_dispatch_end = _t1
+                    _prof.last_dispatch_ns = _t1
+
+                return fused_result[0]
+
             if fused_result is not None and len(fused_result) == 5:
-                # Cache hit — single C++ call did everything
-                output_tensors, raw_bytes, new_tensor_ids, new_storage_ids, dev_idx = fused_result
+                # Cache hit without callback — Python-side submission
+                unpacked_output, raw_bytes, new_tensor_ids, new_storage_ids, dev_idx = fused_result
 
                 if PROFILING_ENABLED:
                     _t1 = time.perf_counter_ns()
@@ -658,7 +709,7 @@ def _sky_kernel_fallback(
                     _prof.last_dispatch_end = _t3
                     _prof.last_dispatch_ns = _t3
 
-                return _unpack_outputs(output_tensors)
+                return unpacked_output
 
             if fused_result is not None and len(fused_result) == 3:
                 # Cache miss — save hash so we can dual-populate C++ cache below

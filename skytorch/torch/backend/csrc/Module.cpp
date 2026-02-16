@@ -277,6 +277,13 @@ PYBIND11_MODULE(_C, m) {
     m.def("_clear_device_mappings", &skytorch::clear_device_mappings,
         "Clear all device mappings");
 
+    // Submit callback for fused C++ dispatch
+    m.def("_set_submit_callback", &skytorch::set_submit_callback,
+        "Set callback for submitting raw bytes from C++ dispatch",
+        py::arg("callback"));
+    m.def("_clear_submit_callback", &skytorch::clear_submit_callback,
+        "Clear the submit callback");
+
     // Register cleanup with atexit
     py::module atexit = py::module::import("atexit");
     atexit.attr("register")(py::cpp_function(&skytorch::clear_method_cache));

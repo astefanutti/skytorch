@@ -186,6 +186,23 @@ class DeviceManager:
         except (ImportError, AttributeError):
             pass
 
+        # Reset scalar speculation state
+        from skytorch.torch.backend.aten.scalar import _reset_speculation
+
+        _reset_speculation()
+
+        # Clear cached stream managers and submit callback
+        from skytorch.torch.backend.aten import dispatch as _dispatch_mod
+
+        _dispatch_mod._cached_stream_managers.clear()
+        _dispatch_mod._submit_callback_registered = False
+        try:
+            from skytorch.torch.backend._C import _clear_submit_callback
+
+            _clear_submit_callback()
+        except (ImportError, AttributeError):
+            pass
+
 
 # Global device manager instance
 device_manager = DeviceManager()
