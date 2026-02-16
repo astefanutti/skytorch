@@ -9,8 +9,10 @@ import asyncio
 import functools
 import logging
 import pickle
+import queue as _queue_mod
 import struct
 import sys
+import threading
 import time
 from typing import AsyncIterator
 
@@ -65,6 +67,143 @@ _STRUCT_i = struct.Struct("<i")  # int32
 # Pre-compiled shape/stride formats for common dimensions (0-dim to 8-dim)
 _STRUCT_SHAPE: dict[int, struct.Struct] = {i: struct.Struct(f"<{i}q") for i in range(9)}
 
+# Work item type tags for the per-stream worker queue
+_RAW = 0
+_RAW_BATCH = 1
+_SYNC = 2
+_FF_REQUEST = 3
+_CHUNK = 4
+_SHUTDOWN = 5
+
+
+def _stream_worker(work_queue, servicer, loop, server_profiler):
+    """Worker thread for StreamOperations — processes ops from the queue.
+
+    Runs in a dedicated thread per stream, allowing gRPC I/O on the event loop
+    to overlap with op execution (C++ code holding the GIL).
+    """
+    chunk_state = [None]
+
+    if server_profiler is not None:
+        _cycle_backlog_ops = 0
+        _cycle_backlog_time_ns = 0
+        _cycle_first_idle_ns = 0
+        _cycle_started = False
+        _last_was_exec = False
+
+    while True:
+        if server_profiler is not None:
+            _t_wait = time.perf_counter_ns()
+
+        item = work_queue.get()
+
+        if server_profiler is not None:
+            _t_recv = time.perf_counter_ns()
+            _idle_ns = _t_recv - _t_wait
+            server_profiler.idle_time.add(_idle_ns)
+
+        tag = item[0]
+
+        if tag == _SHUTDOWN:
+            break
+        elif tag == _RAW:
+            try:
+                if server_profiler is not None:
+                    _t0 = time.perf_counter_ns()
+                    if not _cycle_started:
+                        _cycle_first_idle_ns = _t_recv - _t_wait
+                        _cycle_started = True
+                    if _last_was_exec:
+                        server_profiler.hot_idle.add(_idle_ns)
+
+                if _USE_CPP_PARSER:
+                    _cpp_execute_raw_aten_inline(item[1], servicer.tensor_manager.store)
+                else:
+                    servicer._execute_raw_aten_inline(item[1])
+
+                if server_profiler is not None:
+                    _t1 = time.perf_counter_ns()
+                    server_profiler.raw_execute.add(_t1 - _t0)
+                    server_profiler.total_ops += 1
+                    _cycle_backlog_ops += 1
+                    _cycle_backlog_time_ns += _t1 - _t0
+                    _last_was_exec = True
+            except Exception as e:
+                servicer._deferred_error = str(e)
+        elif tag == _RAW_BATCH:
+            try:
+                if server_profiler is not None:
+                    _t0 = time.perf_counter_ns()
+                    if not _cycle_started:
+                        _cycle_first_idle_ns = _t_recv - _t_wait
+                        _cycle_started = True
+                    if _last_was_exec:
+                        server_profiler.hot_idle.add(_idle_ns)
+
+                if _USE_CPP_PARSER:
+                    _cpp_execute_raw_batched_aten_inline(
+                        item[1], servicer.tensor_manager.store
+                    )
+                else:
+                    raw_data = item[1]
+                    pos = 0
+                    while pos < len(raw_data):
+                        op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
+                        pos += 4
+                        servicer._execute_raw_aten_inline(raw_data[pos : pos + op_len])
+                        pos += op_len
+
+                if server_profiler is not None:
+                    _t1 = time.perf_counter_ns()
+                    server_profiler.raw_batched_execute.add(_t1 - _t0)
+                    raw_data = item[1]
+                    _n_ops = 0
+                    _pos = 0
+                    while _pos < len(raw_data):
+                        _op_len = _STRUCT_I.unpack_from(raw_data, _pos)[0]
+                        _pos += 4 + _op_len
+                        _n_ops += 1
+                    server_profiler.total_ops += _n_ops
+                    _cycle_backlog_ops += _n_ops
+                    _cycle_backlog_time_ns += _t1 - _t0
+                    _last_was_exec = True
+            except Exception as e:
+                servicer._deferred_error = str(e)
+        elif tag == _FF_REQUEST:
+            servicer._handle_fire_and_forget_sync(item[1])
+            if server_profiler is not None:
+                _last_was_exec = False
+        elif tag == _CHUNK:
+            servicer._handle_chunked_sync(item[1], chunk_state)
+            if server_profiler is not None:
+                _last_was_exec = False
+        elif tag == _SYNC:
+            request, future = item[1], item[2]
+
+            if server_profiler is not None:
+                server_profiler.sync_cycle_count += 1
+                server_profiler.sync_backlog_ops.add_count(_cycle_backlog_ops)
+                if _cycle_backlog_time_ns > 0:
+                    server_profiler.sync_backlog_time.add(_cycle_backlog_time_ns)
+                if _cycle_started:
+                    server_profiler.sync_idle_before.add(_cycle_first_idle_ns)
+                _cycle_backlog_ops = 0
+                _cycle_backlog_time_ns = 0
+                _cycle_first_idle_ns = 0
+                _cycle_started = False
+
+                _t0 = time.perf_counter_ns()
+
+            response = servicer._handle_single_request_sync(request, server_profiler)
+
+            if server_profiler is not None:
+                _t1 = time.perf_counter_ns()
+                server_profiler.sync_handle.add(_t1 - _t0)
+
+            loop.call_soon_threadsafe(future.set_result, response)
+            if server_profiler is not None:
+                _last_was_exec = False
+
 
 class TensorServicer(service_pb2_grpc.ServiceServicer):
     """
@@ -102,10 +241,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             The existing or newly created tensor
         """
         tensor_id = metadata.tensor_id
-        try:
-            return self.tensor_manager._tensors[tensor_id]
-        except KeyError:
-            pass
+        if tensor_id in self.tensor_manager:
+            return self.tensor_manager.get(tensor_id)
 
         dtype = parse_dtype(metadata.dtype)
         shape = list(metadata.shape)
@@ -650,11 +787,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         pos += op_name_len
 
         # Parse metadata and auto-create tensors (now immediately after op_name)
-        tensors = self.tensor_manager._tensors
         for _ in range(num_metadata):
             # Peek at tensor_id to skip already-registered tensors
             tensor_id = _STRUCT_Q.unpack_from(data, pos)[0]
-            if tensor_id in tensors:
+            if tensor_id in self.tensor_manager:
                 pos = self._skip_raw_tensor_metadata(data, pos)
             else:
                 pos = self._parse_and_create_tensor(data, pos)
@@ -900,19 +1036,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     if tensor is not None:
                         self.tensor_manager.register(ref.tensor_id, tensor)
 
-    async def _handle_update_tensor(
+    def _update_tensor_sync(
         self, request: service_pb2.UpdateTensorRequest
     ) -> service_pb2.TensorResponse:
-        """Handle update_tensor request in streaming context.
-
-        Deserializes tensor data and stores it on the server.
-
-        Args:
-            request: UpdateTensorRequest with tensor data
-
-        Returns:
-            TensorResponse with success status
-        """
+        """Handle update_tensor request synchronously."""
         try:
             # Get or create tensor
             if request.HasField("metadata"):
@@ -937,19 +1064,147 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             logger.error(f"Error updating tensor via stream: {e}")
             return service_pb2.TensorResponse(success=False, message=str(e))
 
-    async def _handle_get_tensor(
+    async def _handle_update_tensor(
+        self, request: service_pb2.UpdateTensorRequest
+    ) -> service_pb2.TensorResponse:
+        """Handle update_tensor request in streaming context (delegates to sync)."""
+        return self._update_tensor_sync(request)
+
+    def _copy_tensor_sync(self, request: service_pb2.CopyTensorRequest) -> None:
+        """Copy data between tensors synchronously. Raises on error."""
+        if request.HasField("src_metadata"):
+            self._ensure_tensor_exists(request.src_metadata)
+        if request.HasField("dst_metadata"):
+            self._ensure_tensor_exists(request.dst_metadata)
+
+        src_tensor = self.tensor_manager.get(request.src_tensor_id)
+        dst_tensor = self.tensor_manager.get(request.dst_tensor_id)
+        dst_tensor.copy_(src_tensor)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"Copied tensor {request.src_tensor_id} to tensor {request.dst_tensor_id}"
+            )
+
+    def _execute_aten_sync(self, request: service_pb2.ExecuteAtenRequest) -> None:
+        """Execute an ATen operation synchronously (fire-and-forget). Raises on error."""
+        for metadata in request.tensor_metadata:
+            self._ensure_tensor_exists(metadata)
+        for metadata in request.output_metadata:
+            self._ensure_tensor_exists(metadata)
+
+        args = tuple(self._resolve_aten_arg(arg) for arg in request.args)
+        kwargs = self._resolve_kwargs(dict(request.kwargs))
+        op = self._get_aten_op(request.op_name)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            input_tensor_ids = [
+                arg.tensor.tensor_id
+                for arg in request.args
+                if arg.WhichOneof("value") == "tensor"
+            ]
+            output_tensor_ids = [ref.tensor_id for ref in request.outputs]
+            logger.debug(
+                f"Executing {request.op_name} | "
+                f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
+            )
+
+        result = op(*args, **kwargs)
+
+        if isinstance(result, torch.Tensor):
+            result_tensors = [result]
+        elif isinstance(result, (tuple, list)):
+            result_tensors = [t for t in result if isinstance(t, torch.Tensor)]
+        else:
+            result_tensors = []
+
+        if request.outputs:
+            for ref, tensor in zip(request.outputs, result_tensors, strict=False):
+                if tensor is not None:
+                    self.tensor_manager.register(ref.tensor_id, tensor)
+
+    def _handle_chunked_sync(
+        self,
+        request: service_pb2.StreamRequest,
+        chunk_state: list,
+    ) -> None:
+        """Handle a chunked stream request synchronously (fire-and-forget).
+
+        Buffers intermediate chunks. When the final chunk is received,
+        processes the assembled request. Errors are deferred.
+        """
+        chunk_number = request.chunk_number
+        total_chunks = request.total_chunks
+        update_req = request.update_tensor
+
+        if chunk_number == 0:
+            buffer = bytearray(request.total_bytes)
+            chunk_size = len(update_req.data)
+            chunk_state[0] = (buffer, request, chunk_size)
+
+        if chunk_state[0] is None:
+            self._deferred_error = "Missing first chunk for chunked request"
+            return
+
+        buffer, first_request, chunk_size = chunk_state[0]
+
+        start = chunk_number * chunk_size
+        buffer[start : start + len(update_req.data)] = update_req.data
+
+        if chunk_number < total_chunks - 1:
+            return
+
+        # Last chunk: clear state and process complete request
+        chunk_state[0] = None
+
+        response = self._process_assembled_update_tensor_sync(first_request, buffer)
+        if not response.success:
+            self._deferred_error = response.error_message
+
+    def _process_assembled_update_tensor_sync(
+        self,
+        first_request: service_pb2.StreamRequest,
+        buffer: bytearray,
+    ) -> service_pb2.StreamResponse:
+        """Process an assembled update_tensor request from chunked data synchronously."""
+        response = service_pb2.StreamResponse()
+        try:
+            update_req = first_request.update_tensor
+
+            if update_req.HasField("metadata"):
+                self._ensure_tensor_exists(update_req.metadata)
+
+            dtype = parse_dtype(update_req.dtype)
+            shape = list(update_req.shape)
+
+            src_tensor = tensor_from_bytes(bytes(buffer), dtype, shape)
+
+            target = self.tensor_manager.get(update_req.tensor_id)
+            if src_tensor.device == target.device:
+                target.copy_(src_tensor)
+            else:
+                target.copy_(src_tensor.to(target.device))
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Updated tensor {update_req.tensor_id} from chunked stream "
+                    f"(shape={shape}, {len(buffer)} bytes)"
+                )
+
+            response.success = True
+            response.update_tensor.CopyFrom(service_pb2.TensorResponse(success=True))
+
+        except Exception as e:
+            logger.error(f"Error processing chunked update_tensor: {e}")
+            response.success = False
+            response.error_message = str(e)
+
+        return response
+
+    def _handle_get_tensor_sync(
         self, request: service_pb2.GetTensorRequest
     ) -> service_pb2.GetTensorResponse:
-        """Handle get_tensor request in streaming context.
-
-        Serializes tensor data for download.
-
-        Args:
-            request: GetTensorRequest with tensor ID
-
-        Returns:
-            GetTensorResponse with serialized tensor data
-        """
+        """Handle get_tensor request synchronously."""
         try:
             # Auto-create tensor from metadata if provided
             if request.HasField("metadata"):
@@ -985,21 +1240,20 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             logger.error(f"Error getting tensor via stream: {e}")
             return service_pb2.GetTensorResponse(success=False, message=str(e))
 
-    async def _handle_get_scalar(
+    async def _handle_get_tensor(
+        self, request: service_pb2.GetTensorRequest
+    ) -> service_pb2.GetTensorResponse:
+        """Handle get_tensor request in streaming context (delegates to sync)."""
+        return self._handle_get_tensor_sync(request)
+
+    def _handle_get_scalar_sync(
         self,
         request: service_pb2.GetScalarRequest,
         server_profiler=None,
     ) -> service_pb2.GetScalarResponse:
-        """Handle get_scalar request in streaming context.
+        """Handle get_scalar request synchronously.
 
         Resolves the tensor, calls .item(), and returns the typed scalar value.
-
-        Args:
-            request: GetScalarRequest with tensor ID
-            server_profiler: Optional ServerProfiler for timing
-
-        Returns:
-            GetScalarResponse with the scalar value
         """
         try:
             for metadata in request.tensor_metadata:
@@ -1033,6 +1287,14 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             logger.error(f"Error getting scalar via stream: {e}")
             raise
 
+    async def _handle_get_scalar(
+        self,
+        request: service_pb2.GetScalarRequest,
+        server_profiler=None,
+    ) -> service_pb2.GetScalarResponse:
+        """Handle get_scalar request in streaming context (delegates to sync)."""
+        return self._handle_get_scalar_sync(request, server_profiler)
+
     # Request types that are fire-and-forget (no response sent to client)
     _FIRE_AND_FORGET_TYPES = frozenset(
         {
@@ -1055,196 +1317,63 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         Bidirectional streaming handler for low-latency operations.
 
-        Fire-and-forget operations (execute_aten, delete_tensors, copy_tensor,
-        update_tensor, register_tensors) are processed without yielding a
-        response. Errors from these operations are deferred and reported on
-        the next get_tensor response.
+        Op execution runs on a dedicated worker thread, allowing gRPC I/O
+        (which releases the GIL during C-level await) to overlap with op
+        processing (C++ code holding the GIL). The event loop receives
+        messages and enqueues work items; the worker thread processes them.
 
-        Only get_tensor operations yield a response.
+        Fire-and-forget operations are enqueued without waiting. Sync
+        operations (get_tensor, get_scalar) use an asyncio.Future to
+        signal completion back to the event loop.
 
         Args:
             request_iterator: Async iterator of StreamRequest messages
             context: gRPC context
 
         Yields:
-            StreamResponse messages for get_tensor operations only
+            StreamResponse messages for sync operations only
         """
-        # Per-stream state for the current chunked request being assembled
-        # Only one chunked request can be in-flight at a time per stream (FIFO)
-        current_chunk_state: list = [None]  # [buffer, first_request, chunk_size] or None
+        work_queue = _queue_mod.SimpleQueue()
+        loop = asyncio.get_running_loop()
 
-        # Per-stream profiler (created only when profiling is enabled)
         _sprof = None
         if PROFILING_ENABLED:
             from skytorch.torch.profiler import ServerProfiler
 
             _sprof = ServerProfiler()
             _sprof.stream_start_ns = time.perf_counter_ns()
-            _t_prev_end = _sprof.stream_start_ns
-            _cycle_backlog_ops = 0
-            _cycle_backlog_time_ns = 0
-            _cycle_first_idle_ns = 0
-            _cycle_started = False
+
+        worker = threading.Thread(
+            target=_stream_worker,
+            args=(work_queue, self, loop, _sprof),
+            daemon=True,
+        )
+        worker.start()
 
         try:
             async for request in request_iterator:
-                if PROFILING_ENABLED:
-                    _t_recv = time.perf_counter_ns()
-                    _sprof.idle_time.add(_t_recv - _t_prev_end)
-
-                total_chunks = request.total_chunks
-
-                if total_chunks > 1:
-                    # Chunked request (always fire-and-forget update_tensor)
-                    await self._handle_chunked_request(request, context, current_chunk_state)
-                    if PROFILING_ENABLED:
-                        _t_prev_end = time.perf_counter_ns()
+                if request.total_chunks > 1:
+                    work_queue.put((_CHUNK, request))
                     continue
 
-                # Inline hot-path: check fire-and-forget types with HasField
-                # instead of WhichOneof + frozenset lookup
+                # Hot path first (HasField checks)
                 if request.HasField("raw_execute_aten"):
-                    try:
-                        if PROFILING_ENABLED:
-                            _t0 = time.perf_counter_ns()
-                            if not _cycle_started:
-                                _cycle_first_idle_ns = _t_recv - _t_prev_end
-                                _cycle_started = True
-
-                        if _USE_CPP_PARSER:
-                            _cpp_execute_raw_aten_inline(
-                                request.raw_execute_aten,
-                                self.tensor_manager._tensors,
-                            )
-                        else:
-                            self._execute_raw_aten_inline(request.raw_execute_aten)
-
-                        if PROFILING_ENABLED:
-                            _t1 = time.perf_counter_ns()
-                            _sprof.raw_execute.add(_t1 - _t0)
-                            _sprof.total_ops += 1
-                            _cycle_backlog_ops += 1
-                            _cycle_backlog_time_ns += _t1 - _t0
-                    except Exception as e:
-                        logger.error(f"Error in fire-and-forget operation: {e}")
-                        self._deferred_error = str(e)
+                    work_queue.put((_RAW, request.raw_execute_aten))
                 elif request.HasField("raw_batched_execute_aten"):
-                    try:
-                        if PROFILING_ENABLED:
-                            _t0 = time.perf_counter_ns()
-                            if not _cycle_started:
-                                _cycle_first_idle_ns = _t_recv - _t_prev_end
-                                _cycle_started = True
-
-                        if _USE_CPP_PARSER:
-                            _cpp_execute_raw_batched_aten_inline(
-                                request.raw_batched_execute_aten,
-                                self.tensor_manager._tensors,
-                            )
-                        else:
-                            raw_data = request.raw_batched_execute_aten
-                            pos = 0
-                            while pos < len(raw_data):
-                                op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
-                                pos += 4
-                                op_data = raw_data[pos : pos + op_len]
-                                pos += op_len
-                                self._execute_raw_aten_inline(op_data)
-
-                        if PROFILING_ENABLED:
-                            _t1 = time.perf_counter_ns()
-                            _sprof.raw_batched_execute.add(_t1 - _t0)
-                            # Count ops by scanning length prefixes
-                            raw_data = request.raw_batched_execute_aten
-                            _n_ops = 0
-                            _pos = 0
-                            while _pos < len(raw_data):
-                                _op_len = _STRUCT_I.unpack_from(raw_data, _pos)[0]
-                                _pos += 4 + _op_len
-                                _n_ops += 1
-                            _sprof.total_ops += _n_ops
-                            _cycle_backlog_ops += _n_ops
-                            _cycle_backlog_time_ns += _t1 - _t0
-                    except Exception as e:
-                        logger.error(f"Error in fire-and-forget operation: {e}")
-                        self._deferred_error = str(e)
-                elif request.HasField("batched_execute_aten"):
-                    try:
-                        self._execute_batch_inline(request.batched_execute_aten.operations)
-                    except Exception as e:
-                        logger.error(f"Error in fire-and-forget operation: {e}")
-                        self._deferred_error = str(e)
-                elif request.HasField("execute_aten"):
-                    try:
-                        result = await self.ExecuteAtenOperation(request.execute_aten, context)
-                        if not result.success:
-                            self._deferred_error = result.message
-                    except Exception as e:
-                        logger.error(f"Error in fire-and-forget operation: {e}")
-                        self._deferred_error = str(e)
-                elif request.HasField("delete_tensors"):
-                    try:
-                        result = await self.DeleteTensors(request.delete_tensors, context)
-                        if not result.success:
-                            self._deferred_error = result.message
-                    except Exception as e:
-                        logger.error(f"Error in fire-and-forget operation: {e}")
-                        self._deferred_error = str(e)
-                elif request.HasField("copy_tensor"):
-                    try:
-                        result = await self.CopyTensor(request.copy_tensor, context)
-                        if not result.success:
-                            self._deferred_error = result.message
-                    except Exception as e:
-                        logger.error(f"Error in fire-and-forget operation: {e}")
-                        self._deferred_error = str(e)
-                elif request.HasField("update_tensor"):
-                    try:
-                        result = await self._handle_update_tensor(request.update_tensor)
-                        if not result.success:
-                            self._deferred_error = result.message
-                    except Exception as e:
-                        logger.error(f"Error in fire-and-forget operation: {e}")
-                        self._deferred_error = str(e)
-                elif request.HasField("register_tensors"):
-                    try:
-                        for reg in request.register_tensors.registrations:
-                            tensor = self._pending_tensors.pop(reg.storage_id, None)
-                            if tensor is not None:
-                                self.tensor_manager.register(reg.tensor_id, tensor)
-                    except Exception as e:
-                        logger.error(f"Error in fire-and-forget operation: {e}")
-                        self._deferred_error = str(e)
+                    work_queue.put((_RAW_BATCH, request.raw_batched_execute_aten))
+                elif request.HasField("get_scalar") or request.HasField("get_tensor"):
+                    # Sync op: create future, enqueue, await, yield
+                    future = loop.create_future()
+                    work_queue.put((_SYNC, request, future))
+                    yield await future
                 else:
-                    # Sync operation (get_tensor, get_scalar): yield response
-                    if PROFILING_ENABLED:
-                        _sprof.sync_cycle_count += 1
-                        _sprof.sync_backlog_ops.add_count(_cycle_backlog_ops)
-                        if _cycle_backlog_time_ns > 0:
-                            _sprof.sync_backlog_time.add(_cycle_backlog_time_ns)
-                        if _cycle_started:
-                            _sprof.sync_idle_before.add(_cycle_first_idle_ns)
-                        _cycle_backlog_ops = 0
-                        _cycle_backlog_time_ns = 0
-                        _cycle_first_idle_ns = 0
-                        _cycle_started = False
-
-                        _t0 = time.perf_counter_ns()
-
-                    response = await self._handle_single_request(
-                        request, context, server_profiler=_sprof
-                    )
-
-                    if PROFILING_ENABLED:
-                        _t1 = time.perf_counter_ns()
-                        _sprof.sync_handle.add(_t1 - _t0)
-
-                    yield response
-
-                if PROFILING_ENABLED:
-                    _t_prev_end = time.perf_counter_ns()
+                    # Other fire-and-forget (delete, copy, update, register, etc.)
+                    work_queue.put((_FF_REQUEST, request))
         finally:
-            if PROFILING_ENABLED:
+            work_queue.put((_SHUTDOWN,))
+            worker.join(timeout=5.0)
+
+            if PROFILING_ENABLED and _sprof is not None:
                 _sprof.stream_end_ns = time.perf_counter_ns()
                 _sprof.print_summary()
 
@@ -1308,13 +1437,59 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             logger.error(f"Error in fire-and-forget operation: {e}")
             self._deferred_error = str(e)
 
-    async def _handle_single_request(
+    def _handle_fire_and_forget_sync(self, request: service_pb2.StreamRequest) -> None:
+        """Handle a fire-and-forget stream request synchronously."""
+        try:
+            request_type = request.WhichOneof("request")
+            if request_type == "execute_aten":
+                self._execute_aten_sync(request.execute_aten)
+            elif request_type == "delete_tensors":
+                for tid in request.delete_tensors.tensor_ids:
+                    self.tensor_manager.delete(tid)
+            elif request_type == "copy_tensor":
+                self._copy_tensor_sync(request.copy_tensor)
+            elif request_type == "update_tensor":
+                result = self._update_tensor_sync(request.update_tensor)
+                if not result.success:
+                    self._deferred_error = result.message
+                return
+            elif request_type == "register_tensors":
+                for reg in request.register_tensors.registrations:
+                    tensor = self._pending_tensors.pop(reg.storage_id, None)
+                    if tensor is not None:
+                        self.tensor_manager.register(reg.tensor_id, tensor)
+            elif request_type == "batched_execute_aten":
+                self._execute_batch_inline(request.batched_execute_aten.operations)
+            elif request_type == "raw_execute_aten":
+                if _USE_CPP_PARSER:
+                    _cpp_execute_raw_aten_inline(
+                        request.raw_execute_aten, self.tensor_manager.store
+                    )
+                else:
+                    self._execute_raw_aten_inline(request.raw_execute_aten)
+            elif request_type == "raw_batched_execute_aten":
+                if _USE_CPP_PARSER:
+                    _cpp_execute_raw_batched_aten_inline(
+                        request.raw_batched_execute_aten, self.tensor_manager.store
+                    )
+                else:
+                    raw_data = request.raw_batched_execute_aten
+                    pos = 0
+                    while pos < len(raw_data):
+                        op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
+                        pos += 4
+                        self._execute_raw_aten_inline(raw_data[pos : pos + op_len])
+                        pos += op_len
+        except Exception as e:
+            logger.error(f"Error in fire-and-forget operation: {e}")
+            self._deferred_error = str(e)
+
+    def _handle_single_request_sync(
         self,
         request: service_pb2.StreamRequest,
-        context: grpc.aio.ServicerContext,
         server_profiler=None,
     ) -> service_pb2.StreamResponse:
-        """Handle a single sync stream request (get_tensor).
+        """Handle a single sync stream request synchronously.
 
         Checks for deferred errors from prior fire-and-forget operations
         and reports them instead of the normal response.
@@ -1332,14 +1507,14 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             request_type = request.WhichOneof("request")
 
             if request_type == "get_tensor":
-                result = await self._handle_get_tensor(request.get_tensor)
+                result = self._handle_get_tensor_sync(request.get_tensor)
                 response.success = result.success
                 if not result.success:
                     response.error_message = result.message
                 response.get_tensor.CopyFrom(result)
 
             elif request_type == "get_scalar":
-                result = await self._handle_get_scalar(
+                result = self._handle_get_scalar_sync(
                     request.get_scalar, server_profiler=server_profiler
                 )
                 response.success = True
@@ -1355,6 +1530,15 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             response.error_message = str(e)
 
         return response
+
+    async def _handle_single_request(
+        self,
+        request: service_pb2.StreamRequest,
+        context: grpc.aio.ServicerContext,
+        server_profiler=None,
+    ) -> service_pb2.StreamResponse:
+        """Handle a single sync stream request (delegates to sync)."""
+        return self._handle_single_request_sync(request, server_profiler)
 
     async def _handle_chunked_request(
         self,

@@ -189,6 +189,8 @@ class ServerProfiler:
 
         # Idle time
         self.idle_time = Counter()
+        # Hot idle: idle time only between consecutive execution ops (not model loading gaps)
+        self.hot_idle = Counter()
 
         # Per-sync-cycle breakdown
         self.sync_backlog_ops = Counter()
@@ -267,6 +269,10 @@ class ServerProfiler:
             [
                 "",
                 f"  Idle (between req): {self.idle_time.total_ms:,.0f} ms ({idle_pct:.0f}%)",
+                f"  Hot idle (exec→exec): {self.hot_idle.total_ms:,.0f} ms "
+                f"({self.hot_idle.count:,} gaps, "
+                f"{self.hot_idle.avg_us:.0f} us avg, "
+                f"{self.hot_idle.max_ms:.1f} ms max)",
                 "",
                 f"Wall time: {wall_ms:,.0f} ms",
                 "",
