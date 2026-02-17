@@ -13,6 +13,7 @@
 
 #include <torch/extension.h>
 #include <torch/csrc/jit/python/pybind_utils.h>
+#include <ATen/core/LegacyTypeDispatch.h>
 #include <unordered_map>
 
 namespace skytorch {
@@ -226,14 +227,65 @@ static void rewrite_stack_from_output(
     }
 }
 
+// --- Autograd Fallback Kernel ---
+
+void autograd_fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+    // Exclude autograd + ADInplaceOrView keys and redispatch to PrivateUse1.
+    // Stays entirely in C++ dispatch — no Python re-entry, no CompositeImplicitAutograd
+    // decomposition. This is the pattern used by XLA and other custom backends.
+    at::AutoDispatchBelowADInplaceOrView guard;
+    op.callBoxed(stack);
+}
+
 // --- Boxed Fallback Kernel ---
 
 void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
     py::gil_scoped_acquire gil;
 
-    // Bypass the torch.library Python wrapper chain and call
-    // _sky_kernel_fallback directly. The fused dispatch_cached_aten
-    // call happens inside _sky_kernel_fallback as before.
+    // --- C++ fast path: try dispatch_cached_aten for cache hits ---
+    // Only attempt when the submit callback is registered. Without the callback,
+    // dispatch_cached_aten returns Tuple(5) on cache hits, which registers tensor
+    // IDs as a side effect. If we then fall through to call_python_fallback, the
+    // Python path calls dispatch_cached_aten again, creating different output
+    // tensors — leaving phantom tensor IDs in the C++ tracking set.
+    if (has_submit_callback()) {
+        const auto& schema = op.schema();
+        const auto& arguments = schema.arguments();
+        size_t num_stack_args = stack->size();
+        size_t n_pos = get_num_positional_args(op);
+        size_t actual_pos = std::min(n_pos, num_stack_args);
+
+        // Convert IValue stack → Python args/kwargs
+        py::tuple py_args(actual_pos);
+        for (size_t i = 0; i < actual_pos; i++) {
+            py_args[i] = torch::jit::toPyObject((*stack)[i]);
+        }
+
+        py::dict py_kwargs;
+        for (size_t i = actual_pos; i < num_stack_args && i < arguments.size(); i++) {
+            const auto& iv = (*stack)[i];
+            if (iv.isNone() && arguments[i].default_value().has_value()) continue;
+            py_kwargs[py::str(arguments[i].name().c_str())] = torch::jit::toPyObject(iv);
+        }
+
+        const std::string& op_name = get_cached_op_name(op);
+        py::object fused = dispatch_cached_aten(
+            py::str(op_name), py_args, py_kwargs);
+
+        if (!fused.is_none()) {
+            py::tuple rt = fused.cast<py::tuple>();
+            if (rt.size() == 1) {
+                // Cache hit with callback — fully handled in C++
+                increment_ops_counter();
+                rewrite_stack_from_output(stack, rt[0].ptr(), schema);
+                return;
+            }
+        }
+        // Cache miss (Tuple(3)) or uncacheable (None) — no side effects,
+        // safe to fall through to Python.
+    }
+
+    // --- Python fallback: cache miss, uncacheable, or no callback yet ---
     call_python_fallback(op, stack);
 }
 

@@ -547,6 +547,10 @@ void clear_submit_callback() {
     g_submit_callback = nullptr;
 }
 
+bool has_submit_callback() {
+    return g_submit_callback != nullptr;
+}
+
 // --- Device mapping registry ---
 
 static std::unordered_map<int64_t, std::pair<std::string, int64_t>> g_device_mappings;

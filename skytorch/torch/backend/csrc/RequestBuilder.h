@@ -204,6 +204,15 @@ void set_submit_callback(py::object callback);
 void clear_submit_callback();
 
 /**
+ * Check if a submit callback is registered.
+ * Used by fallback_kernel to decide whether to try the C++ fast path.
+ * dispatch_cached_aten returns Tuple(5) when no callback is set, which
+ * has tensor registration side effects that prevent safe fallthrough
+ * to the Python path.
+ */
+bool has_submit_callback();
+
+/**
  * Increment the fire-and-forget ops counter (atomic, relaxed ordering).
  * Called from the dispatch path for each submitted op.
  */
@@ -224,6 +233,14 @@ int64_t reset_ops_counter();
  * Handles cache-hit ops entirely in C++, falling back to Python for misses.
  */
 void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack);
+
+/**
+ * C++ autograd fallback kernel for AutogradPrivateUse1 dispatch key.
+ * Excludes autograd keys and redispatches to PrivateUse1 via op.callBoxed(),
+ * staying entirely within the C++ dispatcher to avoid CompositeImplicitAutograd
+ * decompositions that would occur with Python re-entry.
+ */
+void autograd_fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack);
 
 /**
  * Set Python fallback callback for cache misses.
