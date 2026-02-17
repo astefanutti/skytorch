@@ -52,6 +52,17 @@ except ImportError:
     _set_submit_callback = None
     _clear_submit_callback = None
 
+try:
+    from skytorch.torch.backend._C import _increment_ops_counter
+except ImportError:
+    _increment_ops_counter = None
+
+try:
+    from skytorch.torch.backend._C import _set_python_fallback, _clear_python_fallback
+except ImportError:
+    _set_python_fallback = None
+    _clear_python_fallback = None
+
 _submit_callback_registered = False
 
 _SHAPE_CACHE_MAX_SIZE = 4096
@@ -546,9 +557,13 @@ def _submit_and_register(
 ) -> None:
     """Submit serialized request and register new tensors locally."""
     from skytorch.torch.backend._storage import storage_manager
-    from skytorch.torch.backend.aten import scalar as _scalar_mod
 
-    _scalar_mod._ops_since_last_sync += 1
+    if _increment_ops_counter is not None:
+        _increment_ops_counter()
+    else:
+        from skytorch.torch.backend.aten import scalar as _scalar_mod
+
+        _scalar_mod._ops_since_last_sync += 1
 
     stream_manager = _get_stream_manager(dev_idx)
     stream_manager.submit_execute_aten_bytes(raw_bytes)
@@ -678,9 +693,12 @@ def _sky_kernel_fallback(
 
             if fused_result is not None and len(fused_result) == 1:
                 # Cache hit with C++ submit callback — already submitted
-                from skytorch.torch.backend.aten import scalar as _scalar_mod
+                if _increment_ops_counter is not None:
+                    _increment_ops_counter()
+                else:
+                    from skytorch.torch.backend.aten import scalar as _scalar_mod
 
-                _scalar_mod._ops_since_last_sync += 1
+                    _scalar_mod._ops_since_last_sync += 1
 
                 if PROFILING_ENABLED:
                     _t1 = time.perf_counter_ns()
@@ -833,3 +851,9 @@ def _sky_kernel_fallback(
         raise NotImplementedError(
             f"Operation {op} is not supported on sky device. " f"Meta tensor execution failed."
         )
+
+
+# Register _sky_kernel_fallback as the Python fallback for the C++ boxed fallback kernel.
+# This is called for cache misses and uncacheable ops from FallbackKernel.cpp.
+if _set_python_fallback is not None:
+    _set_python_fallback(_sky_kernel_fallback)

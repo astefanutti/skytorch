@@ -284,6 +284,25 @@ PYBIND11_MODULE(_C, m) {
     m.def("_clear_submit_callback", &skytorch::clear_submit_callback,
         "Clear the submit callback");
 
+    // Fire-and-forget ops counter (atomic, GIL-free)
+    m.def("_increment_ops_counter", &skytorch::increment_ops_counter,
+        "Increment the fire-and-forget ops counter");
+    m.def("_get_ops_counter", &skytorch::get_ops_counter,
+        "Read the current ops counter value");
+    m.def("_reset_ops_counter", &skytorch::reset_ops_counter,
+        "Reset the ops counter to zero and return previous value");
+
+    // Python fallback for C++ boxed fallback kernel (cache misses)
+    m.def("_set_python_fallback", &skytorch::set_python_fallback,
+        "Set Python fallback callback for cache miss ops",
+        py::arg("callback"));
+    m.def("_clear_python_fallback", &skytorch::clear_python_fallback,
+        "Clear the Python fallback callback");
+
+    // Pending fused result for avoiding double dispatch_cached_aten calls
+    m.def("_take_pending_fused_result", &skytorch::take_pending_fused_result,
+        "Take the pending fused result from the C++ boxed fallback");
+
     // Register cleanup with atexit
     py::module atexit = py::module::import("atexit");
     atexit.attr("register")(py::cpp_function(&skytorch::clear_method_cache));

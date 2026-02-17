@@ -16,6 +16,7 @@
 #include <torch/csrc/Layout.h>
 #include <torch/csrc/MemoryFormat.h>
 #include <torch/csrc/autograd/python_variable.h>
+#include <atomic>
 #include <cstring>
 
 namespace skytorch {
@@ -1534,6 +1535,22 @@ py::object dispatch_cached_aten(
     PyTuple_SET_ITEM(result, 4, PyLong_FromLongLong(sky_device_index));
 
     return py::reinterpret_steal<py::object>(result);
+}
+
+// --- Fire-and-forget ops counter ---
+
+static std::atomic<int64_t> g_ops_since_last_sync{0};
+
+void increment_ops_counter() {
+    g_ops_since_last_sync.fetch_add(1, std::memory_order_relaxed);
+}
+
+int64_t get_ops_counter() {
+    return g_ops_since_last_sync.load(std::memory_order_relaxed);
+}
+
+int64_t reset_ops_counter() {
+    return g_ops_since_last_sync.exchange(0, std::memory_order_relaxed);
 }
 
 }  // namespace skytorch

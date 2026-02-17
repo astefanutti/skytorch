@@ -22,6 +22,17 @@ from skytorch.torch.client.request import tensor_metadata_to_proto
 from skytorch.torch.client.tensor import get_tensor_id
 from skytorch.torch.profiler import PROFILING_ENABLED
 
+try:
+    from skytorch.torch.backend._C import (
+        _get_ops_counter,
+        _increment_ops_counter,
+        _reset_ops_counter,
+    )
+except ImportError:
+    _get_ops_counter = None
+    _increment_ops_counter = None
+    _reset_ops_counter = None
+
 # Scalar speculation: predict the next .item() result based on the last-seen value.
 # This eliminates blocking at sync points for predictable scalars (e.g., stopping criteria
 # in model.generate() where __bool__() on a bool tensor returns False every token).
@@ -57,6 +68,8 @@ def _reset_speculation() -> None:
     global _speculation_state, _ops_since_last_sync
     _speculation_state = None
     _ops_since_last_sync = 0
+    if _reset_ops_counter is not None:
+        _reset_ops_counter()
 
 
 def _local_scalar_dense(self: torch.Tensor):
@@ -100,7 +113,10 @@ def _local_scalar_dense(self: torch.Tensor):
         # 2. Cache check: cache_position[-1] >= input_ids.shape[1] (0 ops since last)
         # Only #1 is the "qualifying" sync. #2 is an incidental sync that must not
         # reset the speculation state or ops counter.
-        _ops_between = _ops_since_last_sync
+        if _get_ops_counter is not None:
+            _ops_between = _get_ops_counter()
+        else:
+            _ops_between = _ops_since_last_sync
         _can_speculate = (
             _SPECULATION_ENABLED
             and self.dtype == torch.bool
@@ -108,7 +124,10 @@ def _local_scalar_dense(self: torch.Tensor):
         )
         # Only reset counter on qualifying syncs — non-qualifying ones are transparent
         if _can_speculate:
-            _ops_since_last_sync = 0
+            if _reset_ops_counter is not None:
+                _reset_ops_counter()
+            else:
+                _ops_since_last_sync = 0
 
         # Incidental bool sync during active speculation (e.g., cache_position[-1] >= shape
         # in HuggingFace's _cache_dependant_input_preparation). These have 0 ops between

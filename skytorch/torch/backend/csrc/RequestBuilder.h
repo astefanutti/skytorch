@@ -48,6 +48,8 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <ATen/core/dispatch/Dispatcher.h>
+#include <ATen/core/stack.h>
 #include <c10/core/ScalarType.h>
 #include <cstdint>
 #include <string>
@@ -200,5 +202,50 @@ void set_submit_callback(py::object callback);
  * Clear the submit callback. Called during reset/shutdown.
  */
 void clear_submit_callback();
+
+/**
+ * Increment the fire-and-forget ops counter (atomic, relaxed ordering).
+ * Called from the dispatch path for each submitted op.
+ */
+void increment_ops_counter();
+
+/**
+ * Read the current ops counter value without resetting.
+ */
+int64_t get_ops_counter();
+
+/**
+ * Reset the ops counter to zero and return the previous value.
+ */
+int64_t reset_ops_counter();
+
+/**
+ * C++ boxed fallback kernel for PrivateUse1 dispatch key.
+ * Handles cache-hit ops entirely in C++, falling back to Python for misses.
+ */
+void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack);
+
+/**
+ * Set Python fallback callback for cache misses.
+ * The callback should be _sky_kernel_fallback from dispatch.py.
+ */
+void set_python_fallback(py::object callback);
+
+/**
+ * Clear the Python fallback callback.
+ */
+void clear_python_fallback();
+
+/**
+ * Store a pending fused result from fallback_kernel for _sky_kernel_fallback
+ * to pick up, avoiding a double dispatch_cached_aten call.
+ */
+void set_pending_fused_result(py::object result);
+
+/**
+ * Take the pending fused result (returns None if not set).
+ * Clears the pending result after taking it.
+ */
+py::object take_pending_fused_result();
 
 }  // namespace skytorch
