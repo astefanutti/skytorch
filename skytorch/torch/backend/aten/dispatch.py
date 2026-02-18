@@ -25,15 +25,10 @@ logger = logging.getLogger(__name__)
 # pipeline faster. This increases latency at synchronous scalar fetch points
 # (_local_scalar_dense), resulting in a net regression for workloads with
 # frequent sync points (e.g., LLM inference with model.generate).
-# Disabled until the streaming client has proper flow control/backpressure.
-# See: https://github.com/astefanutti/skytorch/issues/XXX
-
 try:
     from skytorch.torch.backend._C import _compute_dispatch_context
 except ImportError:
     _compute_dispatch_context = None
-
-# _compute_dispatch_context = None
 
 try:
     from skytorch.torch.backend._C import (
@@ -53,6 +48,11 @@ except ImportError:
     _clear_submit_callback = None
 
 try:
+    from skytorch.torch.backend._C import _set_submit_method
+except ImportError:
+    _set_submit_method = None
+
+try:
     from skytorch.torch.backend._C import _increment_ops_counter
 except ImportError:
     _increment_ops_counter = None
@@ -62,6 +62,14 @@ try:
 except ImportError:
     _set_python_fallback = None
     _clear_python_fallback = None
+
+try:
+    from skytorch.torch.backend._C import _set_profiling_enabled
+except ImportError:
+    _set_profiling_enabled = None
+
+if PROFILING_ENABLED and _set_profiling_enabled is not None:
+    _set_profiling_enabled(True)
 
 _submit_callback_registered = False
 
@@ -545,6 +553,9 @@ def _get_stream_manager(dev_idx: int):
     if not _submit_callback_registered and _set_submit_callback is not None:
         _set_submit_callback(_submit_and_register)
         _submit_callback_registered = True
+
+    # Set up C++ raw submit buffer for bypassing Python on the fast path
+    sm._setup_cpp_submit()
 
     return sm
 

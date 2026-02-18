@@ -284,6 +284,28 @@ PYBIND11_MODULE(_C, m) {
     m.def("_clear_submit_callback", &skytorch::clear_submit_callback,
         "Clear the submit callback");
 
+    // Per-device cached submit methods for fast path (no new tensors)
+    m.def("_set_submit_method", &skytorch::set_submit_method,
+        "Cache a direct reference to stream_manager.submit_execute_aten_bytes",
+        py::arg("dev_idx"),
+        py::arg("method"));
+    m.def("_clear_submit_methods", &skytorch::clear_submit_methods,
+        "Clear all cached submit methods");
+
+    // C++ native raw submit buffer (bypasses Python on fast path)
+    m.def("_setup_cpp_submit", &skytorch::setup_cpp_submit,
+        "Set up C++ raw submit buffer with event loop integration",
+        py::arg("call_soon_threadsafe"),
+        py::arg("drain_callback"));
+    m.def("_clear_cpp_submit", &skytorch::clear_cpp_submit,
+        "Clear C++ raw submit buffer state");
+    m.def("_has_cpp_submit", &skytorch::has_cpp_submit,
+        "Check whether C++ raw submit path is set up");
+    m.def("_cpp_submit_raw_py", &skytorch::cpp_submit_raw_py,
+        "Append raw bytes to the C++ submit buffer",
+        py::arg("raw_bytes"));
+    m.def("_drain_raw_submit_buffer", &skytorch::drain_raw_submit_buffer,
+        "Drain all pending raw bytes from the C++ submit buffer");
     // Fire-and-forget ops counter (atomic, GIL-free)
     m.def("_increment_ops_counter", &skytorch::increment_ops_counter,
         "Increment the fire-and-forget ops counter");
@@ -291,6 +313,15 @@ PYBIND11_MODULE(_C, m) {
         "Read the current ops counter value");
     m.def("_reset_ops_counter", &skytorch::reset_ops_counter,
         "Reset the ops counter to zero and return previous value");
+
+    // C++ fast path profiling
+    m.def("_set_profiling_enabled", &skytorch::set_profiling_enabled,
+        "Enable or disable C++ fast path profiling",
+        py::arg("enabled"));
+    m.def("_get_cpp_profile_counters", &skytorch::get_cpp_profile_counters,
+        "Get C++ fast path profiling counters as {name: (total_ns, count)}");
+    m.def("_reset_cpp_profile_counters", &skytorch::reset_cpp_profile_counters,
+        "Reset all C++ profiling counters to zero");
 
     // Python fallback for C++ boxed fallback kernel (cache misses)
     m.def("_set_python_fallback", &skytorch::set_python_fallback,

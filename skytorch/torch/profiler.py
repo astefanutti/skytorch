@@ -110,7 +110,18 @@ class ClientProfiler:
         cls._instance = None
 
     def print_summary(self) -> None:
-        if self.total_ops == 0:
+        # Fetch C++ fast path counters
+        try:
+            from skytorch.torch.backend._C import _get_cpp_profile_counters
+
+            cpp = _get_cpp_profile_counters()
+        except (ImportError, AttributeError):
+            cpp = None
+
+        cpp_ops = cpp["fast_path_count"][1] if cpp else 0
+        total = self.total_ops + cpp_ops
+
+        if total == 0:
             return
 
         wall_ms = (self.last_dispatch_ns - self.first_dispatch_ns) / 1_000_000
@@ -119,8 +130,10 @@ class ClientProfiler:
         lines = [
             "",
             "=== SkyTorch Client Profile ===",
-            f"Ops: {self.total_ops:,} ({self.cache_hits:,} cache hits, "
-            f"{self.cache_misses:,} misses)",
+            f"Ops: {total:,} ({self.cache_hits:,} cache hits, "
+            f"{self.cache_misses:,} misses"
+            + (f", {cpp_ops:,} C++ fast path" if cpp_ops > 0 else "")
+            + ")",
             f"Syncs: {self.sync_total.count:,}",
             "",
             "Dispatch (per-op avg / total):",
@@ -137,13 +150,43 @@ class ClientProfiler:
             f"  Inter-op gap:       {self.inter_op_gap.avg_us:6.1f} us  |  "
             f"{self.inter_op_gap.total_ms:,.0f} ms",
             "",
-            "Sync points:",
-            f"  Total wait:         {self.sync_total.total_ms:,.0f} ms "
-            f"({sync_pct:.0f}% of wall time)",
-            f"  Avg / Max:          {self.sync_total.avg_ms:.1f} ms / "
-            f"{self.sync_total.max_ms:.1f} ms",
-            "",
         ]
+
+        if cpp and cpp_ops > 0:
+            _iv_ns, _ = cpp["ivalue_to_py_ns"]
+            _dc_ns, _ = cpp["dispatch_cached_ns"]
+            _sm_ns, _ = cpp["submit_ns"]
+            _rw_ns, _ = cpp["rewrite_stack_ns"]
+            _total_ns = _iv_ns + _dc_ns + _rw_ns
+            _pct = cpp_ops / total * 100 if total > 0 else 0
+            lines.extend(
+                [
+                    "C++ fast path:",
+                    f"  Ops handled:        {cpp_ops:>8,} / {total:,} ({_pct:.1f}%)",
+                    f"  IValue -> py args:  {_iv_ns / cpp_ops / 1000:6.2f} us  |  "
+                    f"{_iv_ns / 1_000_000:,.0f} ms",
+                    f"  dispatch_cached:    {_dc_ns / cpp_ops / 1000:6.2f} us  |  "
+                    f"{_dc_ns / 1_000_000:,.0f} ms",
+                    f"    submit:           {_sm_ns / cpp_ops / 1000:6.2f} us  |  "
+                    f"{_sm_ns / 1_000_000:,.0f} ms",
+                    f"  Rewrite stack:      {_rw_ns / cpp_ops / 1000:6.2f} us  |  "
+                    f"{_rw_ns / 1_000_000:,.0f} ms",
+                    f"  Total per-op:       {_total_ns / cpp_ops / 1000:6.2f} us  |  "
+                    f"{_total_ns / 1_000_000:,.0f} ms",
+                    "",
+                ]
+            )
+
+        lines.extend(
+            [
+                "Sync points:",
+                f"  Total wait:         {self.sync_total.total_ms:,.0f} ms "
+                f"({sync_pct:.0f}% of wall time)",
+                f"  Avg / Max:          {self.sync_total.avg_ms:.1f} ms / "
+                f"{self.sync_total.max_ms:.1f} ms",
+                "",
+            ]
+        )
 
         if self.sync_flush.count > 0:
             _sync_count = self.sync_flush.count

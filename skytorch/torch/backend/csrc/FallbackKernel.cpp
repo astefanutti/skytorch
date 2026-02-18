@@ -14,9 +14,18 @@
 #include <torch/extension.h>
 #include <torch/csrc/jit/python/pybind_utils.h>
 #include <ATen/core/LegacyTypeDispatch.h>
+#include <atomic>
+#include <chrono>
 #include <unordered_map>
 
 namespace skytorch {
+
+// Profiling flag and counters (defined in RequestBuilder.cpp)
+extern bool g_profiling_enabled;
+extern std::atomic<int64_t> g_prof_fast_path_count;
+extern std::atomic<int64_t> g_prof_ivalue_to_py_ns;
+extern std::atomic<int64_t> g_prof_dispatch_cached_ns;
+extern std::atomic<int64_t> g_prof_rewrite_stack_ns;
 
 // --- Python fallback callback ---
 
@@ -255,6 +264,10 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         size_t n_pos = get_num_positional_args(op);
         size_t actual_pos = std::min(n_pos, num_stack_args);
 
+        auto t0 = g_profiling_enabled
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
+
         // Convert IValue stack → Python args/kwargs
         py::tuple py_args(actual_pos);
         for (size_t i = 0; i < actual_pos; i++) {
@@ -268,6 +281,10 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
             py_kwargs[py::str(arguments[i].name().c_str())] = torch::jit::toPyObject(iv);
         }
 
+        auto t1 = g_profiling_enabled
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
+
         const std::string& op_name = get_cached_op_name(op);
         py::object fused = dispatch_cached_aten(
             py::str(op_name), py_args, py_kwargs);
@@ -275,9 +292,30 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         if (!fused.is_none()) {
             py::tuple rt = fused.cast<py::tuple>();
             if (rt.size() == 1) {
+                auto t2 = g_profiling_enabled
+                    ? std::chrono::steady_clock::now()
+                    : std::chrono::steady_clock::time_point{};
+
                 // Cache hit with callback — fully handled in C++
                 increment_ops_counter();
                 rewrite_stack_from_output(stack, rt[0].ptr(), schema);
+
+                if (g_profiling_enabled) {
+                    auto t3 = std::chrono::steady_clock::now();
+                    g_prof_ivalue_to_py_ns.fetch_add(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            t1 - t0).count(),
+                        std::memory_order_relaxed);
+                    g_prof_dispatch_cached_ns.fetch_add(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            t2 - t1).count(),
+                        std::memory_order_relaxed);
+                    g_prof_rewrite_stack_ns.fetch_add(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            t3 - t2).count(),
+                        std::memory_order_relaxed);
+                    g_prof_fast_path_count.fetch_add(1, std::memory_order_relaxed);
+                }
                 return;
             }
         }

@@ -120,6 +120,9 @@ class StreamManager:
         # Shutdown signaling
         self._shutdown_event: Optional[asyncio.Event] = None
 
+        # C++ raw submit buffer integration
+        self._cpp_submit_available: bool = False
+
     async def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """
         Start the bidirectional stream.
@@ -372,6 +375,35 @@ class StreamManager:
             self._mt_wake_pending = False
         self._process_mt_ops(batch)
 
+    def _setup_cpp_submit(self) -> None:
+        """Set up the C++ raw submit buffer for bypassing Python on the fast path.
+
+        Must be called after the stream is started (self._loop is set).
+        The C++ buffer is used only by dispatch_cached_aten's fast path
+        (no new tensors). All Python-side submit_execute_aten_bytes calls
+        continue through _mt_ops for proven thread-safety.
+        """
+        if not self._loop:
+            return
+        try:
+            from skytorch.torch.backend._C import _setup_cpp_submit
+
+            _setup_cpp_submit(self._loop.call_soon_threadsafe, self._drain_cpp_raw)
+            self._cpp_submit_available = True
+        except (ImportError, AttributeError):
+            pass
+
+    def _drain_cpp_raw(self) -> None:
+        """Drain the C++ raw submit buffer. Must run on the event loop thread."""
+        try:
+            from skytorch.torch.backend._C import _drain_raw_submit_buffer
+
+            raw_ops = _drain_raw_submit_buffer()
+            for data in raw_ops:
+                self._enqueue_execute_aten_bytes(data)
+        except (ImportError, AttributeError):
+            pass
+
     def _process_mt_ops(self, ops: list[tuple]) -> None:
         """Process a list of (type, data) ops in order. Must run on the event loop thread."""
         for op_type, data in ops:
@@ -382,6 +414,10 @@ class StreamManager:
 
     def _flush_mt_ops(self) -> None:
         """Drain main-thread ops buffer at sync points. Must run on the event loop thread."""
+        # Drain C++ raw submit buffer (fast-path ops from dispatch_cached_aten)
+        if self._cpp_submit_available:
+            self._drain_cpp_raw()
+
         with self._mt_lock:
             if not self._mt_ops:
                 self._mt_wake_pending = False
@@ -693,6 +729,16 @@ class StreamManager:
         self._flush_batch()
         self._flush_raw_batch()
         self._flush_deletes()
+
+        # Clear C++ submit buffer state
+        if self._cpp_submit_available:
+            self._cpp_submit_available = False
+            try:
+                from skytorch.torch.backend._C import _clear_cpp_submit
+
+                _clear_cpp_submit()
+            except (ImportError, AttributeError):
+                pass
 
         self._closing = True
 

@@ -213,6 +213,57 @@ void clear_submit_callback();
 bool has_submit_callback();
 
 /**
+ * Cache a direct reference to stream_manager.submit_execute_aten_bytes
+ * for a given device index. On cache hits with no new tensors, this method
+ * is called directly from C++, bypassing the _submit_and_register Python
+ * function and its _get_stream_manager lookup.
+ */
+void set_submit_method(int64_t dev_idx, py::object method);
+
+/**
+ * Clear all cached submit methods. Called during reset/shutdown.
+ */
+void clear_submit_methods();
+
+/**
+ * Set up the C++ raw submit buffer for bypassing Python on the fast path.
+ *
+ * Caches `loop.call_soon_threadsafe` and a drain callback so that
+ * dispatch_cached_aten can enqueue serialized bytes directly into a
+ * C++ std::vector<std::string> under a std::mutex, only crossing into
+ * Python once per batch to wake the event loop.
+ *
+ * Args:
+ *   call_soon_threadsafe: bound method on the asyncio event loop
+ *   drain_callback: callable to invoke on the event loop to drain the buffer
+ */
+void setup_cpp_submit(py::object call_soon_threadsafe, py::object drain_callback);
+
+/**
+ * Clear the C++ raw submit buffer state. Called during reset/shutdown.
+ */
+void clear_cpp_submit();
+
+/**
+ * Check whether the C++ raw submit path is set up.
+ */
+bool has_cpp_submit();
+
+/**
+ * Append raw bytes to the C++ submit buffer (callable from Python).
+ * Used by stream.py's submit_execute_aten_bytes so ALL raw bytes
+ * go through the same buffer, maintaining ordering with C++ fast-path ops.
+ */
+void cpp_submit_raw_py(py::bytes raw_bytes);
+
+/**
+ * Drain all pending raw bytes from the C++ submit buffer.
+ * Returns a list[bytes] and resets the wake-pending flag.
+ * Called from the event loop drain callback.
+ */
+py::list drain_raw_submit_buffer();
+
+/**
  * Increment the fire-and-forget ops counter (atomic, relaxed ordering).
  * Called from the dispatch path for each submitted op.
  */
@@ -227,6 +278,25 @@ int64_t get_ops_counter();
  * Reset the ops counter to zero and return the previous value.
  */
 int64_t reset_ops_counter();
+
+/**
+ * Enable or disable C++ fast path profiling.
+ * When enabled, fallback_kernel and dispatch_cached_aten accumulate
+ * nanosecond timing counters for each phase.
+ */
+void set_profiling_enabled(bool enabled);
+
+/**
+ * Return profiling counters as a Python dict: {name: (total_ns, count)}.
+ * Keys: "fast_path_count", "ivalue_to_py_ns", "dispatch_cached_ns",
+ *        "submit_ns", "rewrite_stack_ns".
+ */
+py::dict get_cpp_profile_counters();
+
+/**
+ * Reset all C++ profiling counters to zero.
+ */
+void reset_cpp_profile_counters();
 
 /**
  * C++ boxed fallback kernel for PrivateUse1 dispatch key.

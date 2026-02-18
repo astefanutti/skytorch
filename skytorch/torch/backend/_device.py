@@ -191,7 +191,7 @@ class DeviceManager:
 
         _reset_speculation()
 
-        # Clear cached stream managers and submit callback
+        # Clear cached stream managers, submit callback, and submit methods
         from skytorch.torch.backend.aten import dispatch as _dispatch_mod
 
         _dispatch_mod._cached_stream_managers.clear()
@@ -200,6 +200,18 @@ class DeviceManager:
             from skytorch.torch.backend._C import _clear_submit_callback
 
             _clear_submit_callback()
+        except (ImportError, AttributeError):
+            pass
+        try:
+            from skytorch.torch.backend._C import _clear_submit_methods
+
+            _clear_submit_methods()
+        except (ImportError, AttributeError):
+            pass
+        try:
+            from skytorch.torch.backend._C import _clear_cpp_submit
+
+            _clear_cpp_submit()
         except (ImportError, AttributeError):
             pass
 

@@ -17,9 +17,20 @@
 #include <torch/csrc/MemoryFormat.h>
 #include <torch/csrc/autograd/python_variable.h>
 #include <atomic>
+#include <chrono>
 #include <cstring>
+#include <mutex>
 
 namespace skytorch {
+
+// --- C++ fast path profiling ---
+
+bool g_profiling_enabled = false;
+std::atomic<int64_t> g_prof_fast_path_count{0};
+std::atomic<int64_t> g_prof_ivalue_to_py_ns{0};
+std::atomic<int64_t> g_prof_dispatch_cached_ns{0};
+std::atomic<int64_t> g_prof_submit_ns{0};
+std::atomic<int64_t> g_prof_rewrite_stack_ns{0};
 
 // Set of tensor IDs already registered with the server.
 // Checked in C++ to avoid Python dict lookups per tensor.
@@ -549,6 +560,112 @@ void clear_submit_callback() {
 
 bool has_submit_callback() {
     return g_submit_callback != nullptr;
+}
+
+// --- Per-device cached submit methods ---
+// Maps dev_idx → sm.submit_execute_aten_bytes bound method.
+// Used on cache hits with no new tensors to skip _submit_and_register entirely.
+
+static std::unordered_map<int64_t, PyObject*> g_submit_methods;
+
+void set_submit_method(int64_t dev_idx, py::object method) {
+    auto it = g_submit_methods.find(dev_idx);
+    if (it != g_submit_methods.end()) {
+        Py_DECREF(it->second);
+    }
+    PyObject* raw = method.ptr();
+    Py_INCREF(raw);
+    g_submit_methods[dev_idx] = raw;
+}
+
+void clear_submit_methods() {
+    for (auto& [_, ptr] : g_submit_methods) {
+        Py_XDECREF(ptr);
+    }
+    g_submit_methods.clear();
+}
+
+// --- C++ raw submit buffer ---
+// Replaces per-op PyObject_Call to submit_execute_aten_bytes with a fast
+// C++ mutex + vector append.  Only the event-loop wake crosses into Python,
+// and only once per batch (~1/49 ops).
+
+static std::mutex g_raw_submit_mutex;
+static std::vector<std::string> g_raw_submit_buffer;
+static bool g_raw_submit_wake_pending = false;
+static PyObject* g_loop_call_soon = nullptr;   // loop.call_soon_threadsafe
+static PyObject* g_cpp_drain_callback = nullptr; // drain function for event loop
+
+// Internal: append raw bytes and wake event loop if needed.
+// Called with GIL held (we're inside fallback_kernel or a Python call).
+static void cpp_submit_raw(const uint8_t* data, size_t len) {
+    bool need_wake = false;
+    {
+        std::lock_guard<std::mutex> lock(g_raw_submit_mutex);
+        g_raw_submit_buffer.emplace_back(reinterpret_cast<const char*>(data), len);
+        if (!g_raw_submit_wake_pending) {
+            g_raw_submit_wake_pending = true;
+            need_wake = true;
+        }
+    }
+    if (need_wake && g_loop_call_soon && g_cpp_drain_callback) {
+        PyObject* args = PyTuple_New(1);
+        Py_INCREF(g_cpp_drain_callback);
+        PyTuple_SET_ITEM(args, 0, g_cpp_drain_callback);
+        PyObject* result = PyObject_Call(g_loop_call_soon, args, nullptr);
+        Py_DECREF(args);
+        if (result == nullptr) {
+            throw py::error_already_set();
+        }
+        Py_DECREF(result);
+    }
+}
+
+void setup_cpp_submit(py::object call_soon_threadsafe, py::object drain_callback) {
+    Py_XDECREF(g_loop_call_soon);
+    g_loop_call_soon = call_soon_threadsafe.ptr();
+    Py_INCREF(g_loop_call_soon);
+
+    Py_XDECREF(g_cpp_drain_callback);
+    g_cpp_drain_callback = drain_callback.ptr();
+    Py_INCREF(g_cpp_drain_callback);
+}
+
+void clear_cpp_submit() {
+    {
+        std::lock_guard<std::mutex> lock(g_raw_submit_mutex);
+        g_raw_submit_buffer.clear();
+        g_raw_submit_wake_pending = false;
+    }
+    Py_XDECREF(g_loop_call_soon);
+    g_loop_call_soon = nullptr;
+    Py_XDECREF(g_cpp_drain_callback);
+    g_cpp_drain_callback = nullptr;
+}
+
+bool has_cpp_submit() {
+    return false;  // Disabled: cpp_submit_raw path not used yet
+}
+
+void cpp_submit_raw_py(py::bytes raw_bytes) {
+    char* buf;
+    Py_ssize_t len;
+    PyBytes_AsStringAndSize(raw_bytes.ptr(), &buf, &len);
+    cpp_submit_raw(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(len));
+}
+
+py::list drain_raw_submit_buffer() {
+    std::vector<std::string> drained;
+    {
+        std::lock_guard<std::mutex> lock(g_raw_submit_mutex);
+        drained.swap(g_raw_submit_buffer);
+        g_raw_submit_wake_pending = false;
+    }
+    py::list result(drained.size());
+    for (size_t i = 0; i < drained.size(); i++) {
+        result[i] = py::bytes(drained[i]);
+    }
+    return result;
 }
 
 // --- Device mapping registry ---
@@ -1468,7 +1585,10 @@ py::object dispatch_cached_aten(
 
     // Phase 5: Submit directly from C++ if callback is registered
     if (g_submit_callback) {
-        // Call submit callback with (raw_bytes, new_tensor_ids, new_storage_ids, dev_idx)
+        auto submit_t0 = g_profiling_enabled
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
+
         PyObject* raw = PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(buffer.data()),
             static_cast<Py_ssize_t>(buffer.size()));
@@ -1483,6 +1603,14 @@ py::object dispatch_cached_aten(
             throw py::error_already_set();
         }
         Py_DECREF(cb_result);
+
+        if (g_profiling_enabled) {
+            auto submit_t1 = std::chrono::steady_clock::now();
+            g_prof_submit_ns.fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    submit_t1 - submit_t0).count(),
+                std::memory_order_relaxed);
+        }
 
         // Build unpacked output directly
         PyObject* unpacked_output;
@@ -1539,6 +1667,32 @@ py::object dispatch_cached_aten(
     PyTuple_SET_ITEM(result, 4, PyLong_FromLongLong(sky_device_index));
 
     return py::reinterpret_steal<py::object>(result);
+}
+
+void set_profiling_enabled(bool enabled) {
+    g_profiling_enabled = enabled;
+}
+
+py::dict get_cpp_profile_counters() {
+    py::dict d;
+    auto make_pair = [](std::atomic<int64_t>& total, int64_t count) {
+        return py::make_tuple(total.load(std::memory_order_relaxed), count);
+    };
+    int64_t count = g_prof_fast_path_count.load(std::memory_order_relaxed);
+    d["fast_path_count"] = py::make_tuple(int64_t(0), count);
+    d["ivalue_to_py_ns"] = make_pair(g_prof_ivalue_to_py_ns, count);
+    d["dispatch_cached_ns"] = make_pair(g_prof_dispatch_cached_ns, count);
+    d["submit_ns"] = make_pair(g_prof_submit_ns, count);
+    d["rewrite_stack_ns"] = make_pair(g_prof_rewrite_stack_ns, count);
+    return d;
+}
+
+void reset_cpp_profile_counters() {
+    g_prof_fast_path_count.store(0, std::memory_order_relaxed);
+    g_prof_ivalue_to_py_ns.store(0, std::memory_order_relaxed);
+    g_prof_dispatch_cached_ns.store(0, std::memory_order_relaxed);
+    g_prof_submit_ns.store(0, std::memory_order_relaxed);
+    g_prof_rewrite_stack_ns.store(0, std::memory_order_relaxed);
 }
 
 // --- Fire-and-forget ops counter ---
