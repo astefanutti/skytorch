@@ -36,6 +36,11 @@ from skytorch.torch.client.request import (
 )
 from skytorch.torch.profiler import PROFILING_ENABLED
 
+try:
+    from skytorch.torch.backend._C import _increment_ops_counter
+except (ImportError, AttributeError):
+    _increment_ops_counter = None
+
 
 def copy_sky_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     """
@@ -412,6 +417,14 @@ def _execute_aten_cpp_fast_path(
 
     stream_manager = compute._grpc_client.stream
     stream_manager.submit_execute_aten_bytes(raw_bytes)
+
+    # Increment fire-and-forget ops counter for scalar speculation
+    if _increment_ops_counter is not None:
+        _increment_ops_counter()
+    else:
+        from skytorch.torch.backend.aten import scalar as _scalar_mod
+
+        _scalar_mod._ops_since_last_sync += 1
 
     if PROFILING_ENABLED:
         from skytorch.torch.profiler import ClientProfiler

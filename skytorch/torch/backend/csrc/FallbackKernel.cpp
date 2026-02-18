@@ -297,7 +297,7 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
                     : std::chrono::steady_clock::time_point{};
 
                 // Cache hit with callback — fully handled in C++
-                increment_ops_counter();
+                // Note: ops counter already incremented by _submit_and_register callback
                 rewrite_stack_from_output(stack, rt[0].ptr(), schema);
 
                 if (g_profiling_enabled) {

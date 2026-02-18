@@ -704,12 +704,7 @@ def _sky_kernel_fallback(
 
             if fused_result is not None and len(fused_result) == 1:
                 # Cache hit with C++ submit callback — already submitted
-                if _increment_ops_counter is not None:
-                    _increment_ops_counter()
-                else:
-                    from skytorch.torch.backend.aten import scalar as _scalar_mod
-
-                    _scalar_mod._ops_since_last_sync += 1
+                # Note: _ops_since_last_sync already incremented by _submit_and_register callback
 
                 if PROFILING_ENABLED:
                     _t1 = time.perf_counter_ns()
