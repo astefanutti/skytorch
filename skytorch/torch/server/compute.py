@@ -308,7 +308,7 @@ class Compute:
             service_pb2.RegisterTensorsRequest(registrations=registrations)
         )
 
-        logger.info(
+        logger.debug(
             f"Received {len(sky_state_dict)} tensors from remote execution "
             f"({len(seen_storage)} unique storages)"
         )
