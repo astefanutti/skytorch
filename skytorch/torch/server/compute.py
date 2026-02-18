@@ -108,6 +108,15 @@ class Compute:
             self._metrics_stream_task = None
 
         if self._grpc_client:
+            # Drain pending tensor deletions before closing the gRPC connection,
+            # so GC after channel close doesn't produce warnings.
+            from skytorch.torch.backend._async import get_event_loop
+            from skytorch.torch.backend._client import drain_tensors
+
+            loop = get_event_loop()
+            future = asyncio.run_coroutine_threadsafe(drain_tensors(self), loop)
+            future.result()
+
             await self._grpc_client.__aexit__(exc_type, exc_val, exc_tb)
             self._grpc_client = None
 

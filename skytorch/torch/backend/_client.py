@@ -314,6 +314,13 @@ async def get_scalar(compute: Compute, tensor_id: int, metadata=None):
         raise RuntimeError("GetScalar response has no value set")
 
 
+async def drain_tensors(compute: Compute) -> None:
+    """Drain all tracked tensors for a Compute, sending deletes through the open stream."""
+    tensor_ids = storage_manager.drain_compute(compute)
+    if tensor_ids:
+        await delete_tensors(compute, tensor_ids)
+
+
 async def delete_tensors(compute: Compute, tensor_ids: list[int]) -> None:
     """
     Delete tensors on the remote server.

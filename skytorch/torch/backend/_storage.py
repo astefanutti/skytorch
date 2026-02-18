@@ -154,6 +154,23 @@ class StorageManager:
         except RuntimeError as e:
             logger.warning(f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}")
 
+    def drain_compute(self, compute: "Compute") -> list[int]:
+        """Remove all storage entries for a Compute and return their tensor IDs."""
+        compute_id = id(compute)
+        tensor_ids = []
+
+        storage_ids_to_remove = [
+            sid
+            for sid, info in self._storages.items()
+            if info.compute is not None and id(info.compute) == compute_id
+        ]
+
+        for sid in storage_ids_to_remove:
+            tensor_ids.extend(self._storage_to_tensors.pop(sid, set()))
+            self._storages.pop(sid, None)
+
+        return tensor_ids
+
     def resize_storage(self, storage_id: int, new_nbytes: int) -> None:
         """
         Resize a storage allocation.
