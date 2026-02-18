@@ -187,3 +187,30 @@ kubectl apply --server-side -k config/e2e
 # OpenShift (uses the built-in gateway controller)
 kubectl apply --server-side -k config/openshift
 ```
+
+## Configuration
+
+SkyTorch can be configured via environment variables.
+
+### Client
+
+| Variable                       | Default | Description                                                               |
+|--------------------------------|---------|---------------------------------------------------------------------------|
+| `SKYTORCH_GRPC_COMPRESSION`    | `gzip`  | gRPC compression (`none`, `deflate`, `gzip`)                              |
+| `SKYTORCH_BATCH_THRESHOLD`     | `64`    | Ops buffered before forced flush                                          |
+| `SKYTORCH_BATCH_COALESCE_MS`   | `2`     | Delay (ms) to coalesce partial batches                                    |
+| `SKYTORCH_STREAMING`           | `1`     | Enable bidirectional gRPC streaming, must be set to `0` for IDE debugging |
+| `SKYTORCH_CPP_REQUEST_BUILDER` | `1`     | Use C++ fast path for request serialization                               |
+| `SKYTORCH_SPECULATIVE_SCALAR`  | `1`     | Predict `.item()` results to avoid sync                                   |
+| `SKYTORCH_PROFILE`             | `0`     | Enable lightweight profiling (~200ns/op overhead)                         |
+
+### Server
+
+| Variable                    | Default   | Description                                                     |
+|-----------------------------|-----------|-----------------------------------------------------------------|
+| `SKYTORCH_PORT`             | `50051`   | gRPC server port                                                |
+| `SKYTORCH_HOST`             | `[::]`    | Server bind address                                             |
+| `SKYTORCH_LOG_LEVEL`        | `INFO`    | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
+| `SKYTORCH_GRPC_COMPRESSION` | `none`    | gRPC compression (`none`, `deflate`, `gzip`)                    |
+| `SKYTORCH_CHUNK_SIZE`       | `1048576` | Chunk size in bytes for streaming tensors                       |
+| `SKYTORCH_METRICS_SOURCES`  | _(empty)_ | Comma-separated metrics sources (e.g., `nvidia-gpu`)            |

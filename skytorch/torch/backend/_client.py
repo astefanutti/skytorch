@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 import torch
 
 # Feature flags
-ENABLE_STREAMING = os.environ.get("SKYTORCH_ENABLE_STREAMING", "1") == "1"
+ENABLE_STREAMING = os.environ.get("SKYTORCH_STREAMING", "1") == "1"
 ENABLE_CPP_REQUEST_BUILDER = os.environ.get("SKYTORCH_CPP_REQUEST_BUILDER", "1") == "1"
 
 from skytorch.torch.server.serialization import (
