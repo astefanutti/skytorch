@@ -188,9 +188,15 @@ class Stream(BaseWatch):
             # Set the websocket connection to the user supplied function (eg
             # `list_namespaced_pods`) if this is the first iteration.
             if self.ws is None:
-                # func() returns a context manager, we need to enter it
-                self.ws_ctx = await self.func()
-                self.ws = await self.ws_ctx.__aenter__()
+                try:
+                    # func() returns a context manager, we need to enter it
+                    self.ws_ctx = await self.func()
+                    self.ws = await self.ws_ctx.__aenter__()
+                except Exception:
+                    if watch_forever and not self._stop:
+                        await asyncio.sleep(1)
+                        continue
+                    raise StopAsyncIteration
 
             # Abort at the current iteration if the user has called `stop` on this
             # stream instance.
@@ -206,14 +212,14 @@ class Stream(BaseWatch):
                     line = msg.data
                 elif msg.type == WSMsgType.CLOSE or msg.type == WSMsgType.CLOSED:
                     # WebSocket closed
-                    if watch_forever:
+                    if watch_forever and not self._stop:
                         await self._reconnect()
                         continue
                     else:
                         raise StopAsyncIteration
                 elif msg.type == WSMsgType.ERROR:
                     # WebSocket error
-                    if watch_forever:
+                    if watch_forever and not self._stop:
                         await self._reconnect()
                         continue
                     else:
@@ -225,14 +231,14 @@ class Stream(BaseWatch):
             except asyncio.TimeoutError:
                 # This exception can be raised by aiohttp (client timeout)
                 # but we don't retry if server side timeout is applied.
-                if watch_forever:
+                if watch_forever and not self._stop:
                     await self._reconnect()
                     continue
                 else:
                     raise
             except Exception as e:
                 # Handle other exceptions (connection errors, etc.)
-                if watch_forever:
+                if watch_forever and not self._stop:
                     await self._reconnect()
                     continue
                 else:
@@ -248,7 +254,7 @@ class Stream(BaseWatch):
             # Stop the iterator if K8s sends an empty response. This happens when
             # e.g. the supplied timeout has expired.
             if line == '':
-                if watch_forever:
+                if watch_forever and not self._stop:
                     await self._reconnect()
                     continue
                 raise StopAsyncIteration
@@ -257,7 +263,7 @@ class Stream(BaseWatch):
             try:
                 event = self.unmarshal_event(line, self.return_type)
             except client.exceptions.ApiException as ex:
-                if ex.status == 410 and retry_410:
+                if ex.status == 410 and retry_410 and not self._stop:
                     retry_410 = False  # retry only once
                     await self._reconnect()
                     continue
@@ -266,6 +272,7 @@ class Stream(BaseWatch):
             return event
 
     async def close(self):
+        self._stop = True
         await self._api_client.close()
         if self.ws is not None:
             await self.ws.close()
