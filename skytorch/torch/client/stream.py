@@ -564,14 +564,17 @@ class StreamManager:
                 )
             )
 
-        def _flush_and_enqueue_batch():
-            self._flush_mt_ops()
-            self._flush_batch()
-            self._flush_raw_batch()
+        # Route chunks through _mt_ops to preserve FIFO ordering with
+        # execute_aten ops. Previously, chunks were enqueued directly on
+        # _request_queue via call_soon_threadsafe, but the callback flushed
+        # _mt_ops first — sending execute_aten ops that reference the tensor
+        # BEFORE the update chunks that create it on the server.
+        with self._mt_lock:
             for request in stream_requests:
-                self._request_queue.put_nowait(request)
-
-        self._loop.call_soon_threadsafe(_flush_and_enqueue_batch)
+                self._mt_ops.append(("req", request))
+            if not self._mt_wake_pending:
+                self._mt_wake_pending = True
+                self._loop.call_soon_threadsafe(self._drain_mt_ops)
 
     def submit_get_tensor(self, request: service_pb2.GetTensorRequest) -> asyncio.Future:
         """
