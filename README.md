@@ -62,23 +62,24 @@ async def train(node, epochs: int = 10):
 asyncio.run(train())
 ```
 
-### LLM Inference
+### LLM Chat
 
 ```python
 import asyncio
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, TextStreamer
 from skytorch.client import compute
 
 @compute(
-    name="llm",
+    name="chat",
     image="ghcr.io/astefanutti/skytorch-server",
-    resources={"cpu": "1", "memory": "8Gi", "nvidia.com/gpu": "1"},
-    volumes=[{"name": "cache", "storage": "10Gi", "path": "/cache"}],
+    resources={"cpu": "1", "memory": "16Gi", "nvidia.com/gpu": "1"},
+    volumes=[{"name": "cache", "storage": "20Gi", "path": "/cache"}],
     env={"HF_HOME": "/cache"},
 )
-async def llm(node):
-    model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+async def chat(node):
+    device = node.device("cuda")
+    model_name = "Qwen/Qwen3-4B-Instruct-2507"
 
     def load_model(model):
         return AutoModelForCausalLM.from_pretrained(
@@ -105,31 +106,39 @@ async def llm(node):
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     model.eval()
 
-    device = node.device("cuda")
-
-    prompts = [
-        "What is machine learning in one sentence?",
-        "Write a haiku about the cloud.",
-    ]
+    streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    history = [{"role": "system", "content": "You are a helpful assistant."}]
 
     with torch.no_grad():
-        for prompt in prompts:
-            print(f"Prompt: {prompt}")
+        while True:
+            user_input = input("You: ")
+            if user_input.strip().lower() in ("quit", "exit"):
+                break
+
+            history.append({"role": "user", "content": user_input})
             inputs = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
+                history,
                 add_generation_prompt=True,
                 return_tensors="pt",
                 return_dict=True,
             )
             inputs = {k: v.to(device) for k, v in inputs.items()}
-            generated = model.generate(**inputs, max_new_tokens=100, do_sample=False)
+
+            print("Assistant: ", end="", flush=True)
+            generated = model.generate(
+                **inputs, max_new_tokens=512, do_sample=False, streamer=streamer
+            )
+
             response = tokenizer.decode(
                 generated[0, inputs["input_ids"].shape[1] :],
                 skip_special_tokens=True,
             )
-            print(f"Response: {response}\n")
+            history.append({"role": "assistant", "content": response})
 
-asyncio.run(llm())
+try:
+    asyncio.run(chat())
+except KeyboardInterrupt:
+    pass
 ```
 
 ### GRPO Training
