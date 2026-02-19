@@ -12,7 +12,7 @@ ENV PATH=$VIRTUAL_ENV/bin:$PATH
 
 # Install external dependencies
 RUN pip install --no-cache-dir "torch==2.9.1+cu128" --index-url https://download.pytorch.org/whl/cu128
-RUN pip install --no-cache-dir "nvidia-ml-py" "transformers" "kernels"
+RUN pip install --no-cache-dir "nvidia-ml-py" "transformers" "kernels" "flash-attn"
 
 # Copy the skytorch Python package
 COPY --chown=1000:root pyproject.toml README.md VERSION.md ./
