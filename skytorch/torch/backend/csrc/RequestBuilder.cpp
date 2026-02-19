@@ -644,7 +644,7 @@ void clear_cpp_submit() {
 }
 
 bool has_cpp_submit() {
-    return false;  // Disabled: cpp_submit_raw path not used yet
+    return g_loop_call_soon != nullptr && g_cpp_drain_callback != nullptr;
 }
 
 void cpp_submit_raw_py(py::bytes raw_bytes) {
@@ -1574,20 +1574,36 @@ py::object dispatch_cached_aten(
     buffer.insert(buffer.end(), args_buf.begin(), args_buf.end());
     buffer.insert(buffer.end(), kwargs_buf.begin(), kwargs_buf.end());
 
-    // Build new tensor ID / storage ID lists + register
-    py::list new_tensor_ids;
-    py::list new_storage_ids;
-    for (const auto& info : new_tensors) {
-        new_tensor_ids.append(py::int_(info.tensor_id));
-        new_storage_ids.append(py::int_(info.storage_id));
-        register_tensor_with_storage(info.tensor_id, info.storage_id);
-    }
-
-    // Phase 5: Submit directly from C++ if callback is registered
-    if (g_submit_callback) {
+    // Phase 5: Submit directly from C++
+    if (new_tensors.empty() && has_cpp_submit()) {
+        // C++ raw submit: no new tensors, bypass Python callback entirely
         auto submit_t0 = g_profiling_enabled
             ? std::chrono::steady_clock::now()
             : std::chrono::steady_clock::time_point{};
+
+        cpp_submit_raw(buffer.data(), buffer.size());
+        increment_ops_counter();
+
+        if (g_profiling_enabled) {
+            auto submit_t1 = std::chrono::steady_clock::now();
+            g_prof_submit_ns.fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    submit_t1 - submit_t0).count(),
+                std::memory_order_relaxed);
+        }
+    } else if (g_submit_callback) {
+        // Python callback for ops WITH new tensors
+        auto submit_t0 = g_profiling_enabled
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
+
+        py::list new_tensor_ids;
+        py::list new_storage_ids;
+        for (const auto& info : new_tensors) {
+            new_tensor_ids.append(py::int_(info.tensor_id));
+            new_storage_ids.append(py::int_(info.storage_id));
+            register_tensor_with_storage(info.tensor_id, info.storage_id);
+        }
 
         PyObject* raw = PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(buffer.data()),
@@ -1611,8 +1627,16 @@ py::object dispatch_cached_aten(
                     submit_t1 - submit_t0).count(),
                 std::memory_order_relaxed);
         }
+    } else {
+        // Fallback: no submit mechanism, return 5-tuple for Python-side submission
+        py::list new_tensor_ids;
+        py::list new_storage_ids;
+        for (const auto& info : new_tensors) {
+            new_tensor_ids.append(py::int_(info.tensor_id));
+            new_storage_ids.append(py::int_(info.storage_id));
+            register_tensor_with_storage(info.tensor_id, info.storage_id);
+        }
 
-        // Build unpacked output directly
         PyObject* unpacked_output;
         if (output_tensors_py.size() > 1) {
             PyObject* tup = PyTuple_New(static_cast<Py_ssize_t>(output_tensors_py.size()));
@@ -1630,14 +1654,19 @@ py::object dispatch_cached_aten(
             Py_INCREF(unpacked_output);
         }
 
-        // Return 1-tuple (unpacked_output,) to signal "cache hit, already submitted"
-        PyObject* wrapper = PyTuple_New(1);
-        PyTuple_SET_ITEM(wrapper, 0, unpacked_output);
-        return py::reinterpret_steal<py::object>(wrapper);
+        PyObject* result = PyTuple_New(5);
+        PyTuple_SET_ITEM(result, 0, unpacked_output);
+        PyTuple_SET_ITEM(result, 1,
+            PyBytes_FromStringAndSize(
+                reinterpret_cast<const char*>(buffer.data()),
+                static_cast<Py_ssize_t>(buffer.size())));
+        PyTuple_SET_ITEM(result, 2, new_tensor_ids.release().ptr());
+        PyTuple_SET_ITEM(result, 3, new_storage_ids.release().ptr());
+        PyTuple_SET_ITEM(result, 4, PyLong_FromLongLong(sky_device_index));
+        return py::reinterpret_steal<py::object>(result);
     }
 
-    // Fallback: return tuple for Python-side submission
-    // Build unpacked output: single tensor, tuple of tensors, or None
+    // Build unpacked output for submitted paths (C++ raw or Python callback)
     PyObject* unpacked_output;
     if (output_tensors_py.size() > 1) {
         PyObject* tup = PyTuple_New(static_cast<Py_ssize_t>(output_tensors_py.size()));
@@ -1655,18 +1684,10 @@ py::object dispatch_cached_aten(
         Py_INCREF(unpacked_output);
     }
 
-    // Return (unpacked_output, raw_bytes, new_tensor_ids, new_storage_ids, sky_device_index)
-    PyObject* result = PyTuple_New(5);
-    PyTuple_SET_ITEM(result, 0, unpacked_output);
-    PyTuple_SET_ITEM(result, 1,
-        PyBytes_FromStringAndSize(
-            reinterpret_cast<const char*>(buffer.data()),
-            static_cast<Py_ssize_t>(buffer.size())));
-    PyTuple_SET_ITEM(result, 2, new_tensor_ids.release().ptr());
-    PyTuple_SET_ITEM(result, 3, new_storage_ids.release().ptr());
-    PyTuple_SET_ITEM(result, 4, PyLong_FromLongLong(sky_device_index));
-
-    return py::reinterpret_steal<py::object>(result);
+    // Return 1-tuple (unpacked_output,) to signal "cache hit, already submitted"
+    PyObject* wrapper = PyTuple_New(1);
+    PyTuple_SET_ITEM(wrapper, 0, unpacked_output);
+    return py::reinterpret_steal<py::object>(wrapper);
 }
 
 void set_profiling_enabled(bool enabled) {

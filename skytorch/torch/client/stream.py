@@ -364,9 +364,23 @@ class StreamManager:
                 pending.future.set_exception(RuntimeError(f"Stream error: {error_message}"))
         self._pending.clear()
 
+    def _drain_cpp_into_mt_ops(self) -> None:
+        """Drain C++ raw submit buffer into _mt_ops. Caller must hold _mt_lock."""
+        if not self._cpp_submit_available:
+            return
+        try:
+            from skytorch.torch.backend._C import _drain_raw_submit_buffer
+
+            cpp_ops = _drain_raw_submit_buffer()
+            for data in cpp_ops:
+                self._mt_ops.append(("raw", data))
+        except (ImportError, AttributeError):
+            pass
+
     def _drain_mt_ops(self) -> None:
         """Drain the main-thread ops buffer. Must run on the event loop thread."""
         with self._mt_lock:
+            self._drain_cpp_into_mt_ops()
             if not self._mt_ops:
                 self._mt_wake_pending = False
                 return
@@ -445,6 +459,7 @@ class StreamManager:
             request_type: Type of request for tracking
         """
         with self._mt_lock:
+            self._drain_cpp_into_mt_ops()
             self._mt_ops.append(("req", stream_request))
             if not self._mt_wake_pending:
                 self._mt_wake_pending = True
@@ -479,6 +494,7 @@ class StreamManager:
         call_soon_threadsafe wake-ups by ~98%.
         """
         with self._mt_lock:
+            self._drain_cpp_into_mt_ops()
             self._mt_ops.append(("raw", raw_bytes))
             if not self._mt_wake_pending:
                 self._mt_wake_pending = True
@@ -570,6 +586,7 @@ class StreamManager:
         # _mt_ops first — sending execute_aten ops that reference the tensor
         # BEFORE the update chunks that create it on the server.
         with self._mt_lock:
+            self._drain_cpp_into_mt_ops()
             for request in stream_requests:
                 self._mt_ops.append(("req", request))
             if not self._mt_wake_pending:
