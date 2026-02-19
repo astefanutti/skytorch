@@ -24,7 +24,6 @@ classifiers = [
 ]
 
 dependencies = [
-    "cloudpickle>=3.0.0",
     "grpcio>=1.60.0",
     "kubernetes>=33.0.0",
     "numpy>=2.0.0",

@@ -191,19 +191,32 @@ class Compute:
         return "\n".join(lines)
 
     @staticmethod
-    def _get_callable_source(fn) -> tuple[str, str] | None:
-        """Extract source code and name from a callable, or None if not possible."""
+    def _get_callable_source(fn) -> tuple[str, str]:
+        """Extract source code and name from a callable.
+
+        Raises:
+            TypeError: If the callable cannot be serialized for remote execution.
+        """
         if getattr(fn, "__name__", "") == "<lambda>":
-            return None
+            raise TypeError(
+                "Lambdas cannot be serialized for remote execution. "
+                "Use a named function instead."
+            )
 
         if fn.__code__.co_freevars:
-            return None  # Has closure variables — can't represent as source
+            raise TypeError(
+                "Closures cannot be serialized for remote execution. "
+                "Move captured variables to function arguments."
+            )
 
         try:
             source = inspect.getsource(fn)
             source = textwrap.dedent(source)
-        except (OSError, TypeError):
-            return None
+        except (OSError, TypeError) as e:
+            raise TypeError(
+                f"Cannot extract source code for {fn!r}. Functions defined in "
+                "interactive sessions or C extensions are not supported."
+            ) from e
 
         imports = Compute._generate_imports(fn)
         if imports:
@@ -215,8 +228,7 @@ class Compute:
         """
         Execute a function on the remote server and return sky tensors.
 
-        For regular functions, the source code is sent as text (version-independent).
-        Falls back to cloudpickle for lambdas, closures, or when source is unavailable.
+        The function source code is sent as text (version-independent).
         Any tensors in the result (e.g., model state_dict) stay on the GPU server;
         only metadata is returned. Client-side sky tensors are created to reference
         the remote storage.
@@ -235,12 +247,11 @@ class Compute:
                 remote GPU storage
 
         Raises:
+            TypeError: If the callable cannot be serialized for remote execution
             RuntimeError: If execution fails or gRPC client is not connected
         """
         import pickle
         import sys as _sys
-
-        import cloudpickle
 
         from skytorch.torch.backend._C import _create_remote_tensor
         from skytorch.torch.backend._device import device_manager
@@ -261,25 +272,15 @@ class Compute:
                 target.flush()
 
         # 1. Serialize and call streaming RPC
-        source_info = self._get_callable_source(fn)
+        source, name = self._get_callable_source(fn)
         try:
-            if source_info:
-                source, name = source_info
-                response = await self._grpc_client.torch.execute_function(
-                    b"",
-                    pickle.dumps(args),
-                    pickle.dumps(kwargs),
-                    callable_source=source,
-                    callable_name=name,
-                    on_log=on_log,
-                )
-            else:
-                response = await self._grpc_client.torch.execute_function(
-                    cloudpickle.dumps(fn),
-                    pickle.dumps(args),
-                    pickle.dumps(kwargs),
-                    on_log=on_log,
-                )
+            response = await self._grpc_client.torch.execute_function(
+                pickle.dumps(args),
+                pickle.dumps(kwargs),
+                callable_source=source,
+                callable_name=name,
+                on_log=on_log,
+            )
         except grpc.aio.AioRpcError as e:
             raise RuntimeError(
                 f"Failed to execute function: {e.code().name}: {e.details()}"

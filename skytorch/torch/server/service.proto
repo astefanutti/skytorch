@@ -16,7 +16,7 @@ service Service {
   // Bidirectional streaming for low-latency operations
   rpc StreamOperations(stream StreamRequest) returns (stream StreamResponse);
 
-  // Execute a pickled function on the server
+  // Execute a function on the server
   rpc ExecuteFunction(ExecuteFunctionRequest) returns (stream ExecuteFunctionEvent);
 }
 
@@ -53,16 +53,16 @@ message TensorChunk {
   uint32 total_chunks = 4;
 
   // Tensor info (set on first chunk only)
-  repeated int64 shape = 7;
-  repeated int64 stride = 8;
-  int64 storage_offset = 9;
-  string dtype = 10;
+  repeated int64 shape = 5;
+  repeated int64 stride = 6;
+  int64 storage_offset = 7;
+  string dtype = 8;
 
   // Total serialized size in bytes (set in first chunk, for pre-allocation)
-  uint64 total_bytes = 11;
+  uint64 total_bytes = 9;
 
   // Tensor metadata for auto-creation on first chunk
-  TensorMetadata metadata = 12;
+  TensorMetadata metadata = 10;
 }
 
 // Response after receiving tensors
@@ -186,13 +186,12 @@ message GetTensorResponse {
   int64 storage_offset = 7;
 }
 
-// Request to execute a pickled function on the server
+// Request to execute a function on the server
 message ExecuteFunctionRequest {
-  bytes callable = 1;           // cloudpickle'd callable (fallback for lambdas)
-  bytes args = 2;               // pickle'd args tuple
-  bytes kwargs = 3;             // pickle'd kwargs dict
-  string callable_source = 4;   // function source code from inspect.getsource()
-  string callable_name = 5;     // function name (fn.__name__)
+  bytes args = 1;               // pickle'd args tuple
+  bytes kwargs = 2;             // pickle'd kwargs dict
+  string callable_source = 3;   // function source code from inspect.getsource()
+  string callable_name = 4;     // function name (fn.__name__)
 }
 
 // Information about a tensor created on the server
@@ -256,12 +255,12 @@ message StreamRequest {
     BatchedExecuteAtenRequest batched_execute_aten = 7;
     bytes raw_execute_aten = 8;           // Binary-serialized execute_aten (C++ fast path)
     bytes raw_batched_execute_aten = 9;   // Multiple binary-serialized ops concatenated
-    GetScalarRequest get_scalar = 12;    // Get scalar value from a tensor
+    GetScalarRequest get_scalar = 10;    // Get scalar value from a tensor
   }
 
   // Chunking support for large payloads
-  uint32 chunk_number = 10;      // 0-indexed chunk sequence
-  uint32 total_chunks = 11;      // Total chunks (0 or 1 = single message)
+  uint32 chunk_number = 11;      // 0-indexed chunk sequence
+  uint32 total_chunks = 12;      // Total chunks (0 or 1 = single message)
   uint64 total_bytes = 13;       // Total data size (set on first chunk)
 }
 
@@ -285,6 +284,6 @@ message StreamResponse {
   uint32 total_chunks = 11;
 
   // Server-side timing for sync_wait decomposition (profiling)
-  uint64 server_backlog_ns = 14;
-  uint64 server_handle_ns = 15;
+  uint64 server_backlog_ns = 12;
+  uint64 server_handle_ns = 13;
 }

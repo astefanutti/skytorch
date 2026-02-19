@@ -17,12 +17,11 @@ import time
 from typing import AsyncIterator
 
 try:
-    import cloudpickle
     import grpc
     import torch
 except ImportError as e:
     raise ImportError(
-        f"Required dependency not found: {e}. Install with: pip install grpcio torch cloudpickle"
+        f"Required dependency not found: {e}. Install with: pip install grpcio torch"
     )
 
 try:
@@ -339,9 +338,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[service_pb2.ExecuteFunctionEvent]:
         """
-        Execute a pickled function on the server, streaming logs and result.
+        Execute a function on the server, streaming logs and result.
 
-        The function is deserialized via cloudpickle, executed, and any tensors
+        The function source code is compiled and executed, and any tensors
         in the result are assigned server-side storage IDs. The actual tensor data
         stays on the GPU; only metadata is returned to the client.
 
@@ -431,12 +430,11 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         self,
         request: service_pb2.ExecuteFunctionRequest,
     ) -> service_pb2.ExecuteFunctionResponse:
-        if request.callable_source:
-            namespace = {}
-            exec(request.callable_source, namespace)
-            fn = namespace[request.callable_name]
-        else:
-            fn = cloudpickle.loads(request.callable)
+        if not request.callable_source:
+            raise ValueError("callable_source is required")
+        namespace = {}
+        exec(request.callable_source, namespace)
+        fn = namespace[request.callable_name]
         args = pickle.loads(request.args) if request.args else ()
         kwargs = pickle.loads(request.kwargs) if request.kwargs else {}
 

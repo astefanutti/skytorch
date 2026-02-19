@@ -248,18 +248,16 @@ class GetTensorResponse(_message.Message):
     def __init__(self, success: bool = ..., message: _Optional[str] = ..., data: _Optional[bytes] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ...) -> None: ...
 
 class ExecuteFunctionRequest(_message.Message):
-    __slots__ = ("callable", "args", "kwargs", "callable_source", "callable_name")
-    CALLABLE_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("args", "kwargs", "callable_source", "callable_name")
     ARGS_FIELD_NUMBER: _ClassVar[int]
     KWARGS_FIELD_NUMBER: _ClassVar[int]
     CALLABLE_SOURCE_FIELD_NUMBER: _ClassVar[int]
     CALLABLE_NAME_FIELD_NUMBER: _ClassVar[int]
-    callable: bytes
     args: bytes
     kwargs: bytes
     callable_source: str
     callable_name: str
-    def __init__(self, callable: _Optional[bytes] = ..., args: _Optional[bytes] = ..., kwargs: _Optional[bytes] = ..., callable_source: _Optional[str] = ..., callable_name: _Optional[str] = ...) -> None: ...
+    def __init__(self, args: _Optional[bytes] = ..., kwargs: _Optional[bytes] = ..., callable_source: _Optional[str] = ..., callable_name: _Optional[str] = ...) -> None: ...
 
 class RemoteTensorInfo(_message.Message):
     __slots__ = ("name", "storage_id", "shape", "dtype", "stride", "storage_offset", "storage_nbytes", "device_type", "device_index")

@@ -222,7 +222,6 @@ class TensorClient:
 
     async def execute_function(
         self,
-        callable_bytes: bytes,
         args_bytes: bytes,
         kwargs_bytes: bytes,
         callable_source: str = "",
@@ -230,10 +229,9 @@ class TensorClient:
         on_log: Callable[[str, str], None] | None = None,
     ) -> service_pb2.ExecuteFunctionResponse:
         """
-        Execute a pickled function on the server.
+        Execute a function on the server.
 
         Args:
-            callable_bytes: cloudpickle'd callable (empty when using source)
             args_bytes: pickle'd args tuple
             kwargs_bytes: pickle'd kwargs dict
             callable_source: function source code from inspect.getsource()
@@ -248,7 +246,6 @@ class TensorClient:
             RuntimeError: If execution fails
         """
         request = service_pb2.ExecuteFunctionRequest(
-            callable=callable_bytes,
             args=args_bytes,
             kwargs=kwargs_bytes,
             callable_source=callable_source,

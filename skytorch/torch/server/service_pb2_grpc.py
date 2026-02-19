@@ -116,7 +116,7 @@ class ServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def ExecuteFunction(self, request, context):
-        """Execute a pickled function on the server
+        """Execute a function on the server
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
