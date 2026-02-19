@@ -251,6 +251,7 @@ void autograd_fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* 
 void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
     py::gil_scoped_acquire gil;
 
+    try {
     // --- C++ fast path: try dispatch_cached_aten for cache hits ---
     // Only attempt when the submit callback is registered. Without the callback,
     // dispatch_cached_aten returns Tuple(5) on cache hits, which registers tensor
@@ -325,6 +326,14 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
 
     // --- Python fallback: cache miss, uncacheable, or no callback yet ---
     call_python_fallback(op, stack);
+
+    } catch (py::error_already_set& e) {
+        // Convert pybind11 exceptions to c10::Error so they propagate safely
+        // through PyTorch's C++ dispatcher (which doesn't catch pybind11 exceptions).
+        // Restore the Python error state so it re-surfaces at the Python/C++ boundary.
+        e.restore();
+        TORCH_CHECK(false, e.what());
+    }
 }
 
 }  // namespace skytorch
