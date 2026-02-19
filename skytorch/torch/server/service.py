@@ -401,14 +401,25 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
 
-        # Stream log events while the function runs
+        # Stream log events while the function runs, sending periodic keepalive
+        # events to prevent proxies (e.g. Envoy/Istio) from closing the stream
+        # due to idle timeout.
+        keepalive_interval = 30  # seconds
+        last_event_time = time.monotonic()
         while not done_event.is_set():
             try:
                 stream_name, text = log_queue.get_nowait()
                 yield service_pb2.ExecuteFunctionEvent(
                     log=service_pb2.ExecuteFunctionLog(stream=stream_name, text=text)
                 )
+                last_event_time = time.monotonic()
             except _queue_mod.Empty:
+                now = time.monotonic()
+                if now - last_event_time >= keepalive_interval:
+                    yield service_pb2.ExecuteFunctionEvent(
+                        log=service_pb2.ExecuteFunctionLog(stream="stdout", text="")
+                    )
+                    last_event_time = now
                 await asyncio.sleep(0.05)
 
         # Drain remaining log entries after thread completes
