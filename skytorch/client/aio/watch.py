@@ -14,6 +14,7 @@
 
 import asyncio
 import json
+import logging
 import pydoc
 from functools import partial
 
@@ -21,6 +22,8 @@ from aiohttp import WSMsgType
 from kubernetes import client
 from .api_client import ApiClient
 from .stream import WsApiClient
+
+logger = logging.getLogger(__name__)
 
 PYDOC_RETURN_LABEL = ":return:"
 PYDOC_FOLLOW_PARAM = ":param follow:"
@@ -192,7 +195,8 @@ class Stream(BaseWatch):
                     # func() returns a context manager, we need to enter it
                     self.ws_ctx = await self.func()
                     self.ws = await self.ws_ctx.__aenter__()
-                except Exception:
+                except Exception as e:
+                    logger.warning("WebSocket connection failed: %s", e)
                     if watch_forever and not self._stop:
                         await asyncio.sleep(1)
                         continue

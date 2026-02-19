@@ -504,20 +504,30 @@ class Compute:
         """Watch for Events related to this Compute resource and call the callback."""
         logger.debug(f"Starting event watch for Compute {self.namespace}/{self.name}")
 
-        async with aio.WsApiClient() as api_client:
-            core_api = CoreV1Api(api_client)
-            async with Stream(api_client).stream(
+        # Get the current resource version to watch from "now" without replaying old events
+        api_client = ApiClient()
+        core_api = CoreV1Api(api_client)
+        event_list = core_api.list_namespaced_event(
+            namespace=self.namespace,
+            field_selector="involvedObject.kind=Pod",
+            limit=1,
+        )
+        resource_version = event_list.metadata.resource_version
+
+        async with aio.WsApiClient() as ws_api_client:
+            core_api = CoreV1Api(ws_api_client)
+            async with Stream(ws_api_client).stream(
                 core_api.list_namespaced_event,
                 namespace=self.namespace,
                 field_selector="involvedObject.kind=Pod",
-                send_initial_events=False,
-                resource_version_match="NotOlderThan",
+                resource_version=resource_version,
             ) as stream:
                 try:
+                    pod_pattern = re.compile(rf"^{re.escape(self.name)}-\d+$")
                     async for event in stream:
-                        # FIXME: find a better way to only watch for owned Pods events
                         if event["type"] in ["ADDED", "MODIFIED"]:
-                            if event["raw_object"]["metadata"]["name"].startswith(self.name):
+                            pod_name = event["raw_object"]["involvedObject"]["name"]
+                            if pod_pattern.fullmatch(pod_name):
                                 self._on_events(event["object"])
                 except asyncio.CancelledError:
                     pass
