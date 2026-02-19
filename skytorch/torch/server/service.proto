@@ -17,7 +17,7 @@ service Service {
   rpc StreamOperations(stream StreamRequest) returns (stream StreamResponse);
 
   // Execute a pickled function on the server
-  rpc ExecuteFunction(ExecuteFunctionRequest) returns (ExecuteFunctionResponse);
+  rpc ExecuteFunction(ExecuteFunctionRequest) returns (stream ExecuteFunctionEvent);
 }
 
 // Request to delete tensors by ID
@@ -213,6 +213,18 @@ message ExecuteFunctionResponse {
   bool success = 1;
   string error_message = 2;
   repeated RemoteTensorInfo tensors = 3;
+}
+
+message ExecuteFunctionLog {
+  string stream = 1;  // "stdout" or "stderr"
+  string text = 2;
+}
+
+message ExecuteFunctionEvent {
+  oneof event {
+    ExecuteFunctionLog log = 1;
+    ExecuteFunctionResponse result = 2;
+  }
 }
 
 // Request to register tensor ID mappings for server-created tensors

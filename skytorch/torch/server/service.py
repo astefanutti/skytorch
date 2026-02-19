@@ -43,6 +43,8 @@ from skytorch.torch.server.serialization import (
     parse_dtype,
 )
 from skytorch.torch.profiler import PROFILING_ENABLED
+from skytorch.torch.server.remote import LogCapture, OutputCapture
+from skytorch.torch.server import stream
 from skytorch.torch.server.tensor import TensorManager
 
 try:
@@ -66,150 +68,6 @@ _STRUCT_I = struct.Struct("<I")  # uint32
 _STRUCT_i = struct.Struct("<i")  # int32
 # Pre-compiled shape/stride formats for common dimensions (0-dim to 8-dim)
 _STRUCT_SHAPE: dict[int, struct.Struct] = {i: struct.Struct(f"<{i}q") for i in range(9)}
-
-# Work item type tags for the per-stream worker queue
-_RAW = 0
-_RAW_BATCH = 1
-_SYNC = 2
-_FF_REQUEST = 3
-_CHUNK = 4
-_SHUTDOWN = 5
-
-
-def _stream_worker(work_queue, servicer, loop, server_profiler):
-    """Worker thread for StreamOperations — processes ops from the queue.
-
-    Runs in a dedicated thread per stream, allowing gRPC I/O on the event loop
-    to overlap with op execution (C++ code holding the GIL).
-    """
-    chunk_state = [None]
-
-    if server_profiler is not None:
-        _cycle_backlog_ops = 0
-        _cycle_backlog_time_ns = 0
-        _cycle_first_idle_ns = 0
-        _cycle_started = False
-        _last_was_exec = False
-
-    while True:
-        if server_profiler is not None:
-            _t_wait = time.perf_counter_ns()
-
-        item = work_queue.get()
-
-        if server_profiler is not None:
-            _t_recv = time.perf_counter_ns()
-            _idle_ns = _t_recv - _t_wait
-            server_profiler.idle_time.add(_idle_ns)
-
-        tag = item[0]
-
-        if tag == _SHUTDOWN:
-            break
-        elif tag == _RAW:
-            try:
-                if server_profiler is not None:
-                    _t0 = time.perf_counter_ns()
-                    if not _cycle_started:
-                        _cycle_first_idle_ns = _t_recv - _t_wait
-                        _cycle_started = True
-                    if _last_was_exec:
-                        server_profiler.hot_idle.add(_idle_ns)
-
-                if _USE_CPP_PARSER:
-                    _cpp_execute_raw_aten_inline(item[1], servicer.tensor_manager.store)
-                else:
-                    servicer._execute_raw_aten_inline(item[1])
-
-                if server_profiler is not None:
-                    _t1 = time.perf_counter_ns()
-                    server_profiler.raw_execute.add(_t1 - _t0)
-                    server_profiler.total_ops += 1
-                    _cycle_backlog_ops += 1
-                    _cycle_backlog_time_ns += _t1 - _t0
-                    _last_was_exec = True
-            except Exception as e:
-                servicer._deferred_error = str(e)
-        elif tag == _RAW_BATCH:
-            try:
-                if server_profiler is not None:
-                    _t0 = time.perf_counter_ns()
-                    if not _cycle_started:
-                        _cycle_first_idle_ns = _t_recv - _t_wait
-                        _cycle_started = True
-                    if _last_was_exec:
-                        server_profiler.hot_idle.add(_idle_ns)
-
-                if _USE_CPP_PARSER:
-                    _cpp_execute_raw_batched_aten_inline(
-                        item[1], servicer.tensor_manager.store
-                    )
-                else:
-                    raw_data = item[1]
-                    pos = 0
-                    while pos < len(raw_data):
-                        op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
-                        pos += 4
-                        servicer._execute_raw_aten_inline(raw_data[pos : pos + op_len])
-                        pos += op_len
-
-                if server_profiler is not None:
-                    _t1 = time.perf_counter_ns()
-                    server_profiler.raw_batched_execute.add(_t1 - _t0)
-                    raw_data = item[1]
-                    _n_ops = 0
-                    _pos = 0
-                    while _pos < len(raw_data):
-                        _op_len = _STRUCT_I.unpack_from(raw_data, _pos)[0]
-                        _pos += 4 + _op_len
-                        _n_ops += 1
-                    server_profiler.total_ops += _n_ops
-                    _cycle_backlog_ops += _n_ops
-                    _cycle_backlog_time_ns += _t1 - _t0
-                    _last_was_exec = True
-            except Exception as e:
-                servicer._deferred_error = str(e)
-        elif tag == _FF_REQUEST:
-            servicer._handle_fire_and_forget_sync(item[1])
-            if server_profiler is not None:
-                _last_was_exec = False
-        elif tag == _CHUNK:
-            servicer._handle_chunked_sync(item[1], chunk_state)
-            if server_profiler is not None:
-                _last_was_exec = False
-        elif tag == _SYNC:
-            request, future = item[1], item[2]
-
-            if server_profiler is not None:
-                server_profiler.sync_cycle_count += 1
-                server_profiler.sync_backlog_ops.add_count(_cycle_backlog_ops)
-                if _cycle_backlog_time_ns > 0:
-                    server_profiler.sync_backlog_time.add(_cycle_backlog_time_ns)
-                if _cycle_started:
-                    server_profiler.sync_idle_before.add(_cycle_first_idle_ns)
-                # Save backlog time before resetting for response embedding
-                _response_backlog_ns = _cycle_backlog_time_ns
-                _cycle_backlog_ops = 0
-                _cycle_backlog_time_ns = 0
-                _cycle_first_idle_ns = 0
-                _cycle_started = False
-
-                _t0 = time.perf_counter_ns()
-
-            response = servicer._handle_single_request_sync(request, server_profiler)
-
-            if server_profiler is not None:
-                _t1 = time.perf_counter_ns()
-                _handle_ns = _t1 - _t0
-                server_profiler.sync_handle.add(_handle_ns)
-                # Embed server-side timing in response for client decomposition
-                response.server_backlog_ns = _response_backlog_ns
-                response.server_handle_ns = _handle_ns
-
-            loop.call_soon_threadsafe(future.set_result, response)
-            if server_profiler is not None:
-                _last_was_exec = False
-
 
 class TensorServicer(service_pb2_grpc.ServiceServicer):
     """
@@ -479,13 +337,17 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         self,
         request: service_pb2.ExecuteFunctionRequest,
         context: grpc.aio.ServicerContext,
-    ) -> service_pb2.ExecuteFunctionResponse:
+    ) -> AsyncIterator[service_pb2.ExecuteFunctionEvent]:
         """
-        Execute a pickled function on the server and return tensor metadata.
+        Execute a pickled function on the server, streaming logs and result.
 
         The function is deserialized via cloudpickle, executed, and any tensors
         in the result are assigned server-side storage IDs. The actual tensor data
         stays on the GPU; only metadata is returned to the client.
+
+        stdout/stderr from the function are captured and streamed back as log
+        events. The final event carries the ExecuteFunctionResponse with tensor
+        metadata.
 
         The entire operation runs in a thread to keep the asyncio event loop free
         for health checks during long-running functions (e.g. model downloads).
@@ -494,8 +356,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             request: ExecuteFunctionRequest with pickled callable, args, kwargs
             context: gRPC context
 
-        Returns:
-            ExecuteFunctionResponse with tensor metadata
+        Yields:
+            ExecuteFunctionEvent messages: log events followed by the result
         """
         if request.callable_source:
             logger.info(
@@ -509,11 +371,61 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 f"(callable={len(request.callable)}B, "
                 f"args={len(request.args)}B, kwargs={len(request.kwargs)}B)"
             )
-        try:
-            return await asyncio.to_thread(self._execute_function_sync, request)
-        except Exception as e:
-            logger.error(f"Error executing function: {e}")
-            return service_pb2.ExecuteFunctionResponse(success=False, error_message=str(e))
+
+        log_queue: _queue_mod.SimpleQueue[tuple[str, str]] = _queue_mod.SimpleQueue()
+        done_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        result_holder: list[service_pb2.ExecuteFunctionResponse] = []
+
+        def _run():
+            orig_stdout = sys.stdout
+            orig_stderr = sys.stderr
+            log_handler = LogCapture(log_queue)
+            log_handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
+            log_handler.install()
+            try:
+                sys.stdout = OutputCapture("stdout", orig_stdout, log_queue)
+                sys.stderr = OutputCapture("stderr", orig_stderr, log_queue)
+                response = self._execute_function_sync(request)
+                result_holder.append(response)
+            except Exception as e:
+                logger.error(f"Error executing function: {e}")
+                result_holder.append(
+                    service_pb2.ExecuteFunctionResponse(success=False, error_message=str(e))
+                )
+            finally:
+                sys.stdout = orig_stdout
+                sys.stderr = orig_stderr
+                log_handler.uninstall()
+                loop.call_soon_threadsafe(done_event.set)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        # Stream log events while the function runs
+        while not done_event.is_set():
+            try:
+                stream_name, text = log_queue.get_nowait()
+                yield service_pb2.ExecuteFunctionEvent(
+                    log=service_pb2.ExecuteFunctionLog(stream=stream_name, text=text)
+                )
+            except _queue_mod.Empty:
+                await asyncio.sleep(0.05)
+
+        # Drain remaining log entries after thread completes
+        while True:
+            try:
+                stream_name, text = log_queue.get_nowait()
+                yield service_pb2.ExecuteFunctionEvent(
+                    log=service_pb2.ExecuteFunctionLog(stream=stream_name, text=text)
+                )
+            except _queue_mod.Empty:
+                break
+
+        thread.join()
+
+        # Yield the final result event
+        yield service_pb2.ExecuteFunctionEvent(result=result_holder[0])
 
     def _execute_function_sync(
         self,
@@ -528,7 +440,6 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         args = pickle.loads(request.args) if request.args else ()
         kwargs = pickle.loads(request.kwargs) if request.kwargs else {}
 
-        logger.info(f"ExecuteFunction: calling {fn!r}")
         try:
             result = fn(*args, **kwargs)
         except Exception:
@@ -580,9 +491,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 )
             )
 
-        logger.info(
-            f"ExecuteFunction: {len(tensors)} tensors, " f"{len(storage_map)} unique storages"
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"ExecuteFunction: {len(tensors)} tensors, " f"{len(storage_map)} unique storages"
+            )
 
         return service_pb2.ExecuteFunctionResponse(success=True, tensors=tensor_infos)
 
@@ -1350,7 +1262,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             _sprof.stream_start_ns = time.perf_counter_ns()
 
         worker = threading.Thread(
-            target=_stream_worker,
+            target=stream.stream_worker,
             args=(work_queue, self, loop, _sprof),
             daemon=True,
         )
@@ -1359,24 +1271,24 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         try:
             async for request in request_iterator:
                 if request.total_chunks > 1:
-                    work_queue.put((_CHUNK, request))
+                    work_queue.put((stream.CHUNK, request))
                     continue
 
                 # Hot path first (HasField checks)
                 if request.HasField("raw_execute_aten"):
-                    work_queue.put((_RAW, request.raw_execute_aten))
+                    work_queue.put((stream.RAW, request.raw_execute_aten))
                 elif request.HasField("raw_batched_execute_aten"):
-                    work_queue.put((_RAW_BATCH, request.raw_batched_execute_aten))
+                    work_queue.put((stream.RAW_BATCH, request.raw_batched_execute_aten))
                 elif request.HasField("get_scalar") or request.HasField("get_tensor"):
                     # Sync op: create future, enqueue, await, yield
                     future = loop.create_future()
-                    work_queue.put((_SYNC, request, future))
+                    work_queue.put((stream.SYNC, request, future))
                     yield await future
                 else:
                     # Other fire-and-forget (delete, copy, update, register, etc.)
-                    work_queue.put((_FF_REQUEST, request))
+                    work_queue.put((stream.FF_REQUEST, request))
         finally:
-            work_queue.put((_SHUTDOWN,))
+            work_queue.put((stream.SHUTDOWN,))
             worker.join(timeout=5.0)
 
             if PROFILING_ENABLED and _sprof is not None:

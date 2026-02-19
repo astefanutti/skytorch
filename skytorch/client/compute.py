@@ -734,7 +734,7 @@ class Compute:
 
         return source, fn.__name__
 
-    async def execute(self, fn, *args, **kwargs):
+    async def execute(self, fn, *args, on_log=None, **kwargs):
         """
         Execute a function on the remote server and return sky tensors.
 
@@ -747,6 +747,10 @@ class Compute:
         Args:
             fn: Callable to execute on the server
             *args: Positional arguments for the callable
+            on_log: Optional callback for log output from the server function,
+                called with (stream, text) where stream is "stdout" or "stderr".
+                Defaults to printing to the matching local stream.
+                Pass ``on_log=lambda s, t: None`` to suppress.
             **kwargs: Keyword arguments for the callable
 
         Returns:
@@ -758,6 +762,7 @@ class Compute:
         """
         import cloudpickle
         import pickle
+        import sys as _sys
 
         from skytorch.torch.backend._C import _create_remote_tensor
         from skytorch.torch.backend._storage import storage_manager
@@ -769,7 +774,14 @@ class Compute:
                 "gRPC client is not connected. " "Use 'async with compute:' or call ready() first."
             )
 
-        # 1. Serialize and call unary RPC
+        if on_log is None:
+
+            def on_log(stream: str, text: str):
+                target = _sys.stderr if stream == "stderr" else _sys.stdout
+                target.write(text)
+                target.flush()
+
+        # 1. Serialize and call streaming RPC
         source_info = self._get_callable_source(fn)
         try:
             if source_info:
@@ -780,12 +792,14 @@ class Compute:
                     pickle.dumps(kwargs),
                     callable_source=source,
                     callable_name=name,
+                    on_log=on_log,
                 )
             else:
                 response = await self._grpc_client.torch.execute_function(
                     cloudpickle.dumps(fn),
                     pickle.dumps(args),
                     pickle.dumps(kwargs),
+                    on_log=on_log,
                 )
         except grpc.aio.AioRpcError as e:
             raise RuntimeError(

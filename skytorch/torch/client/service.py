@@ -6,7 +6,7 @@ management and ATen operation execution on the remote server.
 """
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     import grpc
@@ -227,6 +227,7 @@ class TensorClient:
         kwargs_bytes: bytes,
         callable_source: str = "",
         callable_name: str = "",
+        on_log: Callable[[str, str], None] | None = None,
     ) -> service_pb2.ExecuteFunctionResponse:
         """
         Execute a pickled function on the server.
@@ -237,6 +238,8 @@ class TensorClient:
             kwargs_bytes: pickle'd kwargs dict
             callable_source: function source code from inspect.getsource()
             callable_name: function name (fn.__name__)
+            on_log: Optional callback for log events, called with (stream, text)
+                where stream is "stdout" or "stderr"
 
         Returns:
             ExecuteFunctionResponse with tensor metadata
@@ -251,7 +254,17 @@ class TensorClient:
             callable_source=callable_source,
             callable_name=callable_name,
         )
-        return await self.stub.ExecuteFunction(request, metadata=self.metadata)
+        response: service_pb2.ExecuteFunctionResponse | None = None
+        async for event in self.stub.ExecuteFunction(request, metadata=self.metadata):
+            which = event.WhichOneof("event")
+            if which == "log":
+                if on_log is not None:
+                    on_log(event.log.stream, event.log.text)
+            elif which == "result":
+                response = event.result
+        if response is None:
+            raise RuntimeError("ExecuteFunction stream ended without a result event")
+        return response
 
     async def execute_aten_operation(
         self,

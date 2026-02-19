@@ -293,6 +293,22 @@ class ExecuteFunctionResponse(_message.Message):
     tensors: _containers.RepeatedCompositeFieldContainer[RemoteTensorInfo]
     def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., tensors: _Optional[_Iterable[_Union[RemoteTensorInfo, _Mapping]]] = ...) -> None: ...
 
+class ExecuteFunctionLog(_message.Message):
+    __slots__ = ("stream", "text")
+    STREAM_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    stream: str
+    text: str
+    def __init__(self, stream: _Optional[str] = ..., text: _Optional[str] = ...) -> None: ...
+
+class ExecuteFunctionEvent(_message.Message):
+    __slots__ = ("log", "result")
+    LOG_FIELD_NUMBER: _ClassVar[int]
+    RESULT_FIELD_NUMBER: _ClassVar[int]
+    log: ExecuteFunctionLog
+    result: ExecuteFunctionResponse
+    def __init__(self, log: _Optional[_Union[ExecuteFunctionLog, _Mapping]] = ..., result: _Optional[_Union[ExecuteFunctionResponse, _Mapping]] = ...) -> None: ...
+
 class RegisterTensorsRequest(_message.Message):
     __slots__ = ("registrations",)
     REGISTRATIONS_FIELD_NUMBER: _ClassVar[int]

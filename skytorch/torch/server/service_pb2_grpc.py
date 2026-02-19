@@ -65,10 +65,10 @@ class ServiceStub(object):
                 request_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.StreamRequest.SerializeToString,
                 response_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.StreamResponse.FromString,
                 _registered_method=True)
-        self.ExecuteFunction = channel.unary_unary(
+        self.ExecuteFunction = channel.unary_stream(
                 '/skytorch.torch.Service/ExecuteFunction',
                 request_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionRequest.SerializeToString,
-                response_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionResponse.FromString,
+                response_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionEvent.FromString,
                 _registered_method=True)
 
 
@@ -155,10 +155,10 @@ def add_ServiceServicer_to_server(servicer, server):
                     request_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.StreamRequest.FromString,
                     response_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.StreamResponse.SerializeToString,
             ),
-            'ExecuteFunction': grpc.unary_unary_rpc_method_handler(
+            'ExecuteFunction': grpc.unary_stream_rpc_method_handler(
                     servicer.ExecuteFunction,
                     request_deserializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionRequest.FromString,
-                    response_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionResponse.SerializeToString,
+                    response_serializer=skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionEvent.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -345,12 +345,12 @@ class Service(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(
+        return grpc.experimental.unary_stream(
             request,
             target,
             '/skytorch.torch.Service/ExecuteFunction',
             skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionRequest.SerializeToString,
-            skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionResponse.FromString,
+            skytorch_dot_torch_dot_server_dot_service__pb2.ExecuteFunctionEvent.FromString,
             options,
             channel_credentials,
             insecure,
