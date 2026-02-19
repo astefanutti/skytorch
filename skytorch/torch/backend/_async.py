@@ -52,7 +52,7 @@ def get_event_loop() -> asyncio.AbstractEventLoop:
 
         # Create a new event loop
         _global_loop = asyncio.new_event_loop()
-        # _global_loop.set_task_factory(asyncio.eager_task_factory)
+        _global_loop.set_task_factory(asyncio.eager_task_factory)
 
         # Start the loop in a background daemon thread
         _loop_thread = threading.Thread(

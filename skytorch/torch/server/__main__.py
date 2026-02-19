@@ -82,6 +82,7 @@ _compression = _COMPRESSION_MAP.get(_compression_name, grpc.Compression.Gzip)
 logger.info(f"  Compression: {_compression_name}")
 
 loop = asyncio.new_event_loop()
+loop.set_task_factory(asyncio.eager_task_factory)
 asyncio.set_event_loop(loop)
 server = grpc.aio.server(
     compression=_compression,

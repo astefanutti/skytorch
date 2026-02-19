@@ -186,6 +186,10 @@ class Compute:
         self._event_watch_task: Optional[asyncio.Task] = None
         self._metrics_stream_task: Optional[asyncio.Task] = None
 
+        # Enable eager task execution so tasks start immediately up to the first await,
+        # ensuring resource versions are captured before the Compute resource is applied.
+        asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)
+
         # Start event watching if callback is provided
         if self._on_events is not None:
             self._event_watch_task = asyncio.create_task(self._watch_events())
