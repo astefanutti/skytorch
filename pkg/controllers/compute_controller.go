@@ -104,6 +104,12 @@ func (r *ComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			err = errors.Join(err, grpcRouteErr)
 		}
 
+		// Reconcile PVCs
+		if pvcErr := r.reconcilePVCs(ctx, &compute); pvcErr != nil {
+			log.Error(pvcErr, "Failed to reconcile PVCs")
+			err = errors.Join(err, pvcErr)
+		}
+
 		// Reconcile StatefulSet
 		if statefulSetErr := r.reconcileStatefulSet(ctx, &compute); statefulSetErr != nil {
 			log.Error(statefulSetErr, "Failed to reconcile StatefulSet")
@@ -143,6 +149,19 @@ func (r *ComputeReconciler) reconcileStatefulSet(ctx context.Context, compute *v
 	}
 
 	log.V(2).Info("StatefulSet reconciled", "statefulset", klog.KRef(compute.Namespace, compute.Name))
+	return nil
+}
+
+func (r *ComputeReconciler) reconcilePVCs(ctx context.Context, compute *v1alpha1.Compute) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	for _, pvcApply := range pvcApplyConfigurations(compute) {
+		if err := r.client.Apply(ctx, pvcApply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+			return fmt.Errorf("failed to apply PVC %s: %w", *pvcApply.Name, err)
+		}
+		log.V(2).Info("PVC reconciled", "pvc", klog.KRef(compute.Namespace, *pvcApply.Name))
+	}
+
 	return nil
 }
 

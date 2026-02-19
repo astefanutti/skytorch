@@ -187,6 +187,18 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 		}
 	}
 
+	// Add volumes referencing standalone PVCs
+	for _, pvc := range compute.Spec.VolumeClaimTemplates {
+		podSpec.WithVolumes(
+			corev1apply.Volume().
+				WithName(pvc.Name).
+				WithPersistentVolumeClaim(
+					corev1apply.PersistentVolumeClaimVolumeSource().
+						WithClaimName(pvc.Name),
+				),
+		)
+	}
+
 	// Build StatefulSet spec
 	statefulSetSpec := appsv1apply.StatefulSetSpec().
 		WithPodManagementPolicy(appsv1.ParallelPodManagement).
@@ -205,31 +217,6 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 				WithAnnotations(annotations).
 				WithSpec(podSpec),
 		)
-
-	// Add VolumeClaimTemplates
-	for _, pvc := range compute.Spec.VolumeClaimTemplates {
-		pvcApply := corev1apply.PersistentVolumeClaim(pvc.Name, compute.Namespace).
-			WithSpec(
-				corev1apply.PersistentVolumeClaimSpec().
-					WithAccessModes(pvc.Spec.AccessModes...).
-					WithResources(
-						corev1apply.VolumeResourceRequirements().
-							WithRequests(pvc.Spec.Resources.Requests),
-					),
-			)
-		if pvc.Spec.StorageClassName != nil {
-			pvcApply.WithSpec(
-				corev1apply.PersistentVolumeClaimSpec().
-					WithAccessModes(pvc.Spec.AccessModes...).
-					WithStorageClassName(*pvc.Spec.StorageClassName).
-					WithResources(
-						corev1apply.VolumeResourceRequirements().
-							WithRequests(pvc.Spec.Resources.Requests),
-					),
-			)
-		}
-		statefulSetSpec.WithVolumeClaimTemplates(pvcApply)
-	}
 
 	// Build StatefulSet apply configuration
 	statefulSet := appsv1apply.StatefulSet(compute.Name, compute.Namespace).
