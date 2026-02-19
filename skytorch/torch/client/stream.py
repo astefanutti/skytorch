@@ -113,10 +113,6 @@ class StreamManager:
         self._mt_lock = threading.Lock()
         self._mt_wake_pending: bool = False
 
-        # Buffer for batched delete tensor IDs
-        self._delete_buffer: list[int] = []
-        self._delete_flush_scheduled: bool = False
-
         # Shutdown signaling
         self._shutdown_event: Optional[asyncio.Event] = None
 
@@ -166,17 +162,6 @@ class StreamManager:
     # Override with SKYTORCH_BATCH_COALESCE_MS env var (in milliseconds).
     _BATCH_COALESCE_DELAY = float(os.environ.get("SKYTORCH_BATCH_COALESCE_MS", "2")) / 1000.0
 
-    def _enqueue_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
-        """Buffer an execute_aten request for batching. Must run on the event loop thread."""
-        self._batch_buffer.append(request)
-        if len(self._batch_buffer) >= self._BATCH_FLUSH_THRESHOLD:
-            self._flush_batch()
-        elif not self._flush_scheduled:
-            self._flush_scheduled = True
-            self._batch_flush_timer = self._loop.call_later(
-                self._BATCH_COALESCE_DELAY, self._flush_batch
-            )
-
     def _enqueue_execute_aten_bytes(self, raw_bytes: bytes) -> None:
         """Buffer a raw binary execute_aten request for batching. Must run on the event loop thread."""
         self._raw_batch_buffer.append(raw_bytes)
@@ -188,31 +173,6 @@ class StreamManager:
                 self._BATCH_COALESCE_DELAY, self._flush_raw_batch
             )
 
-    def _enqueue_delete_ids(self, tensor_ids: list[int]) -> None:
-        """Buffer tensor IDs for batched deletion. Must run on event loop thread."""
-        self._delete_buffer.extend(tensor_ids)
-        if not self._delete_flush_scheduled:
-            self._delete_flush_scheduled = True
-            self._loop.call_soon(self._flush_deletes)
-
-    def _flush_deletes(self) -> None:
-        """Flush buffered delete tensor IDs. Must run on event loop thread."""
-        self._delete_flush_scheduled = False
-        if not self._delete_buffer:
-            return
-        # If a batch flush is pending, defer: the pending _flush_raw_batch or
-        # _flush_batch will call _flush_deletes after sending the batch,
-        # ensuring deletes arrive at the server AFTER ops that still reference
-        # those tensors.
-        if self._raw_flush_scheduled or self._flush_scheduled:
-            return
-        request = service_pb2.DeleteTensorsRequest(tensor_ids=self._delete_buffer)
-        stream_request = service_pb2.StreamRequest(delete_tensors=request)
-        self._request_queue.put_nowait(stream_request)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Flushing batched delete of {len(self._delete_buffer)} tensors")
-        self._delete_buffer = []
-
     def _flush_batch(self) -> None:
         """Flush buffered execute_aten requests as a batch. Must run on the event loop thread."""
         self._flush_scheduled = False
@@ -220,7 +180,6 @@ class StreamManager:
             self._batch_flush_timer.cancel()
             self._batch_flush_timer = None
         if not self._batch_buffer:
-            self._flush_deletes()
             return
 
         if len(self._batch_buffer) == 1:
@@ -235,7 +194,6 @@ class StreamManager:
 
         self._batch_buffer = []
         self._request_queue.put_nowait(stream_request)
-        self._flush_deletes()
 
     def _flush_raw_batch(self) -> None:
         """Flush buffered raw binary execute_aten requests. Must run on the event loop thread."""
@@ -244,7 +202,6 @@ class StreamManager:
             self._raw_flush_timer.cancel()
             self._raw_flush_timer = None
         if not self._raw_batch_buffer:
-            self._flush_deletes()
             return
 
         if PROFILING_ENABLED:
@@ -277,7 +234,6 @@ class StreamManager:
 
         self._raw_batch_buffer = []
         self._request_queue.put_nowait(stream_request)
-        self._flush_deletes()
 
     async def _sender_loop(self) -> None:
         """Send requests from queue to the stream."""
@@ -408,15 +364,15 @@ class StreamManager:
             pass
 
     def _drain_cpp_raw(self) -> None:
-        """Drain the C++ raw submit buffer. Must run on the event loop thread."""
-        try:
-            from skytorch.torch.backend._C import _drain_raw_submit_buffer
+        """Drain the C++ raw submit buffer. Must run on the event loop thread.
 
-            raw_ops = _drain_raw_submit_buffer()
-            for data in raw_ops:
-                self._enqueue_execute_aten_bytes(data)
-        except (ImportError, AttributeError):
-            pass
+        Delegates to _drain_mt_ops so that C++ buffer ops are routed through
+        _mt_ops, preserving FIFO ordering with "req" entries (update_tensor,
+        delete_tensors, etc.). Without this, a C++ op submitted after a "req"
+        entry could be drained directly into _raw_batch_buffer, then flushed
+        ahead of the "req" by _enqueue_with_flush.
+        """
+        self._drain_mt_ops()
 
     def _process_mt_ops(self, ops: list[tuple]) -> None:
         """Process a list of (type, data) ops in order. Must run on the event loop thread."""
@@ -428,11 +384,13 @@ class StreamManager:
 
     def _flush_mt_ops(self) -> None:
         """Drain main-thread ops buffer at sync points. Must run on the event loop thread."""
-        # Drain C++ raw submit buffer (fast-path ops from dispatch_cached_aten)
-        if self._cpp_submit_available:
-            self._drain_cpp_raw()
-
         with self._mt_lock:
+            # Drain C++ raw submit buffer INTO _mt_ops (not _raw_batch_buffer)
+            # to preserve FIFO ordering with "req" entries like update_tensor.
+            # Using _drain_cpp_raw() here would put C++ ops into _raw_batch_buffer
+            # before _mt_ops is processed, causing _enqueue_with_flush to flush
+            # those ops ahead of the "req" entries that should precede them.
+            self._drain_cpp_into_mt_ops()
             if not self._mt_ops:
                 self._mt_wake_pending = False
                 return
@@ -480,7 +438,13 @@ class StreamManager:
                 f"Executing {request.op_name} | "
                 f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
             )
-        self._loop.call_soon_threadsafe(self._enqueue_execute_aten, request)
+        serialized = request.SerializeToString()
+        with self._mt_lock:
+            self._drain_cpp_into_mt_ops()
+            self._mt_ops.append(("raw", serialized))
+            if not self._mt_wake_pending:
+                self._mt_wake_pending = True
+                self._loop.call_soon_threadsafe(self._drain_mt_ops)
 
     def submit_execute_aten_bytes(self, raw_bytes: bytes) -> None:
         """Submit a fire-and-forget binary-serialized execute_aten request.
@@ -517,11 +481,16 @@ class StreamManager:
         self._submit_request(stream_request, "register_tensors")
 
     def submit_delete_tensors(self, request: service_pb2.DeleteTensorsRequest) -> None:
-        """Buffer delete_tensors for batched submission (callable from any thread)."""
-        tensor_ids = list(request.tensor_ids)
+        """Submit a fire-and-forget delete_tensors request (callable from any thread).
+
+        Routes through _mt_ops to preserve FIFO ordering with ATen ops.
+        Without this, a delete can reach the server before the ATen op that
+        creates the tensor, causing a deferred "Tensor does not exist" error.
+        """
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Buffering delete for tensors {tensor_ids}")
-        self._loop.call_soon_threadsafe(self._enqueue_delete_ids, tensor_ids)
+            logger.debug(f"Deleting tensors {list(request.tensor_ids)}")
+        stream_request = service_pb2.StreamRequest(delete_tensors=request)
+        self._submit_request(stream_request, "delete_tensors")
 
     def submit_update_tensor(self, request: service_pb2.UpdateTensorRequest) -> None:
         """Submit a fire-and-forget update_tensor request (callable from any thread)."""
@@ -620,7 +589,7 @@ class StreamManager:
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
-        self._flush_deletes()
+
 
         if PROFILING_ENABLED:
             from skytorch.torch.profiler import ClientProfiler
@@ -693,7 +662,7 @@ class StreamManager:
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
-        self._flush_deletes()
+
 
         if PROFILING_ENABLED:
             from skytorch.torch.profiler import ClientProfiler
@@ -748,7 +717,7 @@ class StreamManager:
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
-        self._flush_deletes()
+
 
         # Clear C++ submit buffer state
         if self._cpp_submit_available:
