@@ -187,6 +187,8 @@ def _stream_worker(work_queue, servicer, loop, server_profiler):
                     server_profiler.sync_backlog_time.add(_cycle_backlog_time_ns)
                 if _cycle_started:
                     server_profiler.sync_idle_before.add(_cycle_first_idle_ns)
+                # Save backlog time before resetting for response embedding
+                _response_backlog_ns = _cycle_backlog_time_ns
                 _cycle_backlog_ops = 0
                 _cycle_backlog_time_ns = 0
                 _cycle_first_idle_ns = 0
@@ -201,7 +203,7 @@ def _stream_worker(work_queue, servicer, loop, server_profiler):
                 _handle_ns = _t1 - _t0
                 server_profiler.sync_handle.add(_handle_ns)
                 # Embed server-side timing in response for client decomposition
-                response.server_backlog_ns = _cycle_backlog_time_ns
+                response.server_backlog_ns = _response_backlog_ns
                 response.server_handle_ns = _handle_ns
 
             loop.call_soon_threadsafe(future.set_result, response)
