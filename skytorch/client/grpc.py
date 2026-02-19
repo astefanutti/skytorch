@@ -62,6 +62,10 @@ _GRPC_CHANNEL_OPTIONS = [
     ("grpc.http2.initial_connection_window_size", 2 * 1024 * 1024),   # 2MB
     ("grpc.max_send_message_length", 16 * 1024 * 1024),               # 16MB
     ("grpc.max_receive_message_length", 16 * 1024 * 1024),            # 16MB
+    ("grpc.keepalive_time_ms", 30_000),                                # Send keepalive ping every 30s
+    ("grpc.keepalive_timeout_ms", 10_000),                             # Wait 10s for ping ack
+    ("grpc.keepalive_permit_without_calls", 1),                        # Send pings even with no active RPCs
+    ("grpc.http2.max_pings_without_data", 0),                          # Allow unlimited pings without data
 ]
 
 
