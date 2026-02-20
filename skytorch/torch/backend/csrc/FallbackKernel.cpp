@@ -242,8 +242,17 @@ void autograd_fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* 
     // Exclude autograd + ADInplaceOrView keys and redispatch to PrivateUse1.
     // Stays entirely in C++ dispatch — no Python re-entry, no CompositeImplicitAutograd
     // decomposition. This is the pattern used by XLA and other custom backends.
-    at::AutoDispatchBelowADInplaceOrView guard;
-    op.callBoxed(stack);
+    try {
+        at::AutoDispatchBelowADInplaceOrView guard;
+        op.callBoxed(stack);
+    } catch (py::error_already_set& e) {
+        // During redispatch, device guard callbacks (e.g. exchange_device) call into
+        // Python where a pending KeyboardInterrupt can raise py::error_already_set.
+        // Convert to c10::Error so it propagates safely through PyTorch's C++ dispatcher.
+        py::gil_scoped_acquire gil;
+        e.restore();
+        TORCH_CHECK(false, e.what());
+    }
 }
 
 // --- Boxed Fallback Kernel ---
