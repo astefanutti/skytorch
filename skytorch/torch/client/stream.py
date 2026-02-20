@@ -109,9 +109,17 @@ class StreamManager:
         # call_soon_threadsafe calls by ~98%. Each entry is either:
         #   ("raw", bytes)    — raw binary execute_aten
         #   ("req", StreamRequest) — non-batched request (copy, update, register)
+        #   ("ff", list[int])      — deferred delete tensor IDs
         self._mt_ops: list[tuple] = []
         self._mt_lock = threading.Lock()
         self._mt_wake_pending: bool = False
+
+        # Deferred delete tensor IDs: accumulated from fire-and-forget delete
+        # requests that preserve FIFO ordering but don't force a batch flush.
+        # They piggyback on the next batch flush instead of triggering one.
+        # IDs are batched into a single DeleteTensorsRequest when flushed,
+        # reducing per-message gRPC overhead.
+        self._deferred_delete_ids: list[int] = []
 
         # Shutdown signaling
         self._shutdown_event: Optional[asyncio.Event] = None
@@ -194,6 +202,7 @@ class StreamManager:
 
         self._batch_buffer = []
         self._request_queue.put_nowait(stream_request)
+        self._flush_deferred()
 
     def _flush_raw_batch(self) -> None:
         """Flush buffered raw binary execute_aten requests. Must run on the event loop thread."""
@@ -234,6 +243,7 @@ class StreamManager:
 
         self._raw_batch_buffer = []
         self._request_queue.put_nowait(stream_request)
+        self._flush_deferred()
 
     async def _sender_loop(self) -> None:
         """Send requests from queue to the stream."""
@@ -381,6 +391,15 @@ class StreamManager:
                 self._enqueue_execute_aten_bytes(data)
             elif op_type == "req":
                 self._enqueue_with_flush(data)
+            elif op_type == "ff":
+                self._deferred_delete_ids.extend(data)
+        # If deferred deletes accumulated but no batch is pending, flush them now
+        if (
+            self._deferred_delete_ids
+            and not self._raw_batch_buffer
+            and not self._raw_flush_scheduled
+        ):
+            self._flush_deferred()
 
     def _flush_mt_ops(self) -> None:
         """Drain main-thread ops buffer at sync points. Must run on the event loop thread."""
@@ -398,6 +417,17 @@ class StreamManager:
             self._mt_ops = []
             self._mt_wake_pending = False
         self._process_mt_ops(batch)
+
+    def _flush_deferred(self) -> None:
+        """Flush deferred delete tensor IDs as a single batched message.
+
+        Must run on the event loop thread.
+        """
+        if self._deferred_delete_ids:
+            request = service_pb2.DeleteTensorsRequest(tensor_ids=self._deferred_delete_ids)
+            stream_request = service_pb2.StreamRequest(delete_tensors=request)
+            self._request_queue.put_nowait(stream_request)
+            self._deferred_delete_ids = []
 
     def _enqueue_with_flush(self, stream_request):
         """Flush any pending batch, then enqueue a request. Must run on the event loop thread."""
@@ -483,14 +513,22 @@ class StreamManager:
     def submit_delete_tensors(self, request: service_pb2.DeleteTensorsRequest) -> None:
         """Submit a fire-and-forget delete_tensors request (callable from any thread).
 
-        Routes through _mt_ops to preserve FIFO ordering with ATen ops.
-        Without this, a delete can reach the server before the ATen op that
-        creates the tensor, causing a deferred "Tensor does not exist" error.
+        Routes through _mt_ops as a fire-and-forget ("ff") entry to preserve
+        FIFO ordering with ATen ops without forcing a batch flush. Deletes only
+        need to arrive AFTER ops that use the tensor; since _mt_ops ordering
+        guarantees this, deletes piggyback on the next batch flush instead of
+        triggering one. Delete tensor IDs are batched into a single gRPC message
+        when flushed, matching the pre-FIFO delete batching behavior.
         """
+        tensor_ids = list(request.tensor_ids)
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Deleting tensors {list(request.tensor_ids)}")
-        stream_request = service_pb2.StreamRequest(delete_tensors=request)
-        self._submit_request(stream_request, "delete_tensors")
+            logger.debug(f"Deleting tensors {tensor_ids}")
+        with self._mt_lock:
+            self._drain_cpp_into_mt_ops()
+            self._mt_ops.append(("ff", tensor_ids))
+            if not self._mt_wake_pending:
+                self._mt_wake_pending = True
+                self._loop.call_soon_threadsafe(self._drain_mt_ops)
 
     def submit_update_tensor(self, request: service_pb2.UpdateTensorRequest) -> None:
         """Submit a fire-and-forget update_tensor request (callable from any thread)."""
@@ -589,7 +627,7 @@ class StreamManager:
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
-
+        self._flush_deferred()
 
         if PROFILING_ENABLED:
             from skytorch.torch.profiler import ClientProfiler
@@ -662,7 +700,7 @@ class StreamManager:
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
-
+        self._flush_deferred()
 
         if PROFILING_ENABLED:
             from skytorch.torch.profiler import ClientProfiler
@@ -717,7 +755,7 @@ class StreamManager:
         self._flush_mt_ops()
         self._flush_batch()
         self._flush_raw_batch()
-
+        self._flush_deferred()
 
         # Clear C++ submit buffer state
         if self._cpp_submit_available:
