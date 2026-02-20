@@ -274,7 +274,7 @@ class Compute:
         # 1. Serialize and call streaming RPC
         source, name = self._get_callable_source(fn)
         try:
-            response = await self._grpc_client.torch.execute_function(
+            response = await self._grpc_client.torch.execute_remote_function(
                 pickle.dumps(args),
                 pickle.dumps(kwargs),
                 callable_source=source,

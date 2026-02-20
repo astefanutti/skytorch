@@ -220,7 +220,7 @@ class TensorClient:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Copied tensor {src_tensor_id} -> {dst_tensor_id}")
 
-    async def execute_function(
+    async def execute_remote_function(
         self,
         args_bytes: bytes,
         kwargs_bytes: bytes,
@@ -251,6 +251,7 @@ class TensorClient:
             callable_source=callable_source,
             callable_name=callable_name,
         )
+
         response: service_pb2.ExecuteFunctionResponse | None = None
         async for event in self.stub.ExecuteFunction(request, metadata=self.metadata):
             which = event.WhichOneof("event")
@@ -259,6 +260,7 @@ class TensorClient:
                     on_log(event.log.stream, event.log.text)
             elif which == "result":
                 response = event.result
+
         if response is None:
             raise RuntimeError("ExecuteFunction stream ended without a result event")
         return response

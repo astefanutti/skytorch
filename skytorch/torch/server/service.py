@@ -352,24 +352,26 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         for health checks during long-running functions (e.g. model downloads).
 
         Args:
-            request: ExecuteFunctionRequest with pickled callable, args, kwargs
+            request: ExecuteFunctionRequest with function source and arguments
             context: gRPC context
 
         Yields:
             ExecuteFunctionEvent messages: log events followed by the result
         """
-        if request.callable_source:
-            logger.info(
-                f"ExecuteFunction: received request "
-                f"(source={len(request.callable_source)}B, name={request.callable_name!r}, "
-                f"args={len(request.args)}B, kwargs={len(request.kwargs)}B)"
-            )
-        else:
-            logger.info(
-                f"ExecuteFunction: received request "
-                f"(callable={len(request.callable)}B, "
-                f"args={len(request.args)}B, kwargs={len(request.kwargs)}B)"
-            )
+        if logger.isEnabledFor(logging.DEBUG):
+            if request.callable_source:
+                logger.debug(
+                    f"ExecuteFunction: received request "
+                    f"(source={len(request.callable_source)}B, "
+                    f"name={request.callable_name!r}, "
+                    f"args={len(request.args)}B, kwargs={len(request.kwargs)}B)"
+                )
+            else:
+                logger.debug(
+                    f"ExecuteFunction: received request "
+                    f"(callable={len(request.callable)}B, "
+                    f"args={len(request.args)}B, kwargs={len(request.kwargs)}B)"
+                )
 
         log_queue: _queue_mod.SimpleQueue[tuple[str, str]] = _queue_mod.SimpleQueue()
         done_event = asyncio.Event()
@@ -387,7 +389,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 sys.stderr = OutputCapture("stderr", orig_stderr, log_queue)
                 response = self._execute_function_sync(request)
                 result_holder.append(response)
-            except Exception as e:
+            except BaseException as e:
                 logger.error(f"Error executing function: {e}")
                 result_holder.append(
                     service_pb2.ExecuteFunctionResponse(success=False, error_message=str(e))
@@ -401,25 +403,13 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
 
-        # Stream log events while the function runs, sending periodic keepalive
-        # events to prevent proxies (e.g. Envoy/Istio) from closing the stream
-        # due to idle timeout.
-        keepalive_interval = 30  # seconds
-        last_event_time = time.monotonic()
         while not done_event.is_set():
             try:
                 stream_name, text = log_queue.get_nowait()
                 yield service_pb2.ExecuteFunctionEvent(
                     log=service_pb2.ExecuteFunctionLog(stream=stream_name, text=text)
                 )
-                last_event_time = time.monotonic()
             except _queue_mod.Empty:
-                now = time.monotonic()
-                if now - last_event_time >= keepalive_interval:
-                    yield service_pb2.ExecuteFunctionEvent(
-                        log=service_pb2.ExecuteFunctionLog(stream="stdout", text="")
-                    )
-                    last_event_time = now
                 await asyncio.sleep(0.05)
 
         # Drain remaining log entries after thread completes
@@ -434,7 +424,15 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         thread.join()
 
-        # Yield the final result event
+        if not result_holder:
+            yield service_pb2.ExecuteFunctionEvent(
+                result=service_pb2.ExecuteFunctionResponse(
+                    success=False,
+                    error_message="Server process terminated unexpectedly during function execution",
+                )
+            )
+            return
+
         yield service_pb2.ExecuteFunctionEvent(result=result_holder[0])
 
     def _execute_function_sync(
