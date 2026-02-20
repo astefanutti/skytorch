@@ -14,13 +14,26 @@ Root cause of the MNIST "Tensor not found" bug:
     chunks that create it on the server. The fix routes chunks through
     _mt_ops to preserve FIFO ordering.
 
-The tests in the "Chunked tensor upload ordering" section exercise the
-chunked upload code path by transferring tensors >1 MB and immediately
-using them. The race condition itself requires a separate server process
-(network latency allows the event loop to interleave with the main thread);
-the in-process test server is too fast to trigger the race deterministically,
-but the tests guard the code path against regression.
+Additional ordering bugs fixed:
+    - _drain_cpp_raw race: C++ fast-path ops went through a separate event
+      loop callback (_drain_cpp_raw) that drained directly into
+      _raw_batch_buffer. A stale callback could drain ops submitted AFTER
+      an _mt_ops "req" entry (update_tensor, delete_tensors), then
+      _enqueue_with_flush would flush those ops ahead of the "req".
+      Fix: _drain_cpp_raw now delegates to _drain_mt_ops.
+    - Delete ordering: submit_delete_tensors bypassed _mt_ops via
+      call_soon_threadsafe, so GC-triggered deletes could reach the server
+      before the ATen op that creates the tensor. The server stored the
+      error as _deferred_error, surfaced on the next get_scalar.
+      Fix: deletes now route through _mt_ops via _submit_request.
+
+The race conditions require a separate server process (network latency
+allows the event loop to interleave with the main thread); the in-process
+test server is too fast to trigger the race deterministically, but the
+tests guard the code paths against regression.
 """
+
+import gc
 
 import pytest
 import torch
@@ -319,3 +332,210 @@ async def test_training_loop_with_loss_item(device):
         loss_val = loss.item()
         assert isinstance(loss_val, float)
         assert loss_val == loss_val  # not NaN
+
+
+# =============================================================================
+# GC-triggered delete ordering
+#
+# When Python garbage-collects a sky tensor, submit_delete_tensors is called.
+# If the delete bypasses _mt_ops (the old code used call_soon_threadsafe
+# directly), it can reach the server before the ATen op that creates the
+# tensor, causing a deferred "Tensor does not exist" error surfaced on the
+# next sync point.
+# =============================================================================
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_gc_during_training_loop(device):
+    """Force GC every iteration to trigger delete ordering race.
+
+    backward() releases autograd-saved intermediates. gc.collect() forces
+    their __del__ → submit_delete_tensors. If deletes bypass _mt_ops, they
+    can overtake the ATen ops that created those tensors.
+    """
+    torch.manual_seed(42)
+    model = nn.Linear(16, 4).to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    for _ in range(30):
+        x = torch.randn(8, 16).to(device)
+        target = torch.randint(0, 4, (8,)).to(device)
+        optimizer.zero_grad()
+        loss = F.cross_entropy(model(x), target)
+        loss.backward()
+        optimizer.step()
+        gc.collect()
+        loss_val = loss.item()
+        assert isinstance(loss_val, float)
+        assert loss_val == loss_val
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_gc_during_cnn_training(device):
+    """CNN training with forced GC creates many intermediate tensors.
+
+    CNNs generate more intermediates (conv, batchnorm, relu, pool) than
+    linear models. Forced GC between backward and .item() maximizes the
+    chance of delete/create races.
+    """
+    torch.manual_seed(42)
+    num_classes = 4
+    model = SmallCNN(num_classes=num_classes).to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    for _ in range(10):
+        x = torch.randn(4, 1, 14, 14).to(device)
+        target = torch.randint(0, num_classes, (4,)).to(device)
+        optimizer.zero_grad()
+        loss = F.cross_entropy(model(x), target)
+        loss.backward()
+        optimizer.step()
+        gc.collect()
+        loss_val = loss.item()
+        assert isinstance(loss_val, float)
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_rapid_tensor_create_delete_cycles(device):
+    """Create and immediately drop sky tensors in a tight loop.
+
+    Each iteration creates tensors via .to(device) and drops the previous
+    ones (triggering delete). The rapid create/delete interleaving stresses
+    the ordering between ATen ops (from .to() and arithmetic) and deletes.
+    """
+    prev = None
+    for i in range(50):
+        x = torch.randn(32, 32).to(device)
+        y = x + float(i)
+        prev = y  # drop previous y, triggering delete of old tensors
+    result = prev.sum().item()
+    assert isinstance(result, float)
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_delete_between_ops_and_sync(device):
+    """Delete tensors between fire-and-forget ops and the sync point.
+
+    Creates intermediates, explicitly deletes them, then syncs.
+    The delete must not corrupt the stream ordering.
+    """
+    x = torch.randn(16, 16).to(device)
+    # Create intermediates
+    a = x * 2
+    b = a + 1
+    c = b - 0.5
+    result_tensor = c.sum()
+    # Drop intermediates before syncing
+    del a, b, c
+    gc.collect()
+    # Sync — must not see a deferred "Tensor does not exist"
+    result = result_tensor.item()
+    assert isinstance(result, float)
+
+
+# =============================================================================
+# _drain_cpp_raw ordering (C++ fast-path vs _mt_ops)
+#
+# The C++ fast path (dispatch_cached_aten cache hits) submits ops via
+# cpp_submit_raw → C++ buffer → _drain_cpp_raw callback. If _drain_cpp_raw
+# drains directly into _raw_batch_buffer instead of going through _mt_ops,
+# a C++ op submitted after an update_tensor can be flushed before it.
+#
+# These tests exercise patterns where small .to(device) transfers (which
+# go through _mt_ops as "req" entries) are immediately followed by many
+# ATen ops (which go through the C++ fast path after cache warm-up).
+# =============================================================================
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_small_transfer_interleaved_with_ops(device):
+    """Small tensor upload followed by ops, repeated many times.
+
+    Small .to(device) uses submit_update_tensor → _submit_request → "req"
+    in _mt_ops. Subsequent ATen ops go through the C++ fast path after
+    cache warm-up. If _drain_cpp_raw puts C++ ops in _raw_batch_buffer
+    while the "req" is still in _mt_ops, _enqueue_with_flush flushes them
+    out of order.
+    """
+    model = nn.Linear(32, 8).to(device)
+    model.eval()
+
+    for _ in range(30):
+        x = torch.randn(16, 32).to(device)
+        with torch.no_grad():
+            out = model(x)
+        val = out.sum().item()
+        assert isinstance(val, float)
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_multi_tensor_upload_then_ops(device):
+    """Upload multiple small tensors, then use all of them.
+
+    Each .to(device) creates a "req" entry in _mt_ops. The subsequent
+    ops reference all uploaded tensors. If any upload is reordered after
+    an op that references it, the server errors.
+    """
+    for _ in range(20):
+        a = torch.randn(8, 8).to(device)
+        b = torch.randn(8, 8).to(device)
+        c = torch.randn(8, 8).to(device)
+        result = (a @ b + c).sum().item()
+        assert isinstance(result, float)
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_upload_ops_sync_tight_loop(device):
+    """Tight loop: upload → single op → sync, many iterations.
+
+    Minimal work between upload and sync maximizes the chance of the
+    _drain_cpp_raw callback interleaving with _drain_mt_ops.
+    """
+    for _ in range(50):
+        x = torch.randn(4, 4).to(device)
+        val = (x + 1).sum().item()
+        assert isinstance(val, float)
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_training_with_gc_and_scheduler(device):
+    """Full MNIST-like training pattern: upload, forward, backward, step, gc, sync.
+
+    Combines all the fixed ordering scenarios:
+    - Small tensor uploads ("req" in _mt_ops)
+    - Many ATen ops (C++ fast path after cache warm-up)
+    - Backward frees intermediates (GC-triggered deletes)
+    - Scheduler step (additional ops)
+    - .item() sync point
+    """
+    torch.manual_seed(42)
+    model = nn.Sequential(
+        nn.Linear(32, 64),
+        nn.ReLU(),
+        nn.Linear(64, 32),
+        nn.ReLU(),
+        nn.Linear(32, 4),
+    ).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+
+    for _ in range(30):
+        x = torch.randn(16, 32).to(device)
+        target = torch.randint(0, 4, (16,)).to(device)
+        optimizer.zero_grad()
+        loss = F.cross_entropy(model(x), target)
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+        gc.collect()
+        loss_val = loss.item()
+        assert isinstance(loss_val, float)
+        assert loss_val == loss_val
