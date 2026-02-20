@@ -24,6 +24,7 @@ logging.basicConfig(
     on_events=log_event,
 )
 async def chat(node: Compute):
+    device = node.device("cuda")
     model_name = "Qwen/Qwen3-4B-Instruct-2507"
 
     def load_model(model):
@@ -48,15 +49,11 @@ async def chat(node: Compute):
             attn_implementation="eager",
         )
     state_dict.load_into(model)
-
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     model.eval()
 
-    device = node.device("cuda")
-
     streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     history = [{"role": "system", "content": "You are a helpful assistant."}]
-
     print("\nChat with the model (type 'quit' or 'exit' to stop)\n")
 
     # Override asyncio's SIGINT handler which defers the first Ctrl-C

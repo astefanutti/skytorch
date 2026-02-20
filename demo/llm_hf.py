@@ -24,6 +24,7 @@ logging.basicConfig(
     on_events=log_event,
 )
 async def llm(node: Compute):
+    device = node.device("cuda")
     model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
     def load_model(model):
@@ -50,8 +51,6 @@ async def llm(node: Compute):
     state_dict.load_into(model)
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     model.eval()
-
-    device = node.device("cuda")
 
     prompts = [
         "What is machine learning in one sentence?",

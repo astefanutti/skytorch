@@ -57,7 +57,7 @@ class MNISTNet(nn.Module):
 @compute(
     name="mnist",
     image="ghcr.io/astefanutti/skytorch-server",
-    resources={"cpu": "4", "memory": "16Gi", "nvidia.com/gpu": "1"},
+    resources={"cpu": "1", "memory": "8Gi", "nvidia.com/gpu": "1"},
     on_events=log_event,
 )
 async def train(node: Compute, epochs: int = 10):

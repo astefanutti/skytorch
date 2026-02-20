@@ -82,11 +82,7 @@ async def chat(node):
     model_name = "Qwen/Qwen3-4B-Instruct-2507"
 
     def load_model(model):
-        return AutoModelForCausalLM.from_pretrained(
-            model,
-            dtype=torch.float32,
-            attn_implementation="eager",
-        ).to("cuda")
+        return AutoModelForCausalLM.from_pretrained(model).to("cuda")
 
     # Load the model weights server-side (stays on GPU, only metadata returned)
     # and the tokenizer locally in parallel
@@ -97,11 +93,8 @@ async def chat(node):
 
     # Sync model locally (no weights downloaded)
     with torch.device("meta"):
-        model = AutoModelForCausalLM.from_config(
-            AutoConfig.from_pretrained(model_name),
-            dtype=torch.float32,
-            attn_implementation="eager",
-        )
+        config = AutoConfig.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_config(config)
     state_dict.load_into(model)
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     model.eval()
@@ -126,7 +119,7 @@ async def chat(node):
 
             print("Assistant: ", end="", flush=True)
             generated = model.generate(
-                **inputs, max_new_tokens=512, do_sample=False, streamer=streamer
+                **inputs, max_new_tokens=512, do_sample=False, streamer=streamer,
             )
 
             response = tokenizer.decode(
