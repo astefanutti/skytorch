@@ -1,7 +1,7 @@
 """Neural network operation correctness tests.
 
-Tests conv2d, batch_norm, pooling, dropout, nll_loss, embedding, cat,
-and a small MNIST-like CNN end-to-end.
+Tests conv2d, batch_norm, layer_norm, group_norm, pooling, dropout,
+nll_loss, embedding, cat, and a small MNIST-like CNN end-to-end.
 """
 
 import pytest
@@ -467,4 +467,109 @@ async def test_mnist_cnn_forward_backward(device):
             rtol=1e-3,
             check_device=False,
             msg=f"MNIST CNN: {name} gradient mismatch",
+        )
+
+
+# =============================================================================
+# LayerNorm (CEA override — requires PrivateUse1 registration to bypass
+# CompositeExplicitAutograd decomposition)
+# =============================================================================
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_layer_norm_forward(device):
+    x_cpu = torch.randn(2, 4, 8)
+    w_cpu = torch.randn(8)
+    b_cpu = torch.randn(8)
+
+    cpu_result = F.layer_norm(x_cpu, [8], w_cpu, b_cpu)
+    sky_result = F.layer_norm(x_cpu.to(device), [8], w_cpu.to(device), b_cpu.to(device))
+
+    torch.testing.assert_close(
+        sky_result.cpu(), cpu_result, atol=1e-4, rtol=1e-4, check_device=False
+    )
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_layer_norm_grad(device):
+    x_cpu = torch.randn(2, 4, 8, requires_grad=True)
+    w_cpu = torch.randn(8, requires_grad=True)
+    b_cpu = torch.randn(8, requires_grad=True)
+
+    x_sky = x_cpu.clone().to(device).detach().requires_grad_(True)
+    w_sky = w_cpu.clone().to(device).detach().requires_grad_(True)
+    b_sky = b_cpu.clone().to(device).detach().requires_grad_(True)
+
+    loss_cpu = F.layer_norm(x_cpu, [8], w_cpu, b_cpu).sum()
+    loss_cpu.backward()
+
+    loss_sky = F.layer_norm(x_sky, [8], w_sky, b_sky).sum()
+    loss_sky.backward()
+
+    for name, sky_t, cpu_t in [
+        ("input", x_sky, x_cpu),
+        ("weight", w_sky, w_cpu),
+        ("bias", b_sky, b_cpu),
+    ]:
+        assert sky_t.grad is not None, f"layer_norm {name} gradient is None"
+        torch.testing.assert_close(
+            sky_t.grad.cpu(),
+            cpu_t.grad,
+            atol=1e-4,
+            rtol=1e-4,
+            check_device=False,
+        )
+
+
+# =============================================================================
+# GroupNorm (CEA override)
+# =============================================================================
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_group_norm_forward(device):
+    x_cpu = torch.randn(2, 8, 4, 4)
+    w_cpu = torch.randn(8)
+    b_cpu = torch.randn(8)
+
+    cpu_result = F.group_norm(x_cpu, 4, w_cpu, b_cpu)
+    sky_result = F.group_norm(x_cpu.to(device), 4, w_cpu.to(device), b_cpu.to(device))
+
+    torch.testing.assert_close(
+        sky_result.cpu(), cpu_result, atol=1e-4, rtol=1e-4, check_device=False
+    )
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_group_norm_grad(device):
+    x_cpu = torch.randn(2, 8, 4, 4, requires_grad=True)
+    w_cpu = torch.randn(8, requires_grad=True)
+    b_cpu = torch.randn(8, requires_grad=True)
+
+    x_sky = x_cpu.clone().to(device).detach().requires_grad_(True)
+    w_sky = w_cpu.clone().to(device).detach().requires_grad_(True)
+    b_sky = b_cpu.clone().to(device).detach().requires_grad_(True)
+
+    loss_cpu = F.group_norm(x_cpu, 4, w_cpu, b_cpu).sum()
+    loss_cpu.backward()
+
+    loss_sky = F.group_norm(x_sky, 4, w_sky, b_sky).sum()
+    loss_sky.backward()
+
+    for name, sky_t, cpu_t in [
+        ("input", x_sky, x_cpu),
+        ("weight", w_sky, w_cpu),
+        ("bias", b_sky, b_cpu),
+    ]:
+        assert sky_t.grad is not None, f"group_norm {name} gradient is None"
+        torch.testing.assert_close(
+            sky_t.grad.cpu(),
+            cpu_t.grad,
+            atol=1e-4,
+            rtol=1e-4,
+            check_device=False,
         )

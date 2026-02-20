@@ -123,6 +123,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     // Previously registered in Python via ops.py; now fully in C++ to eliminate
     // Python function call overhead on cache hits (~98.5% of ops).
     static const char* boxed_ops[] = {
+        "_batch_norm_no_update",
+        "_grouped_mm",
+        "_safe_softmax",
         "_adaptive_avg_pool2d",
         "_adaptive_avg_pool2d.out",
         "_adaptive_avg_pool2d_backward",
@@ -257,6 +260,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
         "multinomial",
         "multinomial.out",
         "native_batch_norm_backward",
+        "native_group_norm",
+        "native_layer_norm",
         "native_dropout.out",
         "native_dropout_backward",
         "native_dropout_backward.out",

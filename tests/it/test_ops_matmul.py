@@ -1,6 +1,6 @@
 """Matrix multiplication operation correctness tests.
 
-Tests mm, bmm, addmm (forward + gradient + out/inplace variants).
+Tests mm, bmm, addmm, _grouped_mm (forward + gradient + out/inplace variants).
 """
 
 import pytest
@@ -215,4 +215,59 @@ async def test_addmm_out(device):
 
     torch.testing.assert_close(
         out_sky.cpu(), out_cpu, atol=1e-4, rtol=1e-4, check_device=False
+    )
+
+
+# =============================================================================
+# _grouped_mm (CEA override — requires PrivateUse1 registration to bypass
+# CompositeExplicitAutograd decomposition which contains CUDA-specific checks)
+# =============================================================================
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_grouped_mm_3d_3d(device):
+    """_grouped_mm with 3D mat1 and 3D mat2 (batched experts).
+
+    Uses bfloat16 and dimensions that are multiples of 8 to satisfy
+    _grouped_mm's stride alignment requirements (16-byte aligned).
+    """
+    num_experts = 4
+    m, k, n = 8, 16, 8
+
+    mat1_cpu = torch.randn(num_experts, m, k, dtype=torch.bfloat16)
+    mat2_cpu = torch.randn(num_experts, k, n, dtype=torch.bfloat16)
+
+    cpu_result = torch._grouped_mm(mat1_cpu, mat2_cpu)
+    sky_result = torch._grouped_mm(mat1_cpu.to(device), mat2_cpu.to(device))
+
+    torch.testing.assert_close(
+        sky_result.cpu(), cpu_result, atol=1e-2, rtol=1e-2, check_device=False
+    )
+
+
+@pytest.mark.it
+@pytest.mark.asyncio
+async def test_grouped_mm_2d_3d_with_offsets(device):
+    """_grouped_mm with 2D mat1, 3D mat2, and offsets tensor.
+
+    Uses bfloat16 and dimensions that are multiples of 8 to satisfy
+    _grouped_mm's stride alignment requirements (16-byte aligned).
+    """
+    num_experts = 3
+    k, n = 16, 8
+    tokens_per_expert = [8, 16, 8]
+    total_tokens = sum(tokens_per_expert)
+
+    mat1_cpu = torch.randn(total_tokens, k, dtype=torch.bfloat16)
+    mat2_cpu = torch.randn(num_experts, k, n, dtype=torch.bfloat16)
+    offs_cpu = torch.tensor(tokens_per_expert, dtype=torch.int32)
+
+    cpu_result = torch._grouped_mm(mat1_cpu, mat2_cpu, offs=offs_cpu)
+    sky_result = torch._grouped_mm(
+        mat1_cpu.to(device), mat2_cpu.to(device), offs=offs_cpu.to(device)
+    )
+
+    torch.testing.assert_close(
+        sky_result.cpu(), cpu_result, atol=1e-2, rtol=1e-2, check_device=False
     )
