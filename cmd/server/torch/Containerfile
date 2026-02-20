@@ -1,5 +1,7 @@
 FROM python:3.14-slim
 
+ARG TARGETARCH
+
 USER 1000
 
 # Set working directory
@@ -12,7 +14,14 @@ ENV PATH=$VIRTUAL_ENV/bin:$PATH
 
 # Install external dependencies
 RUN pip install --no-cache-dir "torch==2.9.1+cu128" --index-url https://download.pytorch.org/whl/cu128
-RUN pip install --no-cache-dir "nvidia-ml-py" "transformers" "kernels" "flash-attn"
+RUN pip install --no-cache-dir "nvidia-ml-py" "transformers" "kernels"
+
+# Install Flash Attention from pre-built wheels (no PyPI wheels for Python 3.14).
+# Source: https://github.com/mjun0812/flash-attention-prebuild-wheels
+# Pinned: flash-attn 2.8.3, CUDA 12.8, PyTorch 2.9, Python 3.14
+RUN WHEEL_ARCH=$([ "$TARGETARCH" = "amd64" ] && echo "x86_64" || echo "aarch64") && \
+    pip install --no-cache-dir --only-binary :all: \
+    "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.9-cp314-cp314-linux_${WHEEL_ARCH}.whl"
 
 # Copy the skytorch Python package
 COPY --chown=1000:root pyproject.toml README.md VERSION.md ./
