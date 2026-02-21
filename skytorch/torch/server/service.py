@@ -68,6 +68,7 @@ _STRUCT_i = struct.Struct("<i")  # int32
 # Pre-compiled shape/stride formats for common dimensions (0-dim to 8-dim)
 _STRUCT_SHAPE: dict[int, struct.Struct] = {i: struct.Struct(f"<{i}q") for i in range(9)}
 
+
 class TensorServicer(service_pb2_grpc.ServiceServicer):
     """
     Async gRPC servicer for tensor management and ATen operations.
@@ -403,14 +404,30 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
 
-        while not done_event.is_set():
-            try:
-                stream_name, text = log_queue.get_nowait()
-                yield service_pb2.ExecuteFunctionEvent(
-                    log=service_pb2.ExecuteFunctionLog(stream=stream_name, text=text)
+        try:
+            while not done_event.is_set():
+                try:
+                    stream_name, text = log_queue.get_nowait()
+                    yield service_pb2.ExecuteFunctionEvent(
+                        log=service_pb2.ExecuteFunctionLog(stream=stream_name, text=text)
+                    )
+                except _queue_mod.Empty:
+                    await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            # Stream was cancelled (e.g., client disconnected or RPC timed out).
+            # Wait for the execution thread to finish and log any error.
+            thread.join()
+            if result_holder and not result_holder[0].success:
+                logger.error(
+                    "ExecuteFunction failed (stream cancelled): "
+                    f"{result_holder[0].error_message}"
                 )
-            except _queue_mod.Empty:
-                await asyncio.sleep(0.05)
+            elif not result_holder:
+                logger.error(
+                    "ExecuteFunction: stream cancelled and execution thread "
+                    "terminated without producing a result"
+                )
+            return
 
         # Drain remaining log entries after thread completes
         while True:

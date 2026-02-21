@@ -6,19 +6,14 @@ in Kubernetes and connecting to them via gRPC.
 """
 
 import asyncio
-import inspect
 import logging
 import re
-import textwrap
 from typing import Callable, Dict, List, Optional, Self
 
 try:
     import torch
 except ImportError as e:
-    raise ImportError(
-        f"torch package is required: {e}\n"
-        "Install with: pip install torch"
-    )
+    raise ImportError(f"torch package is required: {e}\n" "Install with: pip install torch")
 
 try:
     from kubernetes import dynamic
@@ -26,13 +21,13 @@ try:
     from kubernetes.config import KUBE_CONFIG_DEFAULT_LOCATION
 except ImportError as e:
     raise ImportError(
-        f"kubernetes package is required: {e}\n"
-        "Install with: pip install kubernetes"
+        f"kubernetes package is required: {e}\n" "Install with: pip install kubernetes"
     )
 
 from skytorch.client.aio import Stream
 from skytorch.client.context import compute_ctx
 from skytorch.client.init import init, default_namespace
+from skytorch.client.remote import get_callable_source
 from skytorch.client.state_dict import SkyStateDict
 from skytorch.client.models.compute_v1alpha1_compute import ComputeV1alpha1Compute
 from skytorch.client.models.compute_v1alpha1_compute_spec import ComputeV1alpha1ComputeSpec
@@ -255,9 +250,7 @@ class Compute:
 
                     # Handle deletion
                     if event_type == "DELETED":
-                        raise TimeoutError(
-                            f"Compute {self.namespace}/{self.name} was deleted"
-                        )
+                        raise TimeoutError(f"Compute {self.namespace}/{self.name} was deleted")
 
                     # Update our cached resource
                     self._compute_resource = ComputeV1alpha1Compute.from_dict(obj.to_dict())
@@ -265,9 +258,7 @@ class Compute:
                     # Log current status
                     if self._compute_resource.status and self._compute_resource.status.conditions:
                         conditions = self._compute_resource.status.conditions
-                        status_msg = ", ".join(
-                            f"{c.type}={c.status}" for c in conditions
-                        )
+                        status_msg = ", ".join(f"{c.type}={c.status}" for c in conditions)
                         logger.debug(
                             f"Compute {self.namespace}/{self.name} event={event_type} "
                             f"status: {status_msg}"
@@ -389,8 +380,7 @@ class Compute:
         except ApiException as e:
             if e.status == 404:
                 logger.warning(
-                    f"Compute {self.namespace}/{self.name} not found, "
-                    "already deleted"
+                    f"Compute {self.namespace}/{self.name} not found, " "already deleted"
                 )
             else:
                 logger.error(f"Failed to delete Compute: {e}")
@@ -406,17 +396,13 @@ class Compute:
         # Convert env dict to EnvVar list
         env_vars = None
         if self._env:
-            env_vars = [
-                IoK8sApiCoreV1EnvVar(name=k, value=v)
-                for k, v in self._env.items()
-            ]
+            env_vars = [IoK8sApiCoreV1EnvVar(name=k, value=v) for k, v in self._env.items()]
 
         # Convert resources dict to ResourceList
         resource_list = None
         if self._resources:
             resource_list = {
-                k: IoK8sApimachineryPkgApiResourceQuantity(v)
-                for k, v in self._resources.items()
+                k: IoK8sApimachineryPkgApiResourceQuantity(v) for k, v in self._resources.items()
             }
 
         # Init compute override
@@ -439,9 +425,7 @@ class Compute:
                 )
                 for v in self._volumes
             ]
-            volume_mounts = [
-                {"name": v["name"], "mountPath": v["path"]} for v in self._volumes
-            ]
+            volume_mounts = [{"name": v["name"], "mountPath": v["path"]} for v in self._volumes]
             # Merge volume mounts into override
             override = {}
             containers = override.get("containers", [])
@@ -496,8 +480,7 @@ class Compute:
 
             self._compute_resource = ComputeV1alpha1Compute.from_dict(result.to_dict())
             logger.info(
-                f"Compute {self.namespace}/{self.name} applied successfully "
-                "(created or updated)"
+                f"Compute {self.namespace}/{self.name} applied successfully " "(created or updated)"
             )
 
         except ApiException as e:
@@ -601,10 +584,7 @@ class Compute:
             # Use the first address from the Gateway
             address = self._compute_resource.status.addresses[0]
             host = address.value
-            logger.debug(
-                f"Using address from Compute status: {host} "
-                f"(type: {address.type})"
-            )
+            logger.debug(f"Using address from Compute status: {host} " f"(type: {address.type})")
         else:
             logger.info(
                 f"No addresses found in Compute {self.namespace}/{self.name} status, "
@@ -704,63 +684,6 @@ class Compute:
 
         return device_manager.get_sky_device(self, device_type, device_index)
 
-    @staticmethod
-    def _generate_imports(fn) -> str:
-        """Generate import statements for global references used by a function."""
-        import types
-
-        lines = []
-        seen = set()
-        for name in fn.__code__.co_names:
-            if name in seen or name not in fn.__globals__:
-                continue
-            seen.add(name)
-            obj = fn.__globals__[name]
-            if isinstance(obj, types.ModuleType):
-                if obj.__name__ != name:
-                    lines.append(f"import {obj.__name__} as {name}")
-                else:
-                    lines.append(f"import {obj.__name__}")
-            elif hasattr(obj, "__module__") and hasattr(obj, "__qualname__"):
-                module = getattr(obj, "__module__", None)
-                if module and module != "builtins":
-                    lines.append(f"from {module} import {name}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _get_callable_source(fn) -> tuple[str, str]:
-        """Extract source code and name from a callable.
-
-        Raises:
-            TypeError: If the callable cannot be serialized for remote execution.
-        """
-        if getattr(fn, "__name__", "") == "<lambda>":
-            raise TypeError(
-                "Lambdas cannot be serialized for remote execution. "
-                "Use a named function instead."
-            )
-
-        if fn.__code__.co_freevars:
-            raise TypeError(
-                "Closures cannot be serialized for remote execution. "
-                "Move captured variables to function arguments."
-            )
-
-        try:
-            source = inspect.getsource(fn)
-            source = textwrap.dedent(source)
-        except (OSError, TypeError) as e:
-            raise TypeError(
-                f"Cannot extract source code for {fn!r}. Functions defined in "
-                "interactive sessions or C extensions are not supported."
-            ) from e
-
-        imports = Compute._generate_imports(fn)
-        if imports:
-            source = imports + "\n\n" + source
-
-        return source, fn.__name__
-
     async def execute(self, fn, *args, on_log=None, **kwargs):
         """
         Execute a function on the remote server and return sky tensors.
@@ -808,7 +731,7 @@ class Compute:
                 target.flush()
 
         # 1. Serialize and call streaming RPC
-        source, name = self._get_callable_source(fn)
+        source, name = get_callable_source(fn)
         try:
             response = await self._grpc_client.torch.execute_remote_function(
                 pickle.dumps(args),
@@ -818,8 +741,21 @@ class Compute:
                 on_log=on_log,
             )
         except grpc.aio.AioRpcError as e:
+            if e.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.INTERNAL):
+                try:
+                    reason = await self._get_pod_termination_reason()
+                except Exception as pod_err:
+                    raise ExceptionGroup(
+                        "Connection to server lost",
+                        [e, pod_err],
+                    )
+                if reason:
+                    raise RuntimeError(
+                        f"Connection to server lost: pod terminated ({reason}). "
+                        "Check the server pod events, logs and resources."
+                    ) from e
             raise RuntimeError(
-                f"Failed to execute function: {e.code().name}: {e.details()}"
+                f"Failed to execute function: {e.code().name}: {e.details() or ''}"
             ) from e
 
         if not response.success:
@@ -856,9 +792,7 @@ class Compute:
                 seen_storage[info.storage_id] = sky_tensor
 
             tensor_id = get_tensor_id(sky_tensor)
-            storage_manager.register_storage(
-                info.storage_id, info.storage_nbytes, sky_device_index
-            )
+            storage_manager.register_storage(info.storage_id, info.storage_nbytes, sky_device_index)
             storage_manager.register_tensor(sky_tensor)
             registrations.append(
                 service_pb2.TensorRegistration(storage_id=info.storage_id, tensor_id=tensor_id)
@@ -876,6 +810,35 @@ class Compute:
         )
 
         return SkyStateDict(sky_state_dict)
+
+    async def _get_pod_termination_reason(self) -> str | None:
+        """Query the server pod for its termination reason (e.g., OOMKilled).
+
+        Retries a few times with a short delay because the pod status may not
+        be updated immediately after the container is killed.
+        """
+        core_api = CoreV1Api(self._api_client)
+        for attempt in range(3):
+            if attempt > 0:
+                await asyncio.sleep(1)
+            pod = core_api.read_namespaced_pod_status(
+                name=f"{self.name}-0",
+                namespace=self.namespace,
+            )
+            for cs in pod.status.container_statuses or []:
+                # Check current state first (container just terminated),
+                # then last_state (container already restarted).
+                terminated = getattr(cs.state, "terminated", None) or getattr(
+                    cs.last_state, "terminated", None
+                )
+                if terminated:
+                    if terminated.exit_code == 137:
+                        return "OOMKilled (exit code 137)"
+                    if terminated.reason:
+                        return terminated.reason
+                    if terminated.exit_code:
+                        return f"exit code {terminated.exit_code}"
+        return None
 
     async def __aenter__(self) -> Self:
         """

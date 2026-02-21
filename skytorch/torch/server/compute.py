@@ -6,13 +6,13 @@ import inspect
 import logging
 import os
 import re
-import textwrap
 from typing import Callable, Optional
 
 import grpc
 import torch
 
 from skytorch.client.grpc import GRPCClient
+from skytorch.client.remote import get_callable_source
 from skytorch.client.state_dict import SkyStateDict
 
 logger = logging.getLogger(__name__)
@@ -167,63 +167,6 @@ class Compute:
 
         return device_manager.get_sky_device(self, device_type, device_index)
 
-    @staticmethod
-    def _generate_imports(fn) -> str:
-        """Generate import statements for global references used by a function."""
-        import types
-
-        lines = []
-        seen = set()
-        for name in fn.__code__.co_names:
-            if name in seen or name not in fn.__globals__:
-                continue
-            seen.add(name)
-            obj = fn.__globals__[name]
-            if isinstance(obj, types.ModuleType):
-                if obj.__name__ != name:
-                    lines.append(f"import {obj.__name__} as {name}")
-                else:
-                    lines.append(f"import {obj.__name__}")
-            elif hasattr(obj, "__module__") and hasattr(obj, "__qualname__"):
-                module = getattr(obj, "__module__", None)
-                if module and module != "builtins":
-                    lines.append(f"from {module} import {name}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _get_callable_source(fn) -> tuple[str, str]:
-        """Extract source code and name from a callable.
-
-        Raises:
-            TypeError: If the callable cannot be serialized for remote execution.
-        """
-        if getattr(fn, "__name__", "") == "<lambda>":
-            raise TypeError(
-                "Lambdas cannot be serialized for remote execution. "
-                "Use a named function instead."
-            )
-
-        if fn.__code__.co_freevars:
-            raise TypeError(
-                "Closures cannot be serialized for remote execution. "
-                "Move captured variables to function arguments."
-            )
-
-        try:
-            source = inspect.getsource(fn)
-            source = textwrap.dedent(source)
-        except (OSError, TypeError) as e:
-            raise TypeError(
-                f"Cannot extract source code for {fn!r}. Functions defined in "
-                "interactive sessions or C extensions are not supported."
-            ) from e
-
-        imports = Compute._generate_imports(fn)
-        if imports:
-            source = imports + "\n\n" + source
-
-        return source, fn.__name__
-
     async def execute(self, fn, *args, on_log=None, **kwargs):
         """
         Execute a function on the remote server and return sky tensors.
@@ -272,7 +215,7 @@ class Compute:
                 target.flush()
 
         # 1. Serialize and call streaming RPC
-        source, name = self._get_callable_source(fn)
+        source, name = get_callable_source(fn)
         try:
             response = await self._grpc_client.torch.execute_remote_function(
                 pickle.dumps(args),
@@ -282,9 +225,7 @@ class Compute:
                 on_log=on_log,
             )
         except grpc.aio.AioRpcError as e:
-            raise RuntimeError(
-                f"Failed to execute function: {e.code().name}: {e.details()}"
-            ) from e
+            raise RuntimeError(f"Failed to execute function: {e.code().name}: {e.details()}") from e
 
         if not response.success:
             raise RuntimeError(f"Remote execution failed: {response.error_message}")
@@ -318,9 +259,7 @@ class Compute:
                 seen_storage[info.storage_id] = sky_tensor
 
             tensor_id = get_tensor_id(sky_tensor)
-            storage_manager.register_storage(
-                info.storage_id, info.storage_nbytes, sky_device_index
-            )
+            storage_manager.register_storage(info.storage_id, info.storage_nbytes, sky_device_index)
             storage_manager.register_tensor(sky_tensor)
             registrations.append(
                 service_pb2.TensorRegistration(storage_id=info.storage_id, tensor_id=tensor_id)
