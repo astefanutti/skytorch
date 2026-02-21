@@ -480,6 +480,17 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             for name, buffer in result.named_buffers():
                 if name not in tensors and buffer is not None:
                     tensors[name] = buffer
+            # Include tensor attributes not registered as parameters or buffers
+            # (e.g., quantized weights deregistered from _parameters by MXFP4)
+            for module_name, module in result.named_modules():
+                prefix = f"{module_name}." if module_name else ""
+                for attr_name, attr_value in vars(module).items():
+                    if attr_name.startswith("_"):
+                        continue
+                    if isinstance(attr_value, torch.Tensor):
+                        key = f"{prefix}{attr_name}"
+                        if key not in tensors:
+                            tensors[key] = attr_value
         elif isinstance(result, dict):
             tensors = {k: v for k, v in result.items() if isinstance(v, torch.Tensor)}
         elif isinstance(result, torch.Tensor):
