@@ -261,7 +261,7 @@ async def test_grouped_mm_2d_3d_with_offsets(device):
 
     mat1_cpu = torch.randn(total_tokens, k, dtype=torch.bfloat16)
     mat2_cpu = torch.randn(num_experts, k, n, dtype=torch.bfloat16)
-    offs_cpu = torch.tensor(tokens_per_expert, dtype=torch.int32)
+    offs_cpu = torch.tensor(tokens_per_expert, dtype=torch.int32).cumsum(dim=0, dtype=torch.int32)
 
     cpu_result = torch._grouped_mm(mat1_cpu, mat2_cpu, offs=offs_cpu)
     sky_result = torch._grouped_mm(
