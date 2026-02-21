@@ -14,7 +14,7 @@ ENV PATH=$VIRTUAL_ENV/bin:$PATH
 
 # Install external dependencies
 RUN pip install --no-cache-dir "torch==2.9.1+cu128" --index-url https://download.pytorch.org/whl/cu128
-RUN pip install --no-cache-dir "nvidia-ml-py" "transformers" "kernels"
+RUN pip install --no-cache-dir "kernels" "transformers" "accelerate" "nvidia-ml-py"
 
 # Install Flash Attention from pre-built wheels (no PyPI wheels for Python 3.14).
 # Source: https://github.com/mjun0812/flash-attention-prebuild-wheels
