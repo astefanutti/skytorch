@@ -7,6 +7,10 @@ USER 1000
 # Set working directory
 WORKDIR /app
 
+ENV HOME=/app
+
+RUN mkdir -p .triton && chmod g+rwx .triton
+
 RUN python3 -m venv .venv
 
 ENV VIRTUAL_ENV=/app/.venv
