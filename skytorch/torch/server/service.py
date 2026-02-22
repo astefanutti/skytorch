@@ -20,9 +20,7 @@ try:
     import grpc
     import torch
 except ImportError as e:
-    raise ImportError(
-        f"Required dependency not found: {e}. Install with: pip install grpcio torch"
-    )
+    raise ImportError(f"Required dependency not found: {e}. Install with: pip install grpcio torch")
 
 try:
     from skytorch.torch.server import service_pb2
@@ -89,6 +87,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         self._next_remote_storage_id = 2**32
         # Deferred error from fire-and-forget operations, reported on next get_tensor
         self._deferred_error: str | None = None
+        # Retained models from ExecuteFunction with retain_model=True
+        self._retained_models: dict[int, torch.nn.Module] = {}
+        self._next_model_id = 1
 
     def _ensure_tensor_exists(self, metadata: service_pb2.TensorMetadata) -> torch.Tensor:
         """
@@ -523,12 +524,23 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 )
             )
 
+        # Retain model on server if requested
+        model_id = 0
+        if request.retain_model and isinstance(result, torch.nn.Module):
+            model_id = self._next_model_id
+            self._next_model_id += 1
+            self._retained_models[model_id] = result
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"ExecuteFunction: retained model with id={model_id}")
+
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 f"ExecuteFunction: {len(tensors)} tensors, " f"{len(storage_map)} unique storages"
             )
 
-        return service_pb2.ExecuteFunctionResponse(success=True, tensors=tensor_infos)
+        return service_pb2.ExecuteFunctionResponse(
+            success=True, tensors=tensor_infos, model_id=model_id
+        )
 
     async def ExecuteAtenOperation(
         self,
@@ -919,9 +931,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     f"(view of {tensor_ref}, shape={shape}, dtype={dtype})"
                 )
             else:
-                logger.debug(
-                    f"Auto-created tensor {tensor_id} (nbytes={nbytes}, dtype={dtype})"
-                )
+                logger.debug(f"Auto-created tensor {tensor_id} (nbytes={nbytes}, dtype={dtype})")
 
         return pos
 
@@ -1032,9 +1042,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         dst_tensor.copy_(src_tensor)
 
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                f"Copied tensor {request.src_tensor_id} to tensor {request.dst_tensor_id}"
-            )
+            logger.debug(f"Copied tensor {request.src_tensor_id} to tensor {request.dst_tensor_id}")
 
     def _execute_aten_sync(self, request: service_pb2.ExecuteAtenRequest) -> None:
         """Execute an ATen operation synchronously (fire-and-forget). Raises on error."""
@@ -1049,9 +1057,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         if logger.isEnabledFor(logging.DEBUG):
             input_tensor_ids = [
-                arg.tensor.tensor_id
-                for arg in request.args
-                if arg.WhichOneof("value") == "tensor"
+                arg.tensor.tensor_id for arg in request.args if arg.WhichOneof("value") == "tensor"
             ]
             output_tensor_ids = [ref.tensor_id for ref in request.outputs]
             logger.debug(
@@ -1242,6 +1248,147 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """Handle get_scalar request in streaming context (delegates to sync)."""
         return self._handle_get_scalar_sync(request, server_profiler)
 
+    def _resolve_module(
+        self,
+        request: service_pb2.ExecuteModuleForwardRequest,
+    ) -> tuple[torch.nn.Module | None, str | None]:
+        """Resolve a module from a retained model. Returns (module, error_message)."""
+        model = self._retained_models.get(request.model_id)
+        if model is None:
+            return None, f"Model {request.model_id} not found"
+
+        module = model
+        if request.module_path:
+            for part in request.module_path.split("."):
+                if part.isdigit():
+                    module = module[int(part)]
+                else:
+                    module = getattr(module, part)
+        return module, None
+
+    def _execute_module_forward(
+        self,
+        request: service_pb2.ExecuteModuleForwardRequest,
+    ) -> tuple[list[torch.Tensor], str | None]:
+        """Execute a module's forward and return flat list of output tensors.
+
+        Returns (result_tensors, error_message). On error, result_tensors is empty.
+        """
+        module, error = self._resolve_module(request)
+        if error:
+            return [], error
+
+        # Auto-create input tensors from metadata
+        for metadata in request.input_metadata:
+            self._ensure_tensor_exists(metadata)
+
+        inputs = [self.tensor_manager.get(tid) for tid in request.input_tensor_ids]
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"ExecuteModuleForward: model_id={request.model_id} "
+                f"module={request.module_path} inputs={list(request.input_tensor_ids)}"
+            )
+
+        with torch.no_grad():
+            result = module(*inputs)
+
+        # Normalize result to flat list of tensors
+        if isinstance(result, torch.Tensor):
+            result_tensors = [result]
+        elif isinstance(result, (tuple, list)):
+            result_tensors = [t for t in result if isinstance(t, torch.Tensor)]
+        elif isinstance(result, dict):
+            result_tensors = [v for v in result.values() if isinstance(v, torch.Tensor)]
+        else:
+            result_tensors = []
+
+        return result_tensors, None
+
+    def _handle_execute_module_forward_sync(
+        self,
+        request: service_pb2.ExecuteModuleForwardRequest,
+    ) -> service_pb2.ExecuteModuleForwardResponse:
+        """Execute a module's forward (sync mode: returns output metadata)."""
+        try:
+            result_tensors, error = self._execute_module_forward(request)
+            if error:
+                return service_pb2.ExecuteModuleForwardResponse(success=False, error_message=error)
+
+            # Assign storage IDs and build response metadata
+            storage_map: dict[int, int] = {}
+            output_infos = []
+            for i, tensor in enumerate(result_tensors):
+                data_ptr = tensor.untyped_storage().data_ptr()
+                if data_ptr not in storage_map:
+                    storage_map[data_ptr] = self._next_remote_storage_id
+                    self._next_remote_storage_id += 1
+                sid = storage_map[data_ptr]
+                self._pending_tensors[sid] = tensor
+                output_infos.append(
+                    service_pb2.RemoteTensorInfo(
+                        name=str(i),
+                        storage_id=sid,
+                        shape=list(tensor.shape),
+                        dtype=str(tensor.dtype),
+                        stride=list(tensor.stride()),
+                        storage_offset=tensor.storage_offset(),
+                        storage_nbytes=tensor.untyped_storage().nbytes(),
+                        device_type=tensor.device.type,
+                        device_index=tensor.device.index or 0,
+                    )
+                )
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"ExecuteModuleForward (sync): {len(result_tensors)} output tensors, "
+                    f"{len(storage_map)} unique storages"
+                )
+
+            return service_pb2.ExecuteModuleForwardResponse(
+                success=True, output_tensors=output_infos
+            )
+
+        except Exception as e:
+            logger.error(f"Error executing module forward: {e}")
+            return service_pb2.ExecuteModuleForwardResponse(success=False, error_message=str(e))
+
+    def _handle_execute_module_forward_ff(
+        self,
+        request: service_pb2.ExecuteModuleForwardRequest,
+    ) -> None:
+        """Execute a module's forward (fire-and-forget: outputs pre-allocated by client).
+
+        Raises on error (deferred to next sync point).
+        """
+        # Auto-create output tensors from metadata
+        for metadata in request.output_metadata:
+            self._ensure_tensor_exists(metadata)
+
+        result_tensors, error = self._execute_module_forward(request)
+        if error:
+            raise RuntimeError(error)
+
+        # Register results under client-assigned output tensor IDs
+        for tid, tensor in zip(request.output_tensor_ids, result_tensors, strict=False):
+            if tensor is not None:
+                self.tensor_manager.register(tid, tensor)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"ExecuteModuleForward (ff): {len(result_tensors)} outputs "
+                f"-> {list(request.output_tensor_ids)}"
+            )
+
+    def _handle_release_model_sync(self, request: service_pb2.ReleaseModelRequest) -> None:
+        """Release a retained model synchronously."""
+        model = self._retained_models.pop(request.model_id, None)
+        if model is not None:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Released retained model {request.model_id}")
+        else:
+            logger.warning(f"ReleaseModel: model {request.model_id} not found")
+
     # Request types that are fire-and-forget (no response sent to client)
     _FIRE_AND_FORGET_TYPES = frozenset(
         {
@@ -1253,6 +1400,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             "batched_execute_aten",
             "raw_execute_aten",
             "raw_batched_execute_aten",
+            "release_model",
         }
     )
 
@@ -1313,8 +1461,16 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     future = loop.create_future()
                     work_queue.put((stream.SYNC, request, future))
                     yield await future
+                elif request.HasField("execute_module_forward"):
+                    # Sync when no pre-allocated outputs; fire-and-forget otherwise
+                    if request.execute_module_forward.output_tensor_ids:
+                        work_queue.put((stream.FF_REQUEST, request))
+                    else:
+                        future = loop.create_future()
+                        work_queue.put((stream.SYNC, request, future))
+                        yield await future
                 else:
-                    # Other fire-and-forget (delete, copy, update, register, etc.)
+                    # Other fire-and-forget (delete, copy, update, register, release_model, etc.)
                     work_queue.put((stream.FF_REQUEST, request))
         finally:
             work_queue.put((stream.SHUTDOWN,))
@@ -1324,9 +1480,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 _sprof.stream_end_ns = time.perf_counter_ns()
                 _sprof.print_summary()
 
-            # Release all tensor memory when the client disconnects
+            # Release all tensor memory and retained models when the client disconnects
             self.tensor_manager.clear()
             self._pending_tensors.clear()
+            self._retained_models.clear()
 
     async def _handle_fire_and_forget(
         self,
@@ -1427,6 +1584,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                         pos += 4
                         self._execute_raw_aten_inline(raw_data[pos : pos + op_len])
                         pos += op_len
+            elif request_type == "release_model":
+                self._handle_release_model_sync(request.release_model)
+            elif request_type == "execute_module_forward":
+                self._handle_execute_module_forward_ff(request.execute_module_forward)
         except Exception as e:
             logger.error(f"Error in fire-and-forget operation: {e}")
             self._deferred_error = str(e)
@@ -1466,6 +1627,13 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 )
                 response.success = True
                 response.get_scalar.CopyFrom(result)
+
+            elif request_type == "execute_module_forward":
+                result = self._handle_execute_module_forward_sync(request.execute_module_forward)
+                response.success = result.success
+                if not result.success:
+                    response.error_message = result.error_message
+                response.execute_module_forward.CopyFrom(result)
 
             else:
                 response.success = False

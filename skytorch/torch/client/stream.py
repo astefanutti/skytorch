@@ -746,6 +746,77 @@ class StreamManager:
 
         return _with_error_check()
 
+    def submit_execute_module_forward(
+        self, request: service_pb2.ExecuteModuleForwardRequest
+    ) -> asyncio.Future:
+        """
+        Submit an execute_module_forward request (sync).
+
+        Must be called from the event loop thread. Flushes pending batches
+        before sending to ensure all prior ops complete first.
+
+        Args:
+            request: ExecuteModuleForwardRequest to submit
+
+        Returns:
+            Awaitable that resolves to StreamResponse with module forward result
+        """
+        if self._loop is None:
+            raise RuntimeError("StreamManager not started")
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"Executing module forward: model_id={request.model_id} "
+                f"module={request.module_path} inputs={list(request.input_tensor_ids)}"
+            )
+
+        # Flush any pending batches before sync operation
+        self._flush_mt_ops()
+        self._flush_batch()
+        self._flush_raw_batch()
+        self._flush_deferred()
+
+        future = self._loop.create_future()
+        stream_request = service_pb2.StreamRequest(execute_module_forward=request)
+
+        self._pending.append(
+            PendingRequest(
+                future=future,
+                request_type="execute_module_forward",
+            )
+        )
+        self._request_queue.put_nowait(stream_request)
+
+        async def _with_error_check():
+            response = await future
+            self.check_error()
+            return response
+
+        return _with_error_check()
+
+    def submit_execute_module_forward_ff(
+        self, request: service_pb2.ExecuteModuleForwardRequest
+    ) -> None:
+        """Submit a fire-and-forget execute_module_forward request (callable from any thread).
+
+        Used when output tensors are pre-allocated by the client (cached shapes).
+        The request must have output_tensor_ids and output_metadata populated.
+        """
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"Executing module forward (ff): model_id={request.model_id} "
+                f"module={request.module_path} outputs={list(request.output_tensor_ids)}"
+            )
+        stream_request = service_pb2.StreamRequest(execute_module_forward=request)
+        self._submit_request(stream_request, "execute_module_forward")
+
+    def submit_release_model(self, request: service_pb2.ReleaseModelRequest) -> None:
+        """Submit a fire-and-forget release_model request (callable from any thread)."""
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Releasing model {request.model_id}")
+        stream_request = service_pb2.StreamRequest(release_model=request)
+        self._submit_request(stream_request, "release_model")
+
     async def close(self) -> None:
         """Gracefully close the stream."""
         if not self._started:

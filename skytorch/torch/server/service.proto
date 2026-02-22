@@ -192,6 +192,7 @@ message ExecuteFunctionRequest {
   bytes kwargs = 2;             // pickle'd kwargs dict
   string callable_source = 3;   // function source code from inspect.getsource()
   string callable_name = 4;     // function name (fn.__name__)
+  bool retain_model = 5;        // Keep model alive on server after tensor extraction
 }
 
 // Information about a tensor created on the server
@@ -212,6 +213,7 @@ message ExecuteFunctionResponse {
   bool success = 1;
   string error_message = 2;
   repeated RemoteTensorInfo tensors = 3;
+  uint64 model_id = 4;          // Server-assigned model ID (when retain_model=true)
 }
 
 message ExecuteFunctionLog {
@@ -237,6 +239,28 @@ message TensorRegistration {
   uint64 tensor_id = 2;
 }
 
+// Request to execute a module's forward method on a retained model
+message ExecuteModuleForwardRequest {
+  uint64 model_id = 1;                        // Server-assigned model ID
+  string module_path = 2;                      // Dotted path to module (e.g., "layers.0.experts")
+  repeated uint64 input_tensor_ids = 3;        // Tensor IDs for positional inputs
+  repeated TensorMetadata input_metadata = 4;  // For auto-creation of input tensors
+  repeated uint64 output_tensor_ids = 5;       // Pre-allocated output tensor IDs (fire-and-forget mode)
+  repeated TensorMetadata output_metadata = 6; // Output tensors to auto-create (fire-and-forget mode)
+}
+
+// Response from executing a module's forward method
+message ExecuteModuleForwardResponse {
+  bool success = 1;
+  string error_message = 2;
+  repeated RemoteTensorInfo output_tensors = 3;
+}
+
+// Request to release a retained model
+message ReleaseModelRequest {
+  uint64 model_id = 1;
+}
+
 // Batch of execute_aten requests for reduced per-operation overhead
 message BatchedExecuteAtenRequest {
   repeated ExecuteAtenRequest operations = 1;
@@ -256,6 +280,8 @@ message StreamRequest {
     bytes raw_execute_aten = 8;           // Binary-serialized execute_aten (C++ fast path)
     bytes raw_batched_execute_aten = 9;   // Multiple binary-serialized ops concatenated
     GetScalarRequest get_scalar = 10;    // Get scalar value from a tensor
+    ExecuteModuleForwardRequest execute_module_forward = 14;  // Execute module forward on retained model
+    ReleaseModelRequest release_model = 15;                   // Release a retained model
   }
 
   // Chunking support for large payloads
@@ -277,6 +303,7 @@ message StreamResponse {
     GetTensorResponse get_tensor = 7;
     TensorResponse register_tensors = 8;
     GetScalarResponse get_scalar = 9;
+    ExecuteModuleForwardResponse execute_module_forward = 14;
   }
 
   // Chunking support for large responses (get_tensor)

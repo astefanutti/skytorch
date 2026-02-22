@@ -18,9 +18,7 @@ try:
     from skytorch.torch.server import service_pb2
     from skytorch.torch.server import service_pb2_grpc
 except ImportError:
-    raise ImportError(
-        "Generated gRPC code not found. Run hack/gen-grpc-proto.sh first."
-    )
+    raise ImportError("Generated gRPC code not found. Run hack/gen-grpc-proto.sh first.")
 
 from skytorch.torch.client.tensor import get_tensor_id
 from skytorch.torch.client.metadata import TensorMetadata
@@ -48,9 +46,7 @@ class TensorClient:
     Uses a shared gRPC channel provided by the caller (typically GRPCClient).
     """
 
-    def __init__(
-        self, channel: grpc.aio.Channel, metadata: Optional[MetadataType] = None
-    ):
+    def __init__(self, channel: grpc.aio.Channel, metadata: Optional[MetadataType] = None):
         """
         Initialize the client.
 
@@ -89,15 +85,11 @@ class TensorClient:
                 # Attach sequence number and metadata to first chunk
                 if first_chunk:
                     if tensor_metadata is not None:
-                        chunk.metadata.CopyFrom(
-                            tensor_metadata_to_proto(tensor_metadata)
-                        )
+                        chunk.metadata.CopyFrom(tensor_metadata_to_proto(tensor_metadata))
                     first_chunk = False
                 yield chunk
 
-        response = await self.stub.UpdateTensor(
-            stream_tensor(), metadata=self.metadata
-        )
+        response = await self.stub.UpdateTensor(stream_tensor(), metadata=self.metadata)
 
         if not response.success:
             raise RuntimeError(f"Failed to update tensor: {response.message}")
@@ -227,6 +219,7 @@ class TensorClient:
         callable_source: str = "",
         callable_name: str = "",
         on_log: Callable[[str, str], None] | None = None,
+        retain_model: bool = False,
     ) -> service_pb2.ExecuteFunctionResponse:
         """
         Execute a function on the server.
@@ -238,6 +231,8 @@ class TensorClient:
             callable_name: function name (fn.__name__)
             on_log: Optional callback for log events, called with (stream, text)
                 where stream is "stdout" or "stderr"
+            retain_model: If True, keep the model alive on the server after
+                tensor extraction (for module-level forward proxying)
 
         Returns:
             ExecuteFunctionResponse with tensor metadata
@@ -250,6 +245,7 @@ class TensorClient:
             kwargs=kwargs_bytes,
             callable_source=callable_source,
             callable_name=callable_name,
+            retain_model=retain_model,
         )
 
         response: service_pb2.ExecuteFunctionResponse | None = None
@@ -313,17 +309,12 @@ class TensorClient:
                 for arg in args
                 if isinstance(arg, torch.Tensor) and arg.device.type == "sky"
             ]
-            output_tensor_ids = [
-                get_tensor_id(t) for t in (output_tensors or []) if t is not None
-            ]
+            output_tensor_ids = [get_tensor_id(t) for t in (output_tensors or []) if t is not None]
             logger.debug(
-                f"Executing {op_name} | "
-                f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
+                f"Executing {op_name} | " f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
             )
 
-        response = await self.stub.ExecuteAtenOperation(
-            request, metadata=self.metadata
-        )
+        response = await self.stub.ExecuteAtenOperation(request, metadata=self.metadata)
 
         if not response.success:
             raise RuntimeError(f"ATen operation failed: {response.message}")

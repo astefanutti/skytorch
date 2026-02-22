@@ -684,7 +684,7 @@ class Compute:
 
         return device_manager.get_sky_device(self, device_type, device_index)
 
-    async def execute(self, fn, *args, on_log=None, **kwargs):
+    async def execute(self, fn, *args, on_log=None, retain_model=False, **kwargs):
         """
         Execute a function on the remote server and return sky tensors.
 
@@ -700,11 +700,14 @@ class Compute:
                 called with (stream, text) where stream is "stdout" or "stderr".
                 Defaults to printing to the matching local stream.
                 Pass ``on_log=lambda s, t: None`` to suppress.
+            retain_model: If True, keep the model alive on the server after
+                tensor extraction. Required for module-level forward proxying
+                of Triton kernels.
             **kwargs: Keyword arguments for the callable
 
         Returns:
-            dict[str, torch.Tensor]: Dictionary of sky tensors referencing
-                remote GPU storage
+            SkyStateDict: Dictionary of sky tensors referencing remote GPU storage.
+                When retain_model=True, the dict has a model_id attribute.
 
         Raises:
             TypeError: If the callable cannot be serialized for remote execution
@@ -739,6 +742,7 @@ class Compute:
                 callable_source=source,
                 callable_name=name,
                 on_log=on_log,
+                retain_model=retain_model,
             )
         except grpc.aio.AioRpcError as e:
             if e.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.INTERNAL):
@@ -809,7 +813,11 @@ class Compute:
             f"({len(seen_storage)} unique storages)"
         )
 
-        return SkyStateDict(sky_state_dict)
+        result = SkyStateDict(sky_state_dict)
+        if retain_model and response.model_id:
+            result.model_id = response.model_id
+            result._compute = self
+        return result
 
     async def _get_pod_termination_reason(self) -> str | None:
         """Query the server pod for its termination reason (e.g., OOMKilled).

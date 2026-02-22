@@ -248,16 +248,18 @@ class GetTensorResponse(_message.Message):
     def __init__(self, success: bool = ..., message: _Optional[str] = ..., data: _Optional[bytes] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ...) -> None: ...
 
 class ExecuteFunctionRequest(_message.Message):
-    __slots__ = ("args", "kwargs", "callable_source", "callable_name")
+    __slots__ = ("args", "kwargs", "callable_source", "callable_name", "retain_model")
     ARGS_FIELD_NUMBER: _ClassVar[int]
     KWARGS_FIELD_NUMBER: _ClassVar[int]
     CALLABLE_SOURCE_FIELD_NUMBER: _ClassVar[int]
     CALLABLE_NAME_FIELD_NUMBER: _ClassVar[int]
+    RETAIN_MODEL_FIELD_NUMBER: _ClassVar[int]
     args: bytes
     kwargs: bytes
     callable_source: str
     callable_name: str
-    def __init__(self, args: _Optional[bytes] = ..., kwargs: _Optional[bytes] = ..., callable_source: _Optional[str] = ..., callable_name: _Optional[str] = ...) -> None: ...
+    retain_model: bool
+    def __init__(self, args: _Optional[bytes] = ..., kwargs: _Optional[bytes] = ..., callable_source: _Optional[str] = ..., callable_name: _Optional[str] = ..., retain_model: bool = ...) -> None: ...
 
 class RemoteTensorInfo(_message.Message):
     __slots__ = ("name", "storage_id", "shape", "dtype", "stride", "storage_offset", "storage_nbytes", "device_type", "device_index")
@@ -282,14 +284,16 @@ class RemoteTensorInfo(_message.Message):
     def __init__(self, name: _Optional[str] = ..., storage_id: _Optional[int] = ..., shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[str] = ..., stride: _Optional[_Iterable[int]] = ..., storage_offset: _Optional[int] = ..., storage_nbytes: _Optional[int] = ..., device_type: _Optional[str] = ..., device_index: _Optional[int] = ...) -> None: ...
 
 class ExecuteFunctionResponse(_message.Message):
-    __slots__ = ("success", "error_message", "tensors")
+    __slots__ = ("success", "error_message", "tensors", "model_id")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
     TENSORS_FIELD_NUMBER: _ClassVar[int]
+    MODEL_ID_FIELD_NUMBER: _ClassVar[int]
     success: bool
     error_message: str
     tensors: _containers.RepeatedCompositeFieldContainer[RemoteTensorInfo]
-    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., tensors: _Optional[_Iterable[_Union[RemoteTensorInfo, _Mapping]]] = ...) -> None: ...
+    model_id: int
+    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., tensors: _Optional[_Iterable[_Union[RemoteTensorInfo, _Mapping]]] = ..., model_id: _Optional[int] = ...) -> None: ...
 
 class ExecuteFunctionLog(_message.Message):
     __slots__ = ("stream", "text")
@@ -321,6 +325,38 @@ class TensorRegistration(_message.Message):
     tensor_id: int
     def __init__(self, storage_id: _Optional[int] = ..., tensor_id: _Optional[int] = ...) -> None: ...
 
+class ExecuteModuleForwardRequest(_message.Message):
+    __slots__ = ("model_id", "module_path", "input_tensor_ids", "input_metadata", "output_tensor_ids", "output_metadata")
+    MODEL_ID_FIELD_NUMBER: _ClassVar[int]
+    MODULE_PATH_FIELD_NUMBER: _ClassVar[int]
+    INPUT_TENSOR_IDS_FIELD_NUMBER: _ClassVar[int]
+    INPUT_METADATA_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_TENSOR_IDS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_METADATA_FIELD_NUMBER: _ClassVar[int]
+    model_id: int
+    module_path: str
+    input_tensor_ids: _containers.RepeatedScalarFieldContainer[int]
+    input_metadata: _containers.RepeatedCompositeFieldContainer[TensorMetadata]
+    output_tensor_ids: _containers.RepeatedScalarFieldContainer[int]
+    output_metadata: _containers.RepeatedCompositeFieldContainer[TensorMetadata]
+    def __init__(self, model_id: _Optional[int] = ..., module_path: _Optional[str] = ..., input_tensor_ids: _Optional[_Iterable[int]] = ..., input_metadata: _Optional[_Iterable[_Union[TensorMetadata, _Mapping]]] = ..., output_tensor_ids: _Optional[_Iterable[int]] = ..., output_metadata: _Optional[_Iterable[_Union[TensorMetadata, _Mapping]]] = ...) -> None: ...
+
+class ExecuteModuleForwardResponse(_message.Message):
+    __slots__ = ("success", "error_message", "output_tensors")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_TENSORS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    error_message: str
+    output_tensors: _containers.RepeatedCompositeFieldContainer[RemoteTensorInfo]
+    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., output_tensors: _Optional[_Iterable[_Union[RemoteTensorInfo, _Mapping]]] = ...) -> None: ...
+
+class ReleaseModelRequest(_message.Message):
+    __slots__ = ("model_id",)
+    MODEL_ID_FIELD_NUMBER: _ClassVar[int]
+    model_id: int
+    def __init__(self, model_id: _Optional[int] = ...) -> None: ...
+
 class BatchedExecuteAtenRequest(_message.Message):
     __slots__ = ("operations",)
     OPERATIONS_FIELD_NUMBER: _ClassVar[int]
@@ -328,7 +364,7 @@ class BatchedExecuteAtenRequest(_message.Message):
     def __init__(self, operations: _Optional[_Iterable[_Union[ExecuteAtenRequest, _Mapping]]] = ...) -> None: ...
 
 class StreamRequest(_message.Message):
-    __slots__ = ("execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "register_tensors", "batched_execute_aten", "raw_execute_aten", "raw_batched_execute_aten", "get_scalar", "chunk_number", "total_chunks", "total_bytes")
+    __slots__ = ("execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "register_tensors", "batched_execute_aten", "raw_execute_aten", "raw_batched_execute_aten", "get_scalar", "execute_module_forward", "release_model", "chunk_number", "total_chunks", "total_bytes")
     EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
     DELETE_TENSORS_FIELD_NUMBER: _ClassVar[int]
     COPY_TENSOR_FIELD_NUMBER: _ClassVar[int]
@@ -339,6 +375,8 @@ class StreamRequest(_message.Message):
     RAW_EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
     RAW_BATCHED_EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
     GET_SCALAR_FIELD_NUMBER: _ClassVar[int]
+    EXECUTE_MODULE_FORWARD_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_MODEL_FIELD_NUMBER: _ClassVar[int]
     CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
     TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
     TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
@@ -352,13 +390,15 @@ class StreamRequest(_message.Message):
     raw_execute_aten: bytes
     raw_batched_execute_aten: bytes
     get_scalar: GetScalarRequest
+    execute_module_forward: ExecuteModuleForwardRequest
+    release_model: ReleaseModelRequest
     chunk_number: int
     total_chunks: int
     total_bytes: int
-    def __init__(self, execute_aten: _Optional[_Union[ExecuteAtenRequest, _Mapping]] = ..., delete_tensors: _Optional[_Union[DeleteTensorsRequest, _Mapping]] = ..., copy_tensor: _Optional[_Union[CopyTensorRequest, _Mapping]] = ..., update_tensor: _Optional[_Union[UpdateTensorRequest, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorRequest, _Mapping]] = ..., register_tensors: _Optional[_Union[RegisterTensorsRequest, _Mapping]] = ..., batched_execute_aten: _Optional[_Union[BatchedExecuteAtenRequest, _Mapping]] = ..., raw_execute_aten: _Optional[bytes] = ..., raw_batched_execute_aten: _Optional[bytes] = ..., get_scalar: _Optional[_Union[GetScalarRequest, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., total_bytes: _Optional[int] = ...) -> None: ...
+    def __init__(self, execute_aten: _Optional[_Union[ExecuteAtenRequest, _Mapping]] = ..., delete_tensors: _Optional[_Union[DeleteTensorsRequest, _Mapping]] = ..., copy_tensor: _Optional[_Union[CopyTensorRequest, _Mapping]] = ..., update_tensor: _Optional[_Union[UpdateTensorRequest, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorRequest, _Mapping]] = ..., register_tensors: _Optional[_Union[RegisterTensorsRequest, _Mapping]] = ..., batched_execute_aten: _Optional[_Union[BatchedExecuteAtenRequest, _Mapping]] = ..., raw_execute_aten: _Optional[bytes] = ..., raw_batched_execute_aten: _Optional[bytes] = ..., get_scalar: _Optional[_Union[GetScalarRequest, _Mapping]] = ..., execute_module_forward: _Optional[_Union[ExecuteModuleForwardRequest, _Mapping]] = ..., release_model: _Optional[_Union[ReleaseModelRequest, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., total_bytes: _Optional[int] = ...) -> None: ...
 
 class StreamResponse(_message.Message):
-    __slots__ = ("success", "error_message", "execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "register_tensors", "get_scalar", "chunk_number", "total_chunks", "server_backlog_ns", "server_handle_ns")
+    __slots__ = ("success", "error_message", "execute_aten", "delete_tensors", "copy_tensor", "update_tensor", "get_tensor", "register_tensors", "get_scalar", "execute_module_forward", "chunk_number", "total_chunks", "server_backlog_ns", "server_handle_ns")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
     EXECUTE_ATEN_FIELD_NUMBER: _ClassVar[int]
@@ -368,6 +408,7 @@ class StreamResponse(_message.Message):
     GET_TENSOR_FIELD_NUMBER: _ClassVar[int]
     REGISTER_TENSORS_FIELD_NUMBER: _ClassVar[int]
     GET_SCALAR_FIELD_NUMBER: _ClassVar[int]
+    EXECUTE_MODULE_FORWARD_FIELD_NUMBER: _ClassVar[int]
     CHUNK_NUMBER_FIELD_NUMBER: _ClassVar[int]
     TOTAL_CHUNKS_FIELD_NUMBER: _ClassVar[int]
     SERVER_BACKLOG_NS_FIELD_NUMBER: _ClassVar[int]
@@ -381,8 +422,9 @@ class StreamResponse(_message.Message):
     get_tensor: GetTensorResponse
     register_tensors: TensorResponse
     get_scalar: GetScalarResponse
+    execute_module_forward: ExecuteModuleForwardResponse
     chunk_number: int
     total_chunks: int
     server_backlog_ns: int
     server_handle_ns: int
-    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., execute_aten: _Optional[_Union[ExecuteAtenResponse, _Mapping]] = ..., delete_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., copy_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., update_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorResponse, _Mapping]] = ..., register_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_scalar: _Optional[_Union[GetScalarResponse, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., server_backlog_ns: _Optional[int] = ..., server_handle_ns: _Optional[int] = ...) -> None: ...
+    def __init__(self, success: bool = ..., error_message: _Optional[str] = ..., execute_aten: _Optional[_Union[ExecuteAtenResponse, _Mapping]] = ..., delete_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., copy_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., update_tensor: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_tensor: _Optional[_Union[GetTensorResponse, _Mapping]] = ..., register_tensors: _Optional[_Union[TensorResponse, _Mapping]] = ..., get_scalar: _Optional[_Union[GetScalarResponse, _Mapping]] = ..., execute_module_forward: _Optional[_Union[ExecuteModuleForwardResponse, _Mapping]] = ..., chunk_number: _Optional[int] = ..., total_chunks: _Optional[int] = ..., server_backlog_ns: _Optional[int] = ..., server_handle_ns: _Optional[int] = ...) -> None: ...
