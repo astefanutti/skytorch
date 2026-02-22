@@ -2,6 +2,9 @@ FROM python:3.14-slim
 
 ARG TARGETARCH
 
+# Triton JIT-compiles a C launcher per kernel and needs a compiler + headers
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+
 USER 1000
 
 # Set working directory
