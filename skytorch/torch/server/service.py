@@ -180,10 +180,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     continue
 
                 target = self.tensor_manager.get(tensor_id)
-                if tensor.device == target.device:
-                    target.copy_(tensor)
-                else:
-                    target.copy_(tensor.to(target.device))
+                target.copy_(tensor)
 
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"Updated tensor {tensor_id} with shape {tensor.shape}")
@@ -1133,10 +1130,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             src_tensor = tensor_from_bytes(bytes(buffer), dtype, shape)
 
             target = self.tensor_manager.get(update_req.tensor_id)
-            if src_tensor.device == target.device:
-                target.copy_(src_tensor)
-            else:
-                target.copy_(src_tensor.to(target.device))
+            target.copy_(src_tensor)
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1576,10 +1570,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             # Copy to target tensor
             target = self.tensor_manager.get(update_req.tensor_id)
-            if src_tensor.device == target.device:
-                target.copy_(src_tensor)
-            else:
-                target.copy_(src_tensor.to(target.device))
+            target.copy_(src_tensor)
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
