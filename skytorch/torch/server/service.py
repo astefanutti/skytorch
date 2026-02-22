@@ -81,8 +81,11 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """
         self.chunk_size = chunk_size
         self.tensor_manager = TensorManager()
-        # Pending tensors from ExecuteFunction, keyed by server-assigned storage_id
-        self._pending_tensors: dict[int, torch.Tensor] = {}
+        # Pending tensors from ExecuteFunction, keyed by server-assigned storage_id.
+        # Uses a list per storage_id to support multiple tensors sharing storage
+        # (e.g., views returned by module forward). RegisterTensors pops one at a
+        # time in FIFO order.
+        self._pending_tensors: dict[int, list[torch.Tensor]] = {}
         # Counter for server-assigned storage IDs (starts above client range)
         self._next_remote_storage_id = 2**32
         # Deferred error from fire-and-forget operations, reported on next get_tensor
@@ -509,7 +512,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 storage_map[data_ptr] = self._next_remote_storage_id
                 self._next_remote_storage_id += 1
             sid = storage_map[data_ptr]
-            self._pending_tensors[sid] = tensor
+            self._pending_tensors.setdefault(sid, []).append(tensor)
             tensor_infos.append(
                 service_pb2.RemoteTensorInfo(
                     name=name,
@@ -1324,7 +1327,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     storage_map[data_ptr] = self._next_remote_storage_id
                     self._next_remote_storage_id += 1
                 sid = storage_map[data_ptr]
-                self._pending_tensors[sid] = tensor
+                self._pending_tensors.setdefault(sid, []).append(tensor)
                 output_infos.append(
                     service_pb2.RemoteTensorInfo(
                         name=str(i),
@@ -1516,8 +1519,11 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
             elif request_type == "register_tensors":
                 for reg in request.register_tensors.registrations:
-                    tensor = self._pending_tensors.pop(reg.storage_id, None)
-                    if tensor is not None:
+                    tensor_list = self._pending_tensors.get(reg.storage_id)
+                    if tensor_list:
+                        tensor = tensor_list.pop(0)
+                        if not tensor_list:
+                            del self._pending_tensors[reg.storage_id]
                         self.tensor_manager.register(reg.tensor_id, tensor)
 
             elif request_type == "batched_execute_aten":
@@ -1559,8 +1565,11 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 return
             elif request_type == "register_tensors":
                 for reg in request.register_tensors.registrations:
-                    tensor = self._pending_tensors.pop(reg.storage_id, None)
-                    if tensor is not None:
+                    tensor_list = self._pending_tensors.get(reg.storage_id)
+                    if tensor_list:
+                        tensor = tensor_list.pop(0)
+                        if not tensor_list:
+                            del self._pending_tensors[reg.storage_id]
                         self.tensor_manager.register(reg.tensor_id, tensor)
             elif request_type == "batched_execute_aten":
                 self._execute_batch_inline(request.batched_execute_aten.operations)

@@ -101,6 +101,12 @@ def _make_forward_proxy(
     # Shape cache: input_cache_key -> list[_OutputSpec]
     shape_cache: dict[tuple, list[_OutputSpec]] = {}
 
+    # Persistent sentinel objects whose id() values serve as storage IDs.
+    # Kept alive for the proxy's lifetime to prevent CPython address reuse
+    # across calls, which would cause storage_id collisions in the storage
+    # manager (multiple tensors sharing one storage → premature deletion).
+    _storage_sentinels: list[object] = []
+
     def _collect_inputs(args, kwargs):
         if kwargs:
             raise TypeError(
@@ -138,28 +144,29 @@ def _make_forward_proxy(
         output_tensors = []
         registrations = []
         output_specs = []
-        seen_storage: dict[int, torch.Tensor] = {}
 
         for info in fwd_response.output_tensors:
-            if info.storage_id in seen_storage:
-                base = seen_storage[info.storage_id]
-                sky_tensor = base.as_strided(
-                    list(info.shape), list(info.stride), info.storage_offset
-                )
-            else:
-                sky_tensor = _create_remote_tensor(
-                    info.storage_id,
-                    list(info.shape),
-                    info.dtype,
-                    list(info.stride),
-                    info.storage_offset,
-                    info.storage_nbytes,
-                    sky_device_index,
-                )
-                seen_storage[info.storage_id] = sky_tensor
+            # Always create each output tensor independently with a unique
+            # client-side storage_id. Using as_strided for shared-storage
+            # outputs would dispatch an ATen op to the server BEFORE the
+            # RegisterTensorsRequest, causing "Tensor does not exist" errors.
+            sentinel = object()
+            _storage_sentinels.append(sentinel)
+            client_storage_id = id(sentinel)
+            sky_tensor = _create_remote_tensor(
+                client_storage_id,
+                list(info.shape),
+                info.dtype,
+                list(info.stride),
+                info.storage_offset,
+                info.storage_nbytes,
+                sky_device_index,
+            )
 
             tensor_id = get_tensor_id(sky_tensor)
-            storage_manager.register_storage(info.storage_id, info.storage_nbytes, sky_device_index)
+            storage_manager.register_storage(
+                client_storage_id, info.storage_nbytes, sky_device_index
+            )
             storage_manager.register_tensor(sky_tensor)
             registrations.append(
                 service_pb2.TensorRegistration(storage_id=info.storage_id, tensor_id=tensor_id)
@@ -191,8 +198,9 @@ def _make_forward_proxy(
         output_metadata = []
 
         for spec in specs:
-            # Allocate a new storage ID for each output
-            storage_id = id(object())  # Unique client-side storage ID
+            sentinel = object()
+            _storage_sentinels.append(sentinel)
+            storage_id = id(sentinel)
             sky_tensor = _create_remote_tensor(
                 storage_id,
                 list(spec.shape),
@@ -247,8 +255,10 @@ def _make_forward_proxy(
             input_metadata=input_metadata,
         )
 
-        response_coro = stream_manager.submit_execute_module_forward(request)
-        response = run_async(response_coro).result()
+        async def _submit_and_await():
+            return await stream_manager.submit_execute_module_forward(request)
+
+        response = run_async(_submit_and_await()).result()
 
         if not response.success:
             raise RuntimeError(
