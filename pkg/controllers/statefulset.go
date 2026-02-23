@@ -54,13 +54,7 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 	}
 
 	// Build container environment variables
-	env := []*corev1apply.EnvVarApplyConfiguration{
-		corev1apply.EnvVar().WithName("SKYTORCH_PORT").WithValue("50051"),
-		corev1apply.EnvVar().WithName("SKYTORCH_HOST").WithValue("[::]"),
-		corev1apply.EnvVar().WithName("SKYTORCH_LOG_LEVEL").WithValue("INFO"),
-	}
-
-	// Append user-provided env vars
+	var env []*corev1apply.EnvVarApplyConfiguration
 	for _, e := range compute.Spec.Env {
 		envVar := corev1apply.EnvVar().WithName(e.Name)
 		if e.Value != "" {
@@ -70,7 +64,7 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 			envVar.WithValueFrom(corev1apply.EnvVarSource())
 			// Handle ValueFrom fields as needed
 		}
-		env = append(env, envVar)
+		upsert(&env, envVar, envByName)
 	}
 
 	// Build resource requirements
@@ -103,7 +97,6 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 				WithContainerPort(50051).
 				WithProtocol(corev1.ProtocolTCP),
 		).
-		WithEnv(env...).
 		WithResources(resourceRequirements).
 		WithReadinessProbe(
 			corev1apply.Probe().
@@ -147,18 +140,20 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 					}
 					container.WithVolumeMounts(volumeMount)
 				}
-				// Merge env vars
+				// Merge env vars from override
 				for _, e := range co.Env {
 					envVar := corev1apply.EnvVar().WithName(e.Name)
 					if e.Value != "" {
 						envVar.WithValue(e.Value)
 					}
-					env = append(env, envVar)
-					container.WithEnv(env...)
+					upsert(&env, envVar, envByName)
 				}
 			}
 		}
 	}
+
+	// Set env vars on container once, after all sources are merged
+	container.WithEnv(env...)
 
 	replicas := int32(1)
 	if ptr.Deref(compute.Spec.Suspend, false) {
