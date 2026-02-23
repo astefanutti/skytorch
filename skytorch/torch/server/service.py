@@ -943,12 +943,17 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         Used for fire-and-forget operations. Raises on error.
         """
-        # Defensive check: 0xFF marker means this is a module forward request
-        # that was routed through the raw binary path. Redirect to the proper handler.
+        # Defensive check: marker bytes for non-ATen requests routed through
+        # the raw binary path. Redirect to the proper handler.
         if data[0] == 0xFF:
             request = service_pb2.ExecuteModuleForwardRequest()
             request.ParseFromString(data[1:])
             self._handle_execute_module_forward_ff(request)
+            return
+        if data[0] == 0xFE:
+            request = service_pb2.CopyTensorRequest()
+            request.ParseFromString(data[1:])
+            self._copy_tensor_sync(request)
             return
 
         op_name, args, kwargs, output_tensor_ids = self._parse_raw_execute_aten(data)

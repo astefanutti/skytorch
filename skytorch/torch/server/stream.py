@@ -23,35 +23,36 @@ FF_REQUEST = 3
 CHUNK = 4
 SHUTDOWN = 5
 
-# Marker byte for module forward requests embedded in raw binary ATen stream.
+# Marker bytes for non-ATen requests embedded in the raw binary ATen stream.
 # Safe because the first byte of an ATen binary request is num_args (uint8)
-# and no ATen op has 255 arguments.
+# and no ATen op has 254+ arguments.
 _MODULE_FORWARD_MARKER = 0xFF
+_COPY_TENSOR_MARKER = 0xFE
 
 
-def _batch_has_module_forward(raw_data: bytes) -> bool:
-    """Scan a raw batched payload for any 0xFF module forward marker.
+def _batch_has_special_op(raw_data: bytes) -> bool:
+    """Scan a raw batched payload for any special marker (>= 0xFE).
 
     The batch format is [uint32_len][op_data]... — we check the first byte
-    of each op_data segment.
+    of each op_data segment. Markers: 0xFE = copy_tensor, 0xFF = module forward.
     """
     pos = 0
     n = len(raw_data)
     while pos < n:
         op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
         pos += 4
-        if raw_data[pos] == _MODULE_FORWARD_MARKER:
+        if raw_data[pos] >= _COPY_TENSOR_MARKER:
             return True
         pos += op_len
     return False
 
 
 def _execute_mixed_batch(raw_data: bytes, servicer) -> None:
-    """Execute a raw batch that may contain both ATen ops and module forward ops.
+    """Execute a raw batch that may contain ATen ops, module forward ops, and copy ops.
 
     Dispatches each op individually: ATen ops go to C++ single-op parser
-    (if available) or Python parser, module forward ops go to
-    _handle_execute_module_forward_ff.
+    (if available) or Python parser, module forward ops (0xFF) go to
+    _handle_execute_module_forward_ff, copy ops (0xFE) go to _copy_tensor_sync.
     """
     from skytorch.torch.server import service_pb2
 
@@ -66,6 +67,10 @@ def _execute_mixed_batch(raw_data: bytes, servicer) -> None:
             fwd_request = service_pb2.ExecuteModuleForwardRequest()
             fwd_request.ParseFromString(op_data[1:])
             servicer._handle_execute_module_forward_ff(fwd_request)
+        elif op_data[0] == _COPY_TENSOR_MARKER:
+            copy_request = service_pb2.CopyTensorRequest()
+            copy_request.ParseFromString(op_data[1:])
+            servicer._copy_tensor_sync(copy_request)
         elif _USE_CPP_PARSER:
             _cpp_execute_raw_aten_inline(op_data, servicer.tensor_manager.store)
         else:
@@ -119,6 +124,12 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                     fwd_request = service_pb2.ExecuteModuleForwardRequest()
                     fwd_request.ParseFromString(data[1:])
                     servicer._handle_execute_module_forward_ff(fwd_request)
+                elif data[0] == _COPY_TENSOR_MARKER:
+                    from skytorch.torch.server import service_pb2
+
+                    copy_request = service_pb2.CopyTensorRequest()
+                    copy_request.ParseFromString(data[1:])
+                    servicer._copy_tensor_sync(copy_request)
                 elif _USE_CPP_PARSER:
                     _cpp_execute_raw_aten_inline(data, servicer.tensor_manager.store)
                 else:
@@ -144,7 +155,7 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                         server_profiler.hot_idle.add(_idle_ns)
 
                 raw_data = item[1]
-                if _USE_CPP_PARSER and not _batch_has_module_forward(raw_data):
+                if _USE_CPP_PARSER and not _batch_has_special_op(raw_data):
                     _cpp_execute_raw_batched_aten_inline(raw_data, servicer.tensor_manager.store)
                 else:
                     _execute_mixed_batch(raw_data, servicer)

@@ -496,13 +496,18 @@ class StreamManager:
                 self._loop.call_soon_threadsafe(self._drain_mt_ops)
 
     def submit_copy_tensor(self, request: service_pb2.CopyTensorRequest) -> None:
-        """Submit a fire-and-forget copy_tensor request (callable from any thread)."""
+        """Submit a fire-and-forget copy_tensor request (callable from any thread).
+
+        Serialized with a 0xFE marker byte prefix and routed through the raw
+        binary ATen batching pipeline, so copy ops are batched with surrounding
+        ATen ops instead of forcing an immediate flush.
+        """
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 f"Copying tensor {request.src_tensor_id} " f"to tensor {request.dst_tensor_id}"
             )
-        stream_request = service_pb2.StreamRequest(copy_tensor=request)
-        self._submit_request(stream_request, "copy_tensor")
+        raw_bytes = b"\xfe" + request.SerializeToString()
+        self.submit_execute_aten_bytes(raw_bytes)
 
     def submit_register_tensors(self, request: service_pb2.RegisterTensorsRequest) -> None:
         """Submit a fire-and-forget register_tensors request (callable from any thread)."""
