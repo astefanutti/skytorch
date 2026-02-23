@@ -135,6 +135,20 @@ void clear_registered_tensor_ids();
 void register_storage_tensor_mapping(int64_t storage_id, uint64_t tensor_id);
 
 /**
+ * Unregister a storage_id → tensor_id mapping.
+ * Called when storage is freed to prevent stale mappings from causing
+ * incorrect view detection when the allocator reuses the storage address.
+ */
+void unregister_storage_tensor_mapping(int64_t storage_id);
+
+/**
+ * Check if a tensor ID is currently registered in the C++ fast-path set.
+ * Used by deferred delete to skip deletion of tensor IDs that have been
+ * re-registered since the original free (ABA race prevention).
+ */
+bool is_tensor_id_registered(uint64_t tensor_id);
+
+/**
  * Compute dispatch context for cache key + tensor collection in one C++ pass.
  *
  * Walks args/kwargs once to:

@@ -245,6 +245,10 @@ PYBIND11_MODULE(_C, m) {
         "Clear all registered tensor IDs (for testing/reset)");
     m.def("_register_storage_tensor_mapping", &skytorch::register_storage_tensor_mapping,
         "Register a storage_id to tensor_id mapping for view detection");
+    m.def("_unregister_storage_tensor_mapping", &skytorch::unregister_storage_tensor_mapping,
+        "Unregister a storage_id to tensor_id mapping");
+    m.def("_is_tensor_id_registered", &skytorch::is_tensor_id_registered,
+        "Check if a tensor ID is currently registered in the C++ fast-path set");
 
     // Dispatch context computation (cache key + tensor collection in one C++ pass)
     m.def("_compute_dispatch_context", &skytorch::compute_dispatch_context,

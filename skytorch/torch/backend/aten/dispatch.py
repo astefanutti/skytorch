@@ -48,6 +48,12 @@ except ImportError:
     _clear_submit_callback = None
 
 try:
+    from skytorch.torch.backend._C import _register_storage_tensor_mapping, _register_tensor_id
+except ImportError:
+    _register_tensor_id = None
+    _register_storage_tensor_mapping = None
+
+try:
     from skytorch.torch.backend._C import _set_submit_method
 except ImportError:
     _set_submit_method = None
@@ -579,7 +585,7 @@ def _submit_and_register(
     stream_manager = _get_stream_manager(dev_idx)
     stream_manager.submit_execute_aten_bytes(raw_bytes)
 
-    # Register new tensors locally (C++ already updated its tracking set)
+    # Register new tensors locally and in C++ tracking set after successful submission
     for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids, strict=True):
         storage_manager.register_storage(
             storage_id=storage_id,
@@ -587,6 +593,10 @@ def _submit_and_register(
             device_index=dev_idx,
         )
         storage_manager._storage_to_tensors[storage_id].add(tensor_id)
+        if _register_tensor_id is not None:
+            _register_tensor_id(tensor_id)
+        if _register_storage_tensor_mapping is not None:
+            _register_storage_tensor_mapping(storage_id, tensor_id)
 
 
 def _unpack_outputs(output_tensors: list) -> Any:

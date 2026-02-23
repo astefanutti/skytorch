@@ -51,12 +51,32 @@ def _delete_tensors_after_gc(
     Called on the event loop thread via call_soon_threadsafe, so no lock
     is held when this executes. This avoids the reentrant deadlock that
     occurs when GC triggers free_storage while _pending_lock is held.
+
+    Before sending the delete, filters out tensor IDs that have been
+    re-registered in the C++ fast-path set. This prevents an ABA race
+    where: (1) free_storage deregisters + schedules deferred delete,
+    (2) allocator reuses the same storage address and re-registers the
+    same tensor_id with new metadata, (3) the stale deferred delete
+    arrives and kills the newly registered tensor on the server.
     """
     from skytorch.torch.backend._client import delete_tensors
 
     async def _do_delete():
         try:
-            await delete_tensors(compute, tensor_ids)
+            # Filter out tensor IDs that have been re-registered since the free.
+            # free_storage removes IDs from the C++ set; if an ID is back in the
+            # set, it means a new tensor reused the same storage address and was
+            # re-registered. Deleting it would kill the live tensor on the server.
+            ids_to_delete = tensor_ids
+            try:
+                from skytorch.torch.backend import _C
+
+                ids_to_delete = [tid for tid in tensor_ids if not _C._is_tensor_id_registered(tid)]
+            except (ImportError, AttributeError):
+                pass
+
+            if ids_to_delete:
+                await delete_tensors(compute, ids_to_delete)
         except Exception as e:
             logger.warning(f"Failed to delete tensor(s) {tensor_ids} after GC: {e}")
 
@@ -130,6 +150,19 @@ class StorageManager:
         """
         tensor_ids = list(self._storage_to_tensors.pop(storage_id, set()))
         info = self._storages.pop(storage_id, None)
+
+        # Deregister from C++ fast-path tracking to prevent stale hits
+        # when the allocator reuses the same storage address.
+        if tensor_ids:
+            try:
+                from skytorch.torch.backend import _C
+
+                for tid in tensor_ids:
+                    _C._unregister_tensor_id(tid)
+                _C._unregister_storage_tensor_mapping(storage_id)
+            except (ImportError, AttributeError):
+                pass
+
         if info is None or not tensor_ids:
             return
 
@@ -194,12 +227,15 @@ class StorageManager:
         """
         return self._storages.get(storage_id)
 
-    def register_tensor(self, tensor: torch.Tensor) -> int:
+    def register_tensor(self, tensor: torch.Tensor, skip_cpp: bool = False) -> int:
         """
         Register a tensor with its associated storage.
 
         Args:
             tensor: The sky tensor to register
+            skip_cpp: If True, skip C++ fast-path registration. Used by callers
+                that need to defer C++ registration until after submission to
+                avoid marking tensors as "known" before the server has them.
 
         Returns:
             The tensor ID
@@ -208,15 +244,16 @@ class StorageManager:
         storage_id = get_storage_id(tensor)
         self._tensor_to_storage[tensor_id] = tensor.untyped_storage()
         self._storage_to_tensors[storage_id].add(tensor_id)
-        # Sync to C++ registration set for fast path lookup
-        try:
-            from skytorch.torch.backend import _C
+        if not skip_cpp:
+            # Sync to C++ registration set for fast path lookup
+            try:
+                from skytorch.torch.backend import _C
 
-            _C._register_tensor_id(tensor_id)
-            # Also register storage_id → tensor_id mapping for view detection
-            _C._register_storage_tensor_mapping(storage_id, tensor_id)
-        except (ImportError, AttributeError):
-            pass
+                _C._register_tensor_id(tensor_id)
+                # Also register storage_id → tensor_id mapping for view detection
+                _C._register_storage_tensor_mapping(storage_id, tensor_id)
+            except (ImportError, AttributeError):
+                pass
         return tensor_id
 
     def tensor_ref(self, tensor: torch.Tensor) -> Optional[int]:

@@ -1364,10 +1364,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         Raises on error (deferred to next sync point).
         """
-        # Auto-create output tensors from metadata
-        for metadata in request.output_metadata:
-            self._ensure_tensor_exists(metadata)
-
+        # DO NOT pre-create output tensors — if the forward fails, uninitialized
+        # placeholders would remain and corrupt subsequent computations.
         result_tensors, error = self._execute_module_forward(request)
         if error:
             raise RuntimeError(error)

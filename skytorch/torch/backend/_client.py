@@ -400,7 +400,11 @@ def _execute_aten_cpp_fast_path(
     remote_info=None,
 ) -> None:
     """Fast path: C++ binary serialization + raw bytes submission."""
-    from skytorch.torch.backend._C import _build_execute_aten_request
+    from skytorch.torch.backend._C import (
+        _build_execute_aten_request,
+        _register_storage_tensor_mapping,
+        _register_tensor_id,
+    )
 
     if remote_info is None:
         remote_info = device_manager.get_remote_device_info(sky_device.index or 0)
@@ -441,7 +445,7 @@ def _execute_aten_cpp_fast_path(
         _prof.cpp_serialization.add(_t1 - _t0)
         _prof.event_loop_submit.add(_t2 - _t1)
 
-    # Register new tensors locally (C++ already updated its tracking set)
+    # Register new tensors locally and in C++ tracking set after successful submission
     for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids):
         storage_manager.register_storage(
             storage_id=storage_id,
@@ -450,6 +454,8 @@ def _execute_aten_cpp_fast_path(
         )
         # Register tensor_id → storage mapping
         storage_manager._storage_to_tensors[storage_id].add(tensor_id)
+        _register_tensor_id(tensor_id)
+        _register_storage_tensor_mapping(storage_id, tensor_id)
 
 
 def _execute_aten_python_path(

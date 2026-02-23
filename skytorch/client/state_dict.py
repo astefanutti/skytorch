@@ -78,9 +78,20 @@ class SkyStateDict(dict):
 
             model.load_state_dict(persistent, assign=True, strict=False)
 
+            # Detect compute dtype from loaded sky tensors so proxied modules
+            # (whose parameters were never loaded) use the correct dtype for
+            # meta shape prediction instead of the default float32.
+            compute_dtype = None
+            for v in persistent.values():
+                if isinstance(v, torch.Tensor) and v.is_floating_point():
+                    compute_dtype = v.dtype
+                    break
+
             from skytorch.torch.backend.proxy import proxy_triton_modules
 
-            proxy_triton_modules(model, self._compute, self.model_id, triton_modules)
+            proxy_triton_modules(
+                model, self._compute, self.model_id, triton_modules, compute_dtype
+            )
         else:
             model.load_state_dict(persistent, assign=True)
 

@@ -202,7 +202,6 @@ class StreamManager:
 
         self._batch_buffer = []
         self._request_queue.put_nowait(stream_request)
-        self._flush_deferred()
 
     def _flush_raw_batch(self, flush_deferred: bool = True) -> None:
         """Flush buffered raw binary execute_aten requests. Must run on the event loop thread."""
@@ -434,6 +433,7 @@ class StreamManager:
         """Flush any pending batch, then enqueue a request. Must run on the event loop thread."""
         self._flush_batch()
         self._flush_raw_batch(flush_deferred=False)
+        self._flush_deferred()
         self._request_queue.put_nowait(stream_request)
 
     def _submit_request(self, stream_request: service_pb2.StreamRequest, request_type: str) -> None:

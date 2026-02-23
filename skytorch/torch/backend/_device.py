@@ -135,6 +135,31 @@ class DeviceManager:
         info = self._local_to_remote.get(device_index)
         return info.compute if info else None
 
+    def get_compute_sky_device(self, compute: Compute) -> torch.device:
+        """
+        Get the existing sky device for a Compute.
+
+        Returns the first registered sky device for this Compute instance.
+        The Compute must have at least one device registered via device().
+
+        Args:
+            compute: The Compute resource
+
+        Returns:
+            torch.device with type "sky" and the existing local index
+
+        Raises:
+            RuntimeError: If no device has been registered for this Compute
+        """
+        compute_id = id(compute)
+        for (cid, _, _), local_index in self._remote_to_local.items():
+            if cid == compute_id:
+                return torch.device("sky", local_index)
+        raise RuntimeError(
+            "No device registered for this Compute. "
+            "Call compute.device() before using triton_modules."
+        )
+
     def has_device(self, device_index: int) -> bool:
         """Check if a mapping exists for the given device index."""
         return device_index in self._local_to_remote

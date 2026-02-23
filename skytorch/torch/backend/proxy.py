@@ -6,9 +6,10 @@ by SkyTorch's PrivateUse1 dispatch. This module replaces the forward() method
 of such modules with an RPC proxy that executes the forward on the server where
 the real GPU tensors and Triton kernels live.
 
-The first call for each unique input shape signature is synchronous (to learn
-output shapes). Subsequent calls with the same input shapes use pre-allocated
-output tensors and fire-and-forget dispatch, matching the ATen op fast path.
+Output shapes are predicted locally by running the module's original forward on
+meta tensors. All calls use pre-allocated output tensors and fire-and-forget
+dispatch, matching the ATen op fast path. A shape cache avoids repeated meta
+inference for inputs with the same shapes and dtypes.
 
 Usage:
     proxy_triton_modules(model, compute, model_id, ["model.layers.*.experts"])
@@ -22,8 +23,9 @@ from typing import TYPE_CHECKING
 import torch
 
 from skytorch.torch.backend._C import _create_remote_tensor
+from skytorch.torch.backend._device import device_manager
 from skytorch.torch.backend._storage import storage_manager
-from skytorch.torch.client.tensor import get_tensor_id
+from skytorch.torch.client.tensor import get_storage_id, get_tensor_id
 from skytorch.torch.server import service_pb2
 
 if TYPE_CHECKING:
@@ -65,7 +67,14 @@ def _resolve_module_paths(
         for path in all_paths:
             if fnmatch.fnmatch(path, pattern):
                 matched.add(path)
-    return sorted(matched)
+
+    # Filter out children of already-matched paths: if "layers.0" is proxied,
+    # "layers.0.linear" is redundant (the server runs it as part of the parent's forward).
+    result = []
+    for path in sorted(matched):
+        if not any(path.startswith(p + ".") for p in result):
+            result.append(path)
+    return result
 
 
 def _input_cache_key(args: tuple) -> tuple:
@@ -78,23 +87,24 @@ def _make_forward_proxy(
     model_id: int,
     stream_manager: "StreamManager",
     sky_device_index: int,
+    module: torch.nn.Module,
+    compute_dtype: torch.dtype | None = None,
 ):
     """Create a proxy forward function for a module.
 
-    The proxy uses a shape cache:
-    - First call (cache miss): sync RPC, learns output shapes, caches them.
-    - Subsequent calls (cache hit): pre-allocates output tensors, fire-and-forget.
+    Output shapes are predicted locally via meta tensor execution on the
+    module's original forward. All calls use fire-and-forget dispatch.
 
     Args:
         module_path: Dotted path to the module (e.g., "layers.0.experts").
         model_id: Server-assigned model ID.
         stream_manager: StreamManager for the bidirectional stream.
         sky_device_index: Local sky device index for output tensors.
+        module: The nn.Module whose forward will be proxied.
 
     Returns:
         A callable that replaces the module's forward().
     """
-    from skytorch.torch.backend._async import run_async
     from skytorch.torch.client.request import tensor_metadata_to_proto
     from skytorch.torch.client.tensor import get_tensor_metadata
 
@@ -106,6 +116,21 @@ def _make_forward_proxy(
     # across calls, which would cause storage_id collisions in the storage
     # manager (multiple tensors sharing one storage → premature deletion).
     _storage_sentinels: list[object] = []
+
+    # Save original forward for meta shape prediction before it gets replaced
+    original_forward = module.forward
+
+    # Pre-compute meta-device copies of parameters and buffers (once at setup).
+    # When compute_dtype is provided, override float dtypes — proxied module
+    # parameters may still be float32 meta tensors (never loaded by load_into),
+    # while the actual server-side weights use the model's compute dtype.
+    _meta_state: dict[str, torch.Tensor] = {}
+    for name, param in module.named_parameters():
+        dtype = compute_dtype if compute_dtype and param.is_floating_point() else param.dtype
+        _meta_state[name] = torch.empty(param.shape, dtype=dtype, device="meta")
+    for name, buf in module.named_buffers():
+        dtype = compute_dtype if compute_dtype and buf.is_floating_point() else buf.dtype
+        _meta_state[name] = torch.empty(buf.shape, dtype=dtype, device="meta")
 
     def _collect_inputs(args, kwargs):
         if kwargs:
@@ -123,6 +148,9 @@ def _make_forward_proxy(
                 tid = get_tensor_id(arg)
                 input_tensor_ids.append(tid)
                 meta = get_tensor_metadata(arg)
+                remote_info = device_manager.get_remote_device_info(sky_device_index)
+                meta.device_type = remote_info.device_type
+                meta.device_index = remote_info.device_index
                 input_metadata.append(tensor_metadata_to_proto(meta))
             else:
                 if isinstance(arg, torch.Tensor):
@@ -139,63 +167,63 @@ def _make_forward_proxy(
                 )
         return input_tensor_ids, input_metadata
 
-    def _create_outputs_from_response(fwd_response):
-        """Create sky tensors from sync RPC response and cache the output specs."""
-        output_tensors = []
-        registrations = []
-        output_specs = []
+    def _predict_output_specs(args):
+        """Predict output tensor specs by running the original forward on meta tensors."""
+        meta_args = tuple(
+            torch.empty(
+                arg.shape,
+                dtype=compute_dtype if compute_dtype and arg.is_floating_point() else arg.dtype,
+                device="meta",
+            )
+            for arg in args
+        )
 
-        for info in fwd_response.output_tensors:
-            # Always create each output tensor independently with a unique
-            # client-side storage_id. Using as_strided for shared-storage
-            # outputs would dispatch an ATen op to the server BEFORE the
-            # RegisterTensorsRequest, causing "Tensor does not exist" errors.
-            sentinel = object()
-            _storage_sentinels.append(sentinel)
-            client_storage_id = id(sentinel)
-            sky_tensor = _create_remote_tensor(
-                client_storage_id,
-                list(info.shape),
-                info.dtype,
-                list(info.stride),
-                info.storage_offset,
-                info.storage_nbytes,
-                sky_device_index,
-            )
+        # Use functional_call to run original forward with meta parameters,
+        # avoiding direct param.data assignment which rejects cross-backend swaps.
+        current_fwd = module.forward
+        module.forward = original_forward
+        try:
+            with torch.no_grad():
+                meta_result = torch.func.functional_call(module, _meta_state, meta_args)
+        finally:
+            module.forward = current_fwd
 
-            tensor_id = get_tensor_id(sky_tensor)
-            storage_manager.register_storage(
-                client_storage_id, info.storage_nbytes, sky_device_index
-            )
-            storage_manager.register_tensor(sky_tensor)
-            registrations.append(
-                service_pb2.TensorRegistration(storage_id=info.storage_id, tensor_id=tensor_id)
-            )
-            output_tensors.append(sky_tensor)
-            output_specs.append(
+        # Normalize to flat list of tensors
+        if isinstance(meta_result, torch.Tensor):
+            meta_outputs = [meta_result]
+        elif isinstance(meta_result, (tuple, list)):
+            meta_outputs = [t for t in meta_result if isinstance(t, torch.Tensor)]
+        else:
+            meta_outputs = []
+
+        specs = []
+        for t in meta_outputs:
+            nbytes = t.untyped_storage().nbytes()
+            if nbytes == 0 and t.numel() > 0:
+                # Meta storage may report 0; compute from tensor metadata
+                max_idx = t.storage_offset()
+                for s, st in zip(t.shape, t.stride()):
+                    if s > 0:
+                        max_idx += (s - 1) * st
+                nbytes = (max_idx + 1) * t.element_size()
+            specs.append(
                 _OutputSpec(
-                    shape=tuple(info.shape),
-                    dtype=info.dtype,
-                    stride=tuple(info.stride),
-                    storage_offset=info.storage_offset,
-                    storage_nbytes=info.storage_nbytes,
-                    device_type=info.device_type,
-                    device_index=info.device_index,
+                    shape=tuple(t.shape),
+                    dtype=str(t.dtype),
+                    stride=tuple(t.stride()),
+                    storage_offset=t.storage_offset(),
+                    storage_nbytes=nbytes,
+                    device_type="cuda",
+                    device_index=0,
                 )
             )
 
-        if registrations:
-            stream_manager.submit_register_tensors(
-                service_pb2.RegisterTensorsRequest(registrations=registrations)
-            )
+        return specs
 
-        return output_tensors, output_specs
-
-    def _create_outputs_from_cache(specs: list[_OutputSpec]):
-        """Pre-allocate output sky tensors from cached specs."""
+    def _create_outputs(specs: list[_OutputSpec]):
+        """Pre-allocate output sky tensors from specs."""
         output_tensors = []
         output_tensor_ids = []
-        output_metadata = []
 
         for spec in specs:
             sentinel = object()
@@ -211,71 +239,54 @@ def _make_forward_proxy(
                 sky_device_index,
             )
             storage_manager.register_storage(storage_id, spec.storage_nbytes, sky_device_index)
-            storage_manager.register_tensor(sky_tensor)
+            storage_manager.register_tensor(sky_tensor, skip_cpp=True)
 
             tid = get_tensor_id(sky_tensor)
             output_tensor_ids.append(tid)
             output_tensors.append(sky_tensor)
 
-            meta = get_tensor_metadata(sky_tensor)
-            output_metadata.append(tensor_metadata_to_proto(meta))
-
-        return output_tensors, output_tensor_ids, output_metadata
+        return output_tensors, output_tensor_ids
 
     def proxy_forward(*args, **kwargs):
         input_tensor_ids, input_metadata = _collect_inputs(args, kwargs)
         cache_key = _input_cache_key(args)
 
         cached_specs = shape_cache.get(cache_key)
-        if cached_specs is not None:
-            # Cache hit: pre-allocate outputs and fire-and-forget
-            output_tensors, output_tensor_ids, output_meta = _create_outputs_from_cache(
-                cached_specs
-            )
+        if cached_specs is None:
+            # Predict output shapes via meta tensor execution
+            cached_specs = _predict_output_specs(args)
+            shape_cache[cache_key] = cached_specs
 
-            request = service_pb2.ExecuteModuleForwardRequest(
-                model_id=model_id,
-                module_path=module_path,
-                input_tensor_ids=input_tensor_ids,
-                input_metadata=input_metadata,
-                output_tensor_ids=output_tensor_ids,
-                output_metadata=output_meta,
-            )
-            stream_manager.submit_execute_module_forward_ff(request)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"Predicted output specs for {module_path} "
+                    f"(key={cache_key}, {len(cached_specs)} outputs)"
+                )
 
-            if len(output_tensors) == 1:
-                return output_tensors[0]
-            return tuple(output_tensors)
+        output_tensors, output_tensor_ids = _create_outputs(cached_specs)
 
-        # Cache miss: sync RPC to learn output shapes
         request = service_pb2.ExecuteModuleForwardRequest(
             model_id=model_id,
             module_path=module_path,
             input_tensor_ids=input_tensor_ids,
             input_metadata=input_metadata,
+            output_tensor_ids=output_tensor_ids,
+            # output_metadata intentionally omitted — prevents server from creating
+            # uninitialized placeholder tensors that cause data corruption on failure
         )
+        stream_manager.submit_execute_module_forward_ff(request)
 
-        async def _submit_and_await():
-            return await stream_manager.submit_execute_module_forward(request)
+        # Register output tensors in C++ tracking set AFTER submission,
+        # so they are not marked as "known" before the server has them.
+        # This prevents a cascade of "Tensor does not exist" errors if the
+        # module forward fails server-side.
+        from skytorch.torch.backend import _C
 
-        response = run_async(_submit_and_await()).result()
-
-        if not response.success:
-            raise RuntimeError(
-                f"ExecuteModuleForward failed for {module_path}: " f"{response.error_message}"
-            )
-
-        fwd_response = response.execute_module_forward
-        output_tensors, output_specs = _create_outputs_from_response(fwd_response)
-
-        # Cache the output specs for future calls with this input shape
-        shape_cache[cache_key] = output_specs
-
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                f"Cached output specs for {module_path} "
-                f"(key={cache_key}, {len(output_specs)} outputs)"
-            )
+        for sky_tensor in output_tensors:
+            tid = get_tensor_id(sky_tensor)
+            sid = get_storage_id(sky_tensor)
+            _C._register_tensor_id(tid)
+            _C._register_storage_tensor_mapping(sid, tid)
 
         if len(output_tensors) == 1:
             return output_tensors[0]
@@ -289,6 +300,7 @@ def proxy_triton_modules(
     compute,
     model_id: int,
     module_paths: list[str],
+    compute_dtype: torch.dtype | None = None,
 ) -> list[str]:
     """Replace forward() on specified modules with an RPC proxy.
 
@@ -297,6 +309,8 @@ def proxy_triton_modules(
         compute: The Compute instance (has _grpc_client.stream).
         model_id: Server-assigned model ID from ExecuteFunction.
         module_paths: List of module path patterns (supports wildcards).
+        compute_dtype: Optional dtype override for floating-point parameters
+            whose meta tensors may not reflect the server-side compute dtype.
 
     Returns:
         List of concrete module paths that were proxied.
@@ -311,10 +325,8 @@ def proxy_triton_modules(
 
     stream_manager = compute._grpc_client.stream
 
-    # Determine sky device index from the compute
-    from skytorch.torch.backend._device import device_manager
-
-    sky_device_index = device_manager.get_sky_device(compute, "cuda", 0).index
+    # Determine sky device index from the compute's existing device registration
+    sky_device_index = device_manager.get_compute_sky_device(compute).index
 
     proxied = []
     for path in resolved:
@@ -329,7 +341,9 @@ def proxy_triton_modules(
         module = getattr(parent, parts[-1]) if not parts[-1].isdigit() else parent[int(parts[-1])]
 
         # Replace forward
-        proxy_fn = _make_forward_proxy(path, model_id, stream_manager, sky_device_index)
+        proxy_fn = _make_forward_proxy(
+            path, model_id, stream_manager, sky_device_index, module, compute_dtype
+        )
         module.forward = proxy_fn
         proxied.append(path)
 

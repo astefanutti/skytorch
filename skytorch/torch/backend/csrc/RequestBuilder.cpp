@@ -58,6 +58,14 @@ void register_storage_tensor_mapping(int64_t storage_id, uint64_t tensor_id) {
     }
 }
 
+void unregister_storage_tensor_mapping(int64_t storage_id) {
+    g_storage_to_tensor_id.erase(storage_id);
+}
+
+bool is_tensor_id_registered(uint64_t tensor_id) {
+    return g_registered_tensor_ids.count(tensor_id) > 0;
+}
+
 // Register a tensor ID and its storage mapping
 static void register_tensor_with_storage(uint64_t tensor_id, int64_t storage_id) {
     g_registered_tensor_ids.insert(tensor_id);
@@ -527,13 +535,12 @@ py::tuple build_execute_aten_request(
     buffer.insert(buffer.end(), kwargs_buf.begin(), kwargs_buf.end());
 
     // Build list of new tensor IDs for local registration
-    // Also register them in C++ tracking set
+    // C++ registration deferred to Python caller after successful submission
     py::list new_tensor_ids;
     py::list new_storage_ids;
     for (const auto& info : new_tensors) {
         new_tensor_ids.append(py::int_(info.tensor_id));
         new_storage_ids.append(py::int_(info.storage_id));
-        register_tensor_with_storage(info.tensor_id, info.storage_id);
     }
 
     return py::make_tuple(
@@ -1602,7 +1609,6 @@ py::object dispatch_cached_aten(
         for (const auto& info : new_tensors) {
             new_tensor_ids.append(py::int_(info.tensor_id));
             new_storage_ids.append(py::int_(info.storage_id));
-            register_tensor_with_storage(info.tensor_id, info.storage_id);
         }
 
         PyObject* raw = PyBytes_FromStringAndSize(
@@ -1634,7 +1640,6 @@ py::object dispatch_cached_aten(
         for (const auto& info : new_tensors) {
             new_tensor_ids.append(py::int_(info.tensor_id));
             new_storage_ids.append(py::int_(info.storage_id));
-            register_tensor_with_storage(info.tensor_id, info.storage_id);
         }
 
         PyObject* unpacked_output;
