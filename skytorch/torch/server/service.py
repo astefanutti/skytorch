@@ -1115,7 +1115,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             chunk_state[0] = (buffer, request, chunk_size)
 
         if chunk_state[0] is None:
-            self._deferred_error = "Missing first chunk for chunked request"
+            if self._deferred_error is None:
+                self._deferred_error = "Missing first chunk for chunked request"
             return
 
         buffer, first_request, chunk_size = chunk_state[0]
@@ -1131,7 +1132,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         response = self._process_assembled_update_tensor_sync(first_request, buffer)
         if not response.success:
-            self._deferred_error = response.error_message
+            if self._deferred_error is None:
+                self._deferred_error = response.error_message
 
     def _process_assembled_update_tensor_sync(
         self,
@@ -1517,22 +1519,26 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             if request_type == "execute_aten":
                 result = await self.ExecuteAtenOperation(request.execute_aten, context)
                 if not result.success:
-                    self._deferred_error = result.message
+                    if self._deferred_error is None:
+                        self._deferred_error = result.message
 
             elif request_type == "delete_tensors":
                 result = await self.DeleteTensors(request.delete_tensors, context)
                 if not result.success:
-                    self._deferred_error = result.message
+                    if self._deferred_error is None:
+                        self._deferred_error = result.message
 
             elif request_type == "copy_tensor":
                 result = await self.CopyTensor(request.copy_tensor, context)
                 if not result.success:
-                    self._deferred_error = result.message
+                    if self._deferred_error is None:
+                        self._deferred_error = result.message
 
             elif request_type == "update_tensor":
                 result = await self._handle_update_tensor(request.update_tensor)
                 if not result.success:
-                    self._deferred_error = result.message
+                    if self._deferred_error is None:
+                        self._deferred_error = result.message
 
             elif request_type == "register_tensors":
                 for reg in request.register_tensors.registrations:
@@ -1562,7 +1568,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         except Exception as e:
             logger.error(f"Error in fire-and-forget operation: {e}")
-            self._deferred_error = str(e)
+            if self._deferred_error is None:
+                self._deferred_error = str(e)
 
     def _handle_fire_and_forget_sync(self, request: service_pb2.StreamRequest) -> None:
         """Handle a fire-and-forget stream request synchronously."""
@@ -1578,7 +1585,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             elif request_type == "update_tensor":
                 result = self._update_tensor_sync(request.update_tensor)
                 if not result.success:
-                    self._deferred_error = result.message
+                    if self._deferred_error is None:
+                        self._deferred_error = result.message
                 return
             elif request_type == "register_tensors":
                 for reg in request.register_tensors.registrations:
@@ -1616,7 +1624,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 self._handle_execute_module_forward_ff(request.execute_module_forward)
         except Exception as e:
             logger.error(f"Error in fire-and-forget operation: {e}")
-            self._deferred_error = str(e)
+            if self._deferred_error is None:
+                self._deferred_error = str(e)
 
     def _handle_single_request_sync(
         self,
@@ -1711,7 +1720,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             chunk_state[0] = (buffer, request, chunk_size)
 
         if chunk_state[0] is None:
-            self._deferred_error = "Missing first chunk for chunked request"
+            if self._deferred_error is None:
+                self._deferred_error = "Missing first chunk for chunked request"
             return
 
         buffer, first_request, chunk_size = chunk_state[0]
@@ -1729,7 +1739,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         response = await self._process_assembled_update_tensor(first_request, buffer, context)
         if not response.success:
-            self._deferred_error = response.error_message
+            if self._deferred_error is None:
+                self._deferred_error = response.error_message
 
     async def _process_assembled_update_tensor(
         self,

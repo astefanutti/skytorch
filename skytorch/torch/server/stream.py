@@ -1,7 +1,10 @@
 """Worker thread for StreamOperations."""
 
+import logging
 import struct
 import time
+
+logger = logging.getLogger(__name__)
 
 try:
     from skytorch.torch.server._C import (
@@ -108,6 +111,8 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
         if tag == SHUTDOWN:
             break
         elif tag == RAW:
+            if servicer._deferred_error is not None:
+                continue
             try:
                 if server_profiler is not None:
                     _t0 = time.perf_counter_ns()
@@ -143,8 +148,12 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                     _cycle_backlog_time_ns += _t1 - _t0
                     _last_was_exec = True
             except Exception as e:
-                servicer._deferred_error = str(e)
+                logger.error(f"Error in raw operation: {e}")
+                if servicer._deferred_error is None:
+                    servicer._deferred_error = str(e)
         elif tag == RAW_BATCH:
+            if servicer._deferred_error is not None:
+                continue
             try:
                 if server_profiler is not None:
                     _t0 = time.perf_counter_ns()
@@ -175,8 +184,15 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                     _cycle_backlog_time_ns += _t1 - _t0
                     _last_was_exec = True
             except Exception as e:
-                servicer._deferred_error = str(e)
+                logger.error(f"Error in raw batch operation: {e}")
+                if servicer._deferred_error is None:
+                    servicer._deferred_error = str(e)
         elif tag == FF_REQUEST:
+            if servicer._deferred_error is not None:
+                # Still process delete_tensors to free GPU memory
+                request_type = item[1].WhichOneof("request")
+                if request_type != "delete_tensors":
+                    continue
             servicer._handle_fire_and_forget_sync(item[1])
             if server_profiler is not None:
                 _last_was_exec = False
