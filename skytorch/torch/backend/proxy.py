@@ -105,9 +105,6 @@ def _make_forward_proxy(
     Returns:
         A callable that replaces the module's forward().
     """
-    from skytorch.torch.client.request import tensor_metadata_to_proto
-    from skytorch.torch.client.tensor import get_tensor_metadata
-
     # Shape cache: input_cache_key -> list[_OutputSpec]
     shape_cache: dict[tuple, list[_OutputSpec]] = {}
 
@@ -142,16 +139,10 @@ def _make_forward_proxy(
             )
 
         input_tensor_ids = []
-        input_metadata = []
         for i, arg in enumerate(args):
             if isinstance(arg, torch.Tensor) and arg.device.type == "sky":
                 tid = get_tensor_id(arg)
                 input_tensor_ids.append(tid)
-                meta = get_tensor_metadata(arg)
-                remote_info = device_manager.get_remote_device_info(sky_device_index)
-                meta.device_type = remote_info.device_type
-                meta.device_index = remote_info.device_index
-                input_metadata.append(tensor_metadata_to_proto(meta))
             else:
                 if isinstance(arg, torch.Tensor):
                     detail = f"tensor on {arg.device}"
@@ -165,7 +156,7 @@ def _make_forward_proxy(
                     f"inputs (e.g., proxy the MLP module instead of the experts "
                     f"sub-module)."
                 )
-        return input_tensor_ids, input_metadata
+        return input_tensor_ids
 
     def _predict_output_specs(args):
         """Predict output tensor specs by running the original forward on meta tensors."""
@@ -248,7 +239,7 @@ def _make_forward_proxy(
         return output_tensors, output_tensor_ids
 
     def proxy_forward(*args, **kwargs):
-        input_tensor_ids, input_metadata = _collect_inputs(args, kwargs)
+        input_tensor_ids = _collect_inputs(args, kwargs)
         cache_key = _input_cache_key(args)
 
         cached_specs = shape_cache.get(cache_key)
@@ -269,10 +260,7 @@ def _make_forward_proxy(
             model_id=model_id,
             module_path=module_path,
             input_tensor_ids=input_tensor_ids,
-            input_metadata=input_metadata,
             output_tensor_ids=output_tensor_ids,
-            # output_metadata intentionally omitted — prevents server from creating
-            # uninitialized placeholder tensors that cause data corruption on failure
         )
         stream_manager.submit_execute_module_forward_ff(request)
 

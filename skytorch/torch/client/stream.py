@@ -802,14 +802,18 @@ class StreamManager:
 
         Used when output tensors are pre-allocated by the client (cached shapes).
         The request must have output_tensor_ids and output_metadata populated.
+
+        Serialized with a 0xFF marker byte prefix and routed through the raw
+        binary ATen batching pipeline, so module forward ops are batched with
+        surrounding ATen ops instead of forcing an immediate flush.
         """
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 f"Executing module forward (ff): model_id={request.model_id} "
                 f"module={request.module_path} outputs={list(request.output_tensor_ids)}"
             )
-        stream_request = service_pb2.StreamRequest(execute_module_forward=request)
-        self._submit_request(stream_request, "execute_module_forward")
+        raw_bytes = b"\xff" + request.SerializeToString()
+        self.submit_execute_aten_bytes(raw_bytes)
 
     def submit_release_model(self, request: service_pb2.ReleaseModelRequest) -> None:
         """Submit a fire-and-forget release_model request (callable from any thread)."""

@@ -943,6 +943,14 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         Used for fire-and-forget operations. Raises on error.
         """
+        # Defensive check: 0xFF marker means this is a module forward request
+        # that was routed through the raw binary path. Redirect to the proper handler.
+        if data[0] == 0xFF:
+            request = service_pb2.ExecuteModuleForwardRequest()
+            request.ParseFromString(data[1:])
+            self._handle_execute_module_forward_ff(request)
+            return
+
         op_name, args, kwargs, output_tensor_ids = self._parse_raw_execute_aten(data)
 
         # Get the ATen op (metadata already auto-created during parse)
@@ -1281,11 +1289,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         if error:
             return [], error
 
-        # Auto-create input tensors from metadata
-        for metadata in request.input_metadata:
-            self._ensure_tensor_exists(metadata)
-
-        inputs = [self.tensor_manager.get(tid) for tid in request.input_tensor_ids]
+        try:
+            inputs = [self.tensor_manager.get(tid) for tid in request.input_tensor_ids]
+        except ValueError as e:
+            return [], str(e)
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -1371,6 +1378,13 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             raise RuntimeError(error)
 
         # Register results under client-assigned output tensor IDs
+        if len(result_tensors) != len(request.output_tensor_ids):
+            logger.warning(
+                f"ExecuteModuleForward output count mismatch: "
+                f"expected {len(request.output_tensor_ids)}, got {len(result_tensors)} "
+                f"for {request.module_path}"
+            )
+
         for tid, tensor in zip(request.output_tensor_ids, result_tensors, strict=False):
             if tensor is not None:
                 self.tensor_manager.register(tid, tensor)

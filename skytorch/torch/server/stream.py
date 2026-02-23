@@ -23,6 +23,54 @@ FF_REQUEST = 3
 CHUNK = 4
 SHUTDOWN = 5
 
+# Marker byte for module forward requests embedded in raw binary ATen stream.
+# Safe because the first byte of an ATen binary request is num_args (uint8)
+# and no ATen op has 255 arguments.
+_MODULE_FORWARD_MARKER = 0xFF
+
+
+def _batch_has_module_forward(raw_data: bytes) -> bool:
+    """Scan a raw batched payload for any 0xFF module forward marker.
+
+    The batch format is [uint32_len][op_data]... — we check the first byte
+    of each op_data segment.
+    """
+    pos = 0
+    n = len(raw_data)
+    while pos < n:
+        op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
+        pos += 4
+        if raw_data[pos] == _MODULE_FORWARD_MARKER:
+            return True
+        pos += op_len
+    return False
+
+
+def _execute_mixed_batch(raw_data: bytes, servicer) -> None:
+    """Execute a raw batch that may contain both ATen ops and module forward ops.
+
+    Dispatches each op individually: ATen ops go to C++ single-op parser
+    (if available) or Python parser, module forward ops go to
+    _handle_execute_module_forward_ff.
+    """
+    from skytorch.torch.server import service_pb2
+
+    pos = 0
+    n = len(raw_data)
+    while pos < n:
+        op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
+        pos += 4
+        op_data = raw_data[pos : pos + op_len]
+        pos += op_len
+        if op_data[0] == _MODULE_FORWARD_MARKER:
+            fwd_request = service_pb2.ExecuteModuleForwardRequest()
+            fwd_request.ParseFromString(op_data[1:])
+            servicer._handle_execute_module_forward_ff(fwd_request)
+        elif _USE_CPP_PARSER:
+            _cpp_execute_raw_aten_inline(op_data, servicer.tensor_manager.store)
+        else:
+            servicer._execute_raw_aten_inline(op_data)
+
 
 def stream_worker(work_queue, servicer, loop, server_profiler):
     """Worker thread for StreamOperations — processes ops from the queue.
@@ -64,10 +112,17 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                     if _last_was_exec:
                         server_profiler.hot_idle.add(_idle_ns)
 
-                if _USE_CPP_PARSER:
-                    _cpp_execute_raw_aten_inline(item[1], servicer.tensor_manager.store)
+                data = item[1]
+                if data[0] == _MODULE_FORWARD_MARKER:
+                    from skytorch.torch.server import service_pb2
+
+                    fwd_request = service_pb2.ExecuteModuleForwardRequest()
+                    fwd_request.ParseFromString(data[1:])
+                    servicer._handle_execute_module_forward_ff(fwd_request)
+                elif _USE_CPP_PARSER:
+                    _cpp_execute_raw_aten_inline(data, servicer.tensor_manager.store)
                 else:
-                    servicer._execute_raw_aten_inline(item[1])
+                    servicer._execute_raw_aten_inline(data)
 
                 if server_profiler is not None:
                     _t1 = time.perf_counter_ns()
@@ -88,18 +143,11 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                     if _last_was_exec:
                         server_profiler.hot_idle.add(_idle_ns)
 
-                if _USE_CPP_PARSER:
-                    _cpp_execute_raw_batched_aten_inline(
-                        item[1], servicer.tensor_manager.store
-                    )
+                raw_data = item[1]
+                if _USE_CPP_PARSER and not _batch_has_module_forward(raw_data):
+                    _cpp_execute_raw_batched_aten_inline(raw_data, servicer.tensor_manager.store)
                 else:
-                    raw_data = item[1]
-                    pos = 0
-                    while pos < len(raw_data):
-                        op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
-                        pos += 4
-                        servicer._execute_raw_aten_inline(raw_data[pos : pos + op_len])
-                        pos += op_len
+                    _execute_mixed_batch(raw_data, servicer)
 
                 if server_profiler is not None:
                     _t1 = time.perf_counter_ns()
