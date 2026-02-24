@@ -7,9 +7,12 @@ remote ATen operation execution via gRPC, and Compute resolution.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 import torch
 
@@ -446,6 +449,8 @@ def _execute_aten_cpp_fast_path(
         _prof.event_loop_submit.add(_t2 - _t1)
 
     # Register new tensors locally and in C++ tracking set after successful submission
+    from skytorch.torch.backend._storage import _pending_deletes
+
     for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids):
         storage_manager.register_storage(
             storage_id=storage_id,
@@ -454,6 +459,8 @@ def _execute_aten_cpp_fast_path(
         )
         # Register tensor_id → storage mapping
         storage_manager._storage_to_tensors[storage_id].add(tensor_id)
+        # Cancel any pending deferred delete for this tensor_id (ABA protection)
+        _pending_deletes.discard(tensor_id)
         _register_tensor_id(tensor_id)
         _register_storage_tensor_mapping(storage_id, tensor_id)
 

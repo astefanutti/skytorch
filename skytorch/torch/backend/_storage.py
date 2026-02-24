@@ -8,10 +8,9 @@ allocator, avoiding actual memory allocation on the client side.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import weakref
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 from weakref import WeakValueDictionary
@@ -26,6 +25,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_pending_deletes: set[int] = set()
+
+# GC delete buffer: free_storage appends tensor_ids here (GIL-atomic deque.append),
+# and the stream manager drains them into _mt_ops inside _mt_lock before each raw op.
+# This guarantees delete entries precede the ATen ops that reuse the same tensor_id.
+_gc_deletes: deque = deque()
+_gc_drain_callback = None
+
+
+def _set_gc_drain_callback(callback):
+    global _gc_drain_callback
+    _gc_drain_callback = callback
+
 
 @dataclass
 class StorageInfo:
@@ -39,48 +51,6 @@ class StorageInfo:
     def compute(self) -> Optional[Compute]:
         """Get the associated Compute, or None if garbage collected."""
         return self._compute_ref()
-
-
-def _delete_tensors_after_gc(
-    compute: "Compute",
-    tensor_ids: list[int],
-) -> None:
-    """
-    Delete tensors after garbage collection.
-
-    Called on the event loop thread via call_soon_threadsafe, so no lock
-    is held when this executes. This avoids the reentrant deadlock that
-    occurs when GC triggers free_storage while _pending_lock is held.
-
-    Before sending the delete, filters out tensor IDs that have been
-    re-registered in the C++ fast-path set. This prevents an ABA race
-    where: (1) free_storage deregisters + schedules deferred delete,
-    (2) allocator reuses the same storage address and re-registers the
-    same tensor_id with new metadata, (3) the stale deferred delete
-    arrives and kills the newly registered tensor on the server.
-    """
-    from skytorch.torch.backend._client import delete_tensors
-
-    async def _do_delete():
-        try:
-            # Filter out tensor IDs that have been re-registered since the free.
-            # free_storage removes IDs from the C++ set; if an ID is back in the
-            # set, it means a new tensor reused the same storage address and was
-            # re-registered. Deleting it would kill the live tensor on the server.
-            ids_to_delete = tensor_ids
-            try:
-                from skytorch.torch.backend import _C
-
-                ids_to_delete = [tid for tid in tensor_ids if not _C._is_tensor_id_registered(tid)]
-            except (ImportError, AttributeError):
-                pass
-
-            if ids_to_delete:
-                await delete_tensors(compute, ids_to_delete)
-        except Exception as e:
-            logger.warning(f"Failed to delete tensor(s) {tensor_ids} after GC: {e}")
-
-    asyncio.ensure_future(_do_delete())
 
 
 class StorageManager:
@@ -151,8 +121,7 @@ class StorageManager:
         tensor_ids = list(self._storage_to_tensors.pop(storage_id, set()))
         info = self._storages.pop(storage_id, None)
 
-        # Deregister from C++ fast-path tracking to prevent stale hits
-        # when the allocator reuses the same storage address.
+        # Unregister all tensor_ids from C++ tracking
         if tensor_ids:
             try:
                 from skytorch.torch.backend import _C
@@ -166,26 +135,36 @@ class StorageManager:
         if info is None or not tensor_ids:
             return
 
-        # Get the Compute (may be None if garbage collected)
         compute = info.compute
         if compute is None:
             logger.warning(
-                f"Compute was garbage collected, skipping deletion of tensor(s) " f"{tensor_ids}"
+                f"Compute was garbage collected, skipping deletion of "
+                f"tensor(s) {tensor_ids}"
             )
             return
 
-        # Always defer via call_soon_threadsafe to avoid reentrant deadlock.
-        # GC can trigger free_storage while _pending_lock is held (e.g., during
-        # PendingRequest allocation in _submit_request_sync). Calling
-        # delete_tensors_sync directly here would try to re-acquire the same
-        # non-reentrant lock on the same thread, causing a deadlock.
-        # By deferring to call_soon_threadsafe, the deletion runs on the event
-        # loop thread at a point where no lock is held.
-        loop = get_event_loop()
-        try:
-            loop.call_soon_threadsafe(_delete_tensors_after_gc, compute, tensor_ids)
-        except RuntimeError as e:
-            logger.warning(f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}")
+        # Mark tensor_ids as pending deletion. If a re-registration occurs
+        # before the stream manager drains _gc_deletes, the re-registration
+        # will remove the ID from _pending_deletes, preventing a stale delete.
+        _pending_deletes.update(tensor_ids)
+
+        # Append to GC delete buffer (deque.append is GIL-atomic, safe from GC).
+        # The stream manager drains this buffer into _mt_ops inside _mt_lock
+        # before each raw ATen op, guaranteeing the delete precedes any op
+        # that reuses the same tensor_id.
+        _gc_deletes.append(tensor_ids)
+
+        # Wake the event loop so it drains _mt_ops (which will drain _gc_deletes).
+        if _gc_drain_callback is not None:
+            loop = get_event_loop()
+            try:
+                loop.call_soon_threadsafe(_gc_drain_callback)
+            except RuntimeError as e:
+                for tid in tensor_ids:
+                    _pending_deletes.discard(tid)
+                logger.warning(
+                    f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}"
+                )
 
     def drain_compute(self, compute: "Compute") -> list[int]:
         """Remove all storage entries for a Compute and return their tensor IDs."""
@@ -244,6 +223,8 @@ class StorageManager:
         storage_id = get_storage_id(tensor)
         self._tensor_to_storage[tensor_id] = tensor.untyped_storage()
         self._storage_to_tensors[storage_id].add(tensor_id)
+        # Cancel any pending deferred delete for this tensor_id (ABA protection)
+        _pending_deletes.discard(tensor_id)
         if not skip_cpp:
             # Sync to C++ registration set for fast path lookup
             try:

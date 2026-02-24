@@ -343,10 +343,23 @@ class StreamManager:
         except (ImportError, AttributeError):
             pass
 
+    def _drain_gc_deletes(self) -> None:
+        """Drain GC-triggered deletes into _mt_ops. Caller must hold _mt_lock."""
+        from skytorch.torch.backend._storage import _gc_deletes
+
+        while True:
+            try:
+                tensor_ids = _gc_deletes.popleft()
+            except IndexError:
+                break
+            if tensor_ids:
+                self._mt_ops.append(("ff", tensor_ids))
+
     def _drain_mt_ops(self) -> None:
         """Drain the main-thread ops buffer. Must run on the event loop thread."""
         with self._mt_lock:
             self._drain_cpp_into_mt_ops()
+            self._drain_gc_deletes()
             if not self._mt_ops:
                 self._mt_wake_pending = False
                 return
@@ -410,6 +423,7 @@ class StreamManager:
             # before _mt_ops is processed, causing _enqueue_with_flush to flush
             # those ops ahead of the "req" entries that should precede them.
             self._drain_cpp_into_mt_ops()
+            self._drain_gc_deletes()
             if not self._mt_ops:
                 self._mt_wake_pending = False
                 return
@@ -421,13 +435,23 @@ class StreamManager:
     def _flush_deferred(self) -> None:
         """Flush deferred delete tensor IDs as a single batched message.
 
+        Filters by _pending_deletes: IDs removed by register_tensor (ABA
+        protection for reused IDs) are skipped, preventing deletion of
+        newly-created tensors that reuse a GC'd tensor's ID.
+
         Must run on the event loop thread.
         """
         if self._deferred_delete_ids:
-            request = service_pb2.DeleteTensorsRequest(tensor_ids=self._deferred_delete_ids)
-            stream_request = service_pb2.StreamRequest(delete_tensors=request)
-            self._request_queue.put_nowait(stream_request)
+            from skytorch.torch.backend._storage import _pending_deletes
+
+            ids = [tid for tid in self._deferred_delete_ids if tid in _pending_deletes]
+            for tid in ids:
+                _pending_deletes.discard(tid)
             self._deferred_delete_ids = []
+            if ids:
+                request = service_pb2.DeleteTensorsRequest(tensor_ids=ids)
+                stream_request = service_pb2.StreamRequest(delete_tensors=request)
+                self._request_queue.put_nowait(stream_request)
 
     def _enqueue_with_flush(self, stream_request):
         """Flush any pending batch, then enqueue a request. Must run on the event loop thread."""
@@ -449,6 +473,7 @@ class StreamManager:
         """
         with self._mt_lock:
             self._drain_cpp_into_mt_ops()
+            self._drain_gc_deletes()
             self._mt_ops.append(("req", stream_request))
             if not self._mt_wake_pending:
                 self._mt_wake_pending = True
@@ -472,6 +497,7 @@ class StreamManager:
         serialized = request.SerializeToString()
         with self._mt_lock:
             self._drain_cpp_into_mt_ops()
+            self._drain_gc_deletes()
             self._mt_ops.append(("raw", serialized))
             if not self._mt_wake_pending:
                 self._mt_wake_pending = True
@@ -490,6 +516,7 @@ class StreamManager:
         """
         with self._mt_lock:
             self._drain_cpp_into_mt_ops()
+            self._drain_gc_deletes()
             self._mt_ops.append(("raw", raw_bytes))
             if not self._mt_wake_pending:
                 self._mt_wake_pending = True
@@ -525,12 +552,20 @@ class StreamManager:
         guarantees this, deletes piggyback on the next batch flush instead of
         triggering one. Delete tensor IDs are batched into a single gRPC message
         when flushed, matching the pre-FIFO delete batching behavior.
+
+        Explicit deletes (e.g., from Compute teardown) don't go through
+        free_storage, so their IDs aren't in _pending_deletes. We add them
+        here so _flush_deferred doesn't filter them out.
         """
         tensor_ids = list(request.tensor_ids)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Deleting tensors {tensor_ids}")
+        from skytorch.torch.backend._storage import _pending_deletes
+
+        _pending_deletes.update(tensor_ids)
         with self._mt_lock:
             self._drain_cpp_into_mt_ops()
+            self._drain_gc_deletes()
             self._mt_ops.append(("ff", tensor_ids))
             if not self._mt_wake_pending:
                 self._mt_wake_pending = True
@@ -600,6 +635,7 @@ class StreamManager:
         # BEFORE the update chunks that create it on the server.
         with self._mt_lock:
             self._drain_cpp_into_mt_ops()
+            self._drain_gc_deletes()
             for request in stream_requests:
                 self._mt_ops.append(("req", request))
             if not self._mt_wake_pending:
