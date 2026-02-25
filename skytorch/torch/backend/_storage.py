@@ -8,9 +8,10 @@ allocator, avoiding actual memory allocation on the client side.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import weakref
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 from weakref import WeakValueDictionary
@@ -25,18 +26,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_pending_deletes: set[int] = set()
+def _delete_tensors_after_gc(compute, tensor_ids):
+    from skytorch.torch.backend._client import delete_tensors
 
-# GC delete buffer: free_storage appends tensor_ids here (GIL-atomic deque.append),
-# and the stream manager drains them into _mt_ops inside _mt_lock before each raw op.
-# This guarantees delete entries precede the ATen ops that reuse the same tensor_id.
-_gc_deletes: deque = deque()
-_gc_drain_callback = None
+    async def _do_delete():
+        try:
+            await delete_tensors(compute, tensor_ids)
+        except Exception as e:
+            logger.warning(f"Failed to delete tensor(s) {tensor_ids} after GC: {e}")
 
-
-def _set_gc_drain_callback(callback):
-    global _gc_drain_callback
-    _gc_drain_callback = callback
+    asyncio.ensure_future(_do_delete())
 
 
 @dataclass
@@ -143,28 +142,13 @@ class StorageManager:
             )
             return
 
-        # Mark tensor_ids as pending deletion. If a re-registration occurs
-        # before the stream manager drains _gc_deletes, the re-registration
-        # will remove the ID from _pending_deletes, preventing a stale delete.
-        _pending_deletes.update(tensor_ids)
-
-        # Append to GC delete buffer (deque.append is GIL-atomic, safe from GC).
-        # The stream manager drains this buffer into _mt_ops inside _mt_lock
-        # before each raw ATen op, guaranteeing the delete precedes any op
-        # that reuses the same tensor_id.
-        _gc_deletes.append(tensor_ids)
-
-        # Wake the event loop so it drains _mt_ops (which will drain _gc_deletes).
-        if _gc_drain_callback is not None:
-            loop = get_event_loop()
-            try:
-                loop.call_soon_threadsafe(_gc_drain_callback)
-            except RuntimeError as e:
-                for tid in tensor_ids:
-                    _pending_deletes.discard(tid)
-                logger.warning(
-                    f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}"
-                )
+        loop = get_event_loop()
+        try:
+            loop.call_soon_threadsafe(_delete_tensors_after_gc, compute, tensor_ids)
+        except RuntimeError as e:
+            logger.warning(
+                f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}"
+            )
 
     def drain_compute(self, compute: "Compute") -> list[int]:
         """Remove all storage entries for a Compute and return their tensor IDs."""
@@ -223,8 +207,6 @@ class StorageManager:
         storage_id = get_storage_id(tensor)
         self._tensor_to_storage[tensor_id] = tensor.untyped_storage()
         self._storage_to_tensors[storage_id].add(tensor_id)
-        # Cancel any pending deferred delete for this tensor_id (ABA protection)
-        _pending_deletes.discard(tensor_id)
         if not skip_cpp:
             # Sync to C++ registration set for fast path lookup
             try:

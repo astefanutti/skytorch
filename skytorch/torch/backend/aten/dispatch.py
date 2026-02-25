@@ -563,11 +563,6 @@ def _get_stream_manager(dev_idx: int):
     # Set up C++ raw submit buffer for bypassing Python on the fast path
     sm._setup_cpp_submit()
 
-    # Register GC drain callback so free_storage can wake the event loop
-    from skytorch.torch.backend._storage import _set_gc_drain_callback
-
-    _set_gc_drain_callback(sm._drain_mt_ops)
-
     return sm
 
 
@@ -591,8 +586,6 @@ def _submit_and_register(
     stream_manager.submit_execute_aten_bytes(raw_bytes)
 
     # Register new tensors locally and in C++ tracking set after successful submission
-    from skytorch.torch.backend._storage import _pending_deletes
-
     for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids, strict=True):
         storage_manager.register_storage(
             storage_id=storage_id,
@@ -600,8 +593,6 @@ def _submit_and_register(
             device_index=dev_idx,
         )
         storage_manager._storage_to_tensors[storage_id].add(tensor_id)
-        # Cancel any pending deferred delete for this tensor_id (ABA protection)
-        _pending_deletes.discard(tensor_id)
         if _register_tensor_id is not None:
             _register_tensor_id(tensor_id)
         if _register_storage_tensor_mapping is not None:
