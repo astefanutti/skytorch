@@ -114,6 +114,12 @@ public:
     }
 };
 
+// Allocate a unique storage ID from the global counter.
+// Used by the module forward proxy to get collision-free IDs.
+storage_id_t allocate_storage_id() {
+    return g_next_storage_id.fetch_add(1);
+}
+
 // Advance the storage ID counter past the given ID to prevent collisions
 // with server-assigned IDs.
 void advance_storage_id_past(storage_id_t id) {

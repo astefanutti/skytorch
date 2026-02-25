@@ -221,6 +221,10 @@ PYBIND11_MODULE(_C, m) {
     m.def("_create_remote_tensor", &skytorch::create_remote_tensor,
         "Create a sky tensor with a server-assigned storage ID");
 
+    // Storage ID allocation from the global counter
+    m.def("_allocate_storage_id", &skytorch::allocate_storage_id,
+        "Allocate a unique storage ID from the global counter");
+
     // Cleanup function to avoid GIL issues at shutdown
     m.def("_clear_method_cache", &skytorch::clear_method_cache,
         "Clear the method cache (call before shutdown)");

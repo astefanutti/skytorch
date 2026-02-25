@@ -56,6 +56,14 @@ c10::intrusive_ptr<c10::StorageImpl> make_storage_impl(
 c10::Allocator* get_allocator();
 
 /**
+ * Allocate a unique storage ID from the global counter.
+ *
+ * Used by the module forward proxy to get collision-free storage IDs
+ * instead of using Python object id() which can collide with the counter.
+ */
+storage_id_t allocate_storage_id();
+
+/**
  * Advance the storage ID counter past the given ID.
  *
  * Used when server-assigned storage IDs are received to prevent

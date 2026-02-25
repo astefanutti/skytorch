@@ -1386,10 +1386,9 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
 
         # Register results under client-assigned output tensor IDs
         if len(result_tensors) != len(request.output_tensor_ids):
-            logger.warning(
-                f"ExecuteModuleForward output count mismatch: "
-                f"expected {len(request.output_tensor_ids)}, got {len(result_tensors)} "
-                f"for {request.module_path}"
+            raise RuntimeError(
+                f"Module forward output count mismatch for {request.module_path}: "
+                f"expected {len(request.output_tensor_ids)}, got {len(result_tensors)}"
             )
 
         for tid, tensor in zip(request.output_tensor_ids, result_tensors, strict=False):

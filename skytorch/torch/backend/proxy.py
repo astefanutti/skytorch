@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from skytorch.torch.backend._C import _create_remote_tensor
+from skytorch.torch.backend._C import _allocate_storage_id, _create_remote_tensor
 from skytorch.torch.backend._device import device_manager
 from skytorch.torch.backend._storage import storage_manager
 from skytorch.torch.client.tensor import get_storage_id, get_tensor_id
@@ -107,12 +107,6 @@ def _make_forward_proxy(
     """
     # Shape cache: input_cache_key -> list[_OutputSpec]
     shape_cache: dict[tuple, list[_OutputSpec]] = {}
-
-    # Persistent sentinel objects whose id() values serve as storage IDs.
-    # Kept alive for the proxy's lifetime to prevent CPython address reuse
-    # across calls, which would cause storage_id collisions in the storage
-    # manager (multiple tensors sharing one storage → premature deletion).
-    _storage_sentinels: list[object] = []
 
     # Save original forward for meta shape prediction before it gets replaced
     original_forward = module.forward
@@ -217,9 +211,7 @@ def _make_forward_proxy(
         output_tensor_ids = []
 
         for spec in specs:
-            sentinel = object()
-            _storage_sentinels.append(sentinel)
-            storage_id = id(sentinel)
+            storage_id = _allocate_storage_id()
             sky_tensor = _create_remote_tensor(
                 storage_id,
                 list(spec.shape),
