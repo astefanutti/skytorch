@@ -28,11 +28,7 @@ async def llm(node: Compute):
     model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
     def load_model(model):
-        return AutoModelForCausalLM.from_pretrained(
-            model,
-            dtype=torch.float32,
-            attn_implementation="eager",
-        ).to("cuda")
+        return AutoModelForCausalLM.from_pretrained(model, dtype=torch.float32, device_map="cuda")
 
     # Load the model weights server-side (stays on GPU, only metadata returned)
     # and the tokenizer locally in parallel
@@ -45,7 +41,6 @@ async def llm(node: Compute):
     with torch.device("meta"):
         model = AutoModelForCausalLM.from_config(
             AutoConfig.from_pretrained(model_name),
-            dtype=torch.float32,
             attn_implementation="eager",
         )
     state_dict.load_into(model)

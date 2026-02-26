@@ -18,7 +18,7 @@ logging.basicConfig(
 @compute(
     name="chat",
     image="ghcr.io/astefanutti/skytorch-server",
-    resources={"cpu": "1", "memory": "16Gi", "nvidia.com/gpu": "1"},
+    resources={"cpu": "2", "memory": "16Gi", "nvidia.com/gpu": "1"},
     volumes=[{"name": "cache", "storage": "20Gi", "path": "/cache"}],
     env={"HF_HOME": "/cache"},
     on_events=log_event,
@@ -30,9 +30,10 @@ async def chat(node: Compute):
     def load_model(model):
         return AutoModelForCausalLM.from_pretrained(
             model,
-            dtype=torch.float32,
-            attn_implementation="eager",
-        ).to("cuda")
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map="cuda",
+        )
 
     # Load the model weights server-side (stays on GPU, only metadata returned)
     # and the tokenizer locally in parallel
@@ -45,7 +46,6 @@ async def chat(node: Compute):
     with torch.device("meta"):
         model = AutoModelForCausalLM.from_config(
             AutoConfig.from_pretrained(model_name),
-            dtype=torch.float32,
             attn_implementation="eager",
         )
     state_dict.load_into(model)
@@ -76,10 +76,17 @@ async def chat(node: Compute):
             )
             inputs = {k: v.to(device) for k, v in inputs.items()}
 
-            print("Assistant: ", end="", flush=True)
-            generated = model.generate(
-                **inputs, max_new_tokens=512, do_sample=False, streamer=streamer
-            )
+            try:
+                generated = model.generate(
+                    **inputs, max_new_tokens=512, do_sample=False, streamer=streamer,
+                )
+            except (KeyboardInterrupt, RuntimeError) as exc:
+                # KeyboardInterrupt during C++ dispatch is converted to
+                # RuntimeError("KeyboardInterrupt") by TORCH_CHECK
+                if isinstance(exc, RuntimeError) and "KeyboardInterrupt" not in str(exc):
+                    raise
+                streamer.end()
+                continue
 
             response = tokenizer.decode(
                 generated[0, inputs["input_ids"].shape[1] :],
