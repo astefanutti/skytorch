@@ -1579,6 +1579,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             elif request_type == "delete_tensors":
                 for tid in request.delete_tensors.tensor_ids:
                     self.tensor_manager.delete(tid)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"Deleted {len(request.delete_tensors.tensor_ids)} tensors"
+                    )
             elif request_type == "copy_tensor":
                 self._copy_tensor_sync(request.copy_tensor)
             elif request_type == "update_tensor":

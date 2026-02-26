@@ -8,7 +8,6 @@ allocator, avoiding actual memory allocation on the client side.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import weakref
 from collections import defaultdict
@@ -27,15 +26,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 def _delete_tensors_after_gc(compute, tensor_ids):
-    from skytorch.torch.backend._client import delete_tensors
-
-    async def _do_delete():
-        try:
-            await delete_tensors(compute, tensor_ids)
-        except Exception as e:
-            logger.warning(f"Failed to delete tensor(s) {tensor_ids} after GC: {e}")
-
-    asyncio.ensure_future(_do_delete())
+    try:
+        client = compute._grpc_client
+        if client is not None and client.stream is not None:
+            client.stream.defer_delete_ids(tensor_ids)
+    except Exception as e:
+        logger.warning(f"Failed to defer deletion of tensor(s) {tensor_ids}: {e}")
 
 
 @dataclass
