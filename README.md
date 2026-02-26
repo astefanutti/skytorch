@@ -1,8 +1,11 @@
 # SkyTorch
 
-Run PyTorch locally with GPUs in the cloud.
+Run PyTorch with remote GPUs.
 
-SkyTorch registers a `sky` device backend in PyTorch that virtualizes remote GPUs and transparently streams tensor operations.
+SkyTorch provides:
+* A `sky` device backend in PyTorch that virtualizes remote GPUs and transparently streams tensor operations
+* A standalone gRPC server that runs on remote GPU hosts for PyTorch to connect to
+* A Kubernetes operator that provisions the SkyTorch server onto on-demand GPU pods / nodes
 
 ## Examples
 
@@ -62,7 +65,7 @@ async def train(node, epochs: int = 10):
 asyncio.run(train())
 ```
 
-### LLM Chat
+### GPT OSS 120B Inferencing
 
 ```python
 import asyncio
@@ -71,23 +74,23 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, TextSt
 from skytorch.client import compute
 
 @compute(
-    name="chat",
+    name="gpt",
     image="ghcr.io/astefanutti/skytorch-server",
-    resources={"cpu": "1", "memory": "16Gi", "nvidia.com/gpu": "1"},
-    volumes=[{"name": "cache", "storage": "20Gi", "path": "/cache"}],
-    env={"HF_HOME": "/cache"},
+    resources={"cpu": "4", "memory": "32Gi", "nvidia.com/gpu": "1"},
+    volumes=[{"name": "cache", "storage": "80Gi", "path": "/cache"}],
+    env={"HF_HOME": "/cache", "TRITON_HOME": "/cache"},
 )
 async def chat(node):
     device = node.device("cuda")
-    model_name = "Qwen/Qwen3-4B-Instruct-2507"
+    model_name = "openai/gpt-oss-120b"
 
     def load_model(model):
-        return AutoModelForCausalLM.from_pretrained(model).to("cuda")
+        return AutoModelForCausalLM.from_pretrained(model, device_map="cuda")
 
     # Load the model weights server-side (stays on GPU, only metadata returned)
     # and the tokenizer locally in parallel
     state_dict, tokenizer = await asyncio.gather(
-        node.execute(load_model, model_name),
+        node.execute(load_model, model_name, retain_model=True),
         asyncio.to_thread(AutoTokenizer.from_pretrained, model_name),
     )
 
@@ -95,8 +98,7 @@ async def chat(node):
     with torch.device("meta"):
         config = AutoConfig.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_config(config)
-    state_dict.load_into(model)
-    model.generation_config.pad_token_id = tokenizer.pad_token_id
+    state_dict.load_into(model, triton_modules=["model.layers.*.mlp"])
     model.eval()
 
     streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
@@ -133,6 +135,8 @@ try:
 except KeyboardInterrupt:
     pass
 ```
+
+> **Note:** GPT OSS 120B requires a GPU with at least 80GB of memory.
 
 ### GRPO Training
 
@@ -179,8 +183,40 @@ pip install --no-build-isolation skytorch
 
 `--no-build-isolation` is required because the C++ extension needs PyTorch headers at build time, so PyTorch must be installed first.
 
-SkyTorch requires a Kubernetes cluster with [Gateway API](https://gateway-api.sigs.k8s.io/) support and the SkyTorch operator deployed.
-You can install the operator using Kustomize, choosing the overlay that matches your cluster:
+### Remote Host
+
+Start the SkyTorch server on a machine with a GPU, then connect from your local machine.
+
+On the GPU machine:
+
+```bash
+python -m skytorch.torch.server --port 50051
+```
+
+On your local machine:
+
+```python
+import asyncio
+import torch
+from skytorch.torch.server import compute
+
+@compute("gpu-host:50051")
+async def main(node):
+    device = node.device("cuda")
+
+    x = torch.randn(4, 4, device=device)
+    y = x @ x.T
+    print(y.cpu())
+
+asyncio.run(main())
+```
+
+### Kubernetes
+
+SkyTorch can be deployed as a Kubernetes operator.
+This requires a cluster with [Gateway API](https://gateway-api.sigs.k8s.io/) support.
+
+Install the operator using Kustomize, choosing the overlay that matches your cluster:
 
 ```bash
 # Vanilla Kubernetes / KinD (includes Contour as the Gateway API controller)
@@ -188,6 +224,28 @@ kubectl apply --server-side -k config/e2e
 
 # OpenShift (uses the built-in gateway controller)
 kubectl apply --server-side -k config/openshift
+```
+
+Then on your local machine, you can run:
+
+```python
+import asyncio
+import torch
+from skytorch.client import compute
+
+@compute(
+    name="demo",
+    image="ghcr.io/astefanutti/skytorch-server",
+    resources={"cpu": "1", "memory": "8Gi", "nvidia.com/gpu": "1"},
+)
+async def main(node):
+    device = node.device("cuda")
+
+    x = torch.randn(4, 4, device=device)
+    y = x @ x.T
+    print(y.cpu())
+
+asyncio.run(main())
 ```
 
 ## Configuration
@@ -199,8 +257,10 @@ SkyTorch can be configured via environment variables.
 | Variable                       | Default | Description                                                               |
 |--------------------------------|---------|---------------------------------------------------------------------------|
 | `SKYTORCH_GRPC_COMPRESSION`    | `gzip`  | gRPC compression (`none`, `deflate`, `gzip`)                              |
-| `SKYTORCH_BATCH_THRESHOLD`     | `64`    | Ops buffered before forced flush                                          |
 | `SKYTORCH_BATCH_COALESCE_MS`   | `2`     | Delay (ms) to coalesce partial batches                                    |
+| `SKYTORCH_BATCH_THRESHOLD`     | `64`    | Ops buffered before forced flush                                          |
+| `SKYTORCH_DELETE_COALESCE_MS`  | `10`    | Delay (ms) to coalesce deferred tensor deletes                            |
+| `SKYTORCH_DELETE_THRESHOLD`    | `256`   | Deferred delete IDs buffered before forced flush                          |
 | `SKYTORCH_STREAMING`           | `1`     | Enable bidirectional gRPC streaming, must be set to `0` for IDE debugging |
 | `SKYTORCH_CPP_REQUEST_BUILDER` | `1`     | Use C++ fast path for request serialization                               |
 | `SKYTORCH_SPECULATIVE_SCALAR`  | `1`     | Predict `.item()` results to avoid sync                                   |
