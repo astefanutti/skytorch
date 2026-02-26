@@ -161,6 +161,8 @@ async def chat(node: Compute):
     # Override asyncio's SIGINT handler which defers the first Ctrl-C
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
+    past_key_values = None
+    past_length = 0
     with torch.no_grad():
         while True:
             user_input = input("\nYou: ")
@@ -170,21 +172,52 @@ async def chat(node: Compute):
                 continue
 
             history.append({"role": "user", "content": user_input})
-            inputs = tokenizer.apply_chat_template(
-                history,
-                add_generation_prompt=True,
-                return_tensors="pt",
-                return_dict=True,
-            )
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            if past_key_values is None:
+                inputs = tokenizer.apply_chat_template(
+                    history,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                    return_dict=True,
+                )
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+            else:
+                # Diff approach: tokenize history without vs with the new user
+                # message to extract only the new tokens, avoiding assumptions
+                # about template format.
+                prev_ids = tokenizer.apply_chat_template(
+                    history[:-1], add_generation_prompt=False, return_tensors="pt",
+                    return_dict=True,
+                )["input_ids"]
+                full_ids = tokenizer.apply_chat_template(
+                    history, add_generation_prompt=True, return_tensors="pt",
+                    return_dict=True,
+                )["input_ids"]
+                new_ids = full_ids[:, prev_ids.shape[1]:]
+                total_len = past_length + new_ids.shape[1]
+                # Pad input_ids so prepare_inputs_for_generation keeps the new tokens
+                # instead of stripping them (it strips past_length prefix, keeping K real tokens)
+                input_ids = torch.cat(
+                    [torch.zeros(1, past_length, dtype=torch.long), new_ids], dim=1,
+                ).to(device)
+                inputs = {
+                    "input_ids": input_ids,
+                    "attention_mask": torch.ones(
+                        1, total_len, dtype=torch.long, device=device,
+                    ),
+                    "past_key_values": past_key_values,
+                    "cache_position": torch.arange(
+                        past_length, total_len, dtype=torch.long, device=device,
+                    ),
+                }
 
             try:
-                model.generate(
+                output = model.generate(
                     **inputs,
                     max_new_tokens=512,
                     do_sample=False,
                     streamer=streamer,
                     eos_token_id=streamer.eos_token_id,
+                    return_dict_in_generate=True,
                 )
             except (KeyboardInterrupt, RuntimeError) as exc:
                 # KeyboardInterrupt during C++ dispatch is converted to
@@ -193,11 +226,16 @@ async def chat(node: Compute):
                     raise
                 print("\033[0m")  # Reset ANSI codes
                 streamer.reset()
+                past_key_values = None
+                past_length = 0
+                history.pop()
                 continue
 
             response = streamer.get_final_response()
             history.append({"role": "assistant", "content": response})
             streamer.reset()
+            past_key_values = output.past_key_values
+            past_length = output.sequences.shape[1]
 
 
 if __name__ == "__main__":
