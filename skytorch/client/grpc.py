@@ -26,7 +26,7 @@ def _get_grpc_compression():
     """Get gRPC compression setting from environment variable."""
     import grpc
 
-    name = os.environ.get("SKYTORCH_GRPC_COMPRESSION", "none").lower()
+    name = os.environ.get("SKYTORCH_GRPC_COMPRESSION", "grpc").lower()
     mapping = {
         "none": grpc.Compression.NoCompression,
         "deflate": grpc.Compression.Deflate,
