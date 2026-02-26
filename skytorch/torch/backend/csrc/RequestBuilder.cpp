@@ -163,6 +163,37 @@ static const char* scalar_type_to_string(c10::ScalarType dtype) {
     }
 }
 
+// --- Tensor metadata hash (matches TensorImpl::get_metadata_hash) ---
+
+// Compute FNV-1a hash of tensor metadata for non-SkyTorch TensorImpl tensors
+// (e.g., views created by as_strided). Produces the same hash as
+// TensorImpl::get_metadata_hash() so tensor IDs are unique across
+// different views of the same storage.
+static uint64_t compute_metadata_hash(const at::Tensor& tensor, int64_t storage_id) {
+    uint64_t hash = 14695981039346656037ULL;  // FNV offset basis
+    const uint64_t prime = 1099511628211ULL;   // FNV prime
+
+    for (auto s : tensor.sizes()) {
+        hash ^= static_cast<uint64_t>(s);
+        hash *= prime;
+    }
+    for (auto s : tensor.strides()) {
+        hash ^= static_cast<uint64_t>(s);
+        hash *= prime;
+    }
+    auto dtype_name = tensor.dtype().name();
+    for (char c : dtype_name) {
+        hash ^= static_cast<uint64_t>(c);
+        hash *= prime;
+    }
+    hash ^= static_cast<uint64_t>(tensor.storage_offset());
+    hash *= prime;
+    hash ^= static_cast<uint64_t>(storage_id);
+    hash *= prime;
+
+    return hash;
+}
+
 // --- Tensor metadata extraction ---
 
 struct TensorInfo {
@@ -192,8 +223,9 @@ static TensorInfo extract_tensor_info(
         info.tensor_id = impl->get_metadata_hash();
     } else {
         info.storage_id = reinterpret_cast<int64_t>(tensor.storage().data_ptr().get());
-        // Fallback: compute tensor_id from storage pointer (shouldn't happen for sky tensors)
-        info.tensor_id = static_cast<uint64_t>(info.storage_id);
+        // Fallback: compute FNV-1a hash matching TensorImpl::get_metadata_hash()
+        // so different views of the same storage get unique tensor IDs.
+        info.tensor_id = compute_metadata_hash(tensor, info.storage_id);
     }
 
     auto [is_registered, tensor_ref] = check_registration(info.tensor_id, info.storage_id);
@@ -488,7 +520,7 @@ py::tuple build_execute_aten_request(
                     storage_id = impl->get_storage_id();
                 } else {
                     storage_id = reinterpret_cast<int64_t>(tensor.storage().data_ptr().get());
-                    tensor_id = static_cast<uint64_t>(storage_id);
+                    tensor_id = compute_metadata_hash(tensor, storage_id);
                 }
                 output_ids.push_back(tensor_id);
                 num_outputs++;
@@ -1538,7 +1570,7 @@ py::object dispatch_cached_aten(
             out_storage_id = out_impl->get_storage_id();
         } else {
             out_storage_id = reinterpret_cast<int64_t>(output.storage().data_ptr().get());
-            out_tensor_id = static_cast<uint64_t>(out_storage_id);
+            out_tensor_id = compute_metadata_hash(output, out_storage_id);
         }
         output_ids.push_back(out_tensor_id);
 
