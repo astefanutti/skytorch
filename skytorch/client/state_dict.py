@@ -6,7 +6,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-class SkyStateDict(dict):
+class StateDict(dict):
     """State dict of sky tensors returned by Compute.execute().
 
     Attributes:
@@ -28,7 +28,7 @@ class SkyStateDict(dict):
             model: The model to load weights into.
             triton_modules: Optional list of module path patterns to proxy via
                 ExecuteModuleForward RPC. Supports wildcards (e.g.,
-                "model.layers.*.experts"). Requires that the SkyStateDict was
+                "model.layers.*.experts"). Requires that the StateDict was
                 created with retain_model=True.
         """
         state_dict_keys = set(model.state_dict().keys())
@@ -43,7 +43,7 @@ class SkyStateDict(dict):
             if self._compute is None:
                 raise RuntimeError(
                     "triton_modules requires a Compute reference. "
-                    "The SkyStateDict is missing its _compute attribute."
+                    "The StateDict is missing its _compute attribute."
                 )
 
             # Resolve which module paths will be proxied
@@ -87,7 +87,7 @@ class SkyStateDict(dict):
                     compute_dtype = v.dtype
                     break
 
-            from skytorch.torch.backend.proxy import proxy_triton_modules
+            from skytorch.torch.client.proxy import proxy_triton_modules
 
             proxy_triton_modules(
                 model, self._compute, self.model_id, triton_modules, compute_dtype

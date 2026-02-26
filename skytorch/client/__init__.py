@@ -5,13 +5,13 @@ from skytorch.client.cluster import Cluster
 from skytorch.client.event import log_event
 from skytorch.client.grpc import GRPCClient
 from skytorch.client.decorator import compute
-from skytorch.client.state_dict import SkyStateDict
+from skytorch.client.state_dict import StateDict
 
 __all__ = [
     "Compute",
     "Cluster",
     "GRPCClient",
-    "SkyStateDict",
+    "StateDict",
     "compute",
     "init",
     "default_namespace",

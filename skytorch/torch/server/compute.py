@@ -13,7 +13,7 @@ import torch
 
 from skytorch.client.grpc import GRPCClient
 from skytorch.client.remote import get_callable_source
-from skytorch.client.state_dict import SkyStateDict
+from skytorch.client.state_dict import StateDict
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ class Compute:
             **kwargs: Keyword arguments for the callable
 
         Returns:
-            SkyStateDict: Dictionary of sky tensors referencing remote GPU storage.
+            StateDict: Dictionary of sky tensors referencing remote GPU storage.
                 When retain_model=True, the dict has a model_id attribute.
 
         Raises:
@@ -280,7 +280,7 @@ class Compute:
             f"({len(seen_storage)} unique storages)"
         )
 
-        result = SkyStateDict(sky_state_dict)
+        result = StateDict(sky_state_dict)
         if retain_model and response.model_id:
             result.model_id = response.model_id
             result._compute = self

@@ -28,7 +28,7 @@ from skytorch.client.aio import Stream
 from skytorch.client.context import compute_ctx
 from skytorch.client.init import init, default_namespace
 from skytorch.client.remote import get_callable_source
-from skytorch.client.state_dict import SkyStateDict
+from skytorch.client.state_dict import StateDict
 from skytorch.client.models.compute_v1alpha1_compute import ComputeV1alpha1Compute
 from skytorch.client.models.compute_v1alpha1_compute_spec import ComputeV1alpha1ComputeSpec
 from skytorch.client.models.io_k8s_apimachinery_pkg_apis_meta_v1_object_meta import (
@@ -706,7 +706,7 @@ class Compute:
             **kwargs: Keyword arguments for the callable
 
         Returns:
-            SkyStateDict: Dictionary of sky tensors referencing remote GPU storage.
+            StateDict: Dictionary of sky tensors referencing remote GPU storage.
                 When retain_model=True, the dict has a model_id attribute.
 
         Raises:
@@ -813,7 +813,7 @@ class Compute:
             f"({len(seen_storage)} unique storages)"
         )
 
-        result = SkyStateDict(sky_state_dict)
+        result = StateDict(sky_state_dict)
         if retain_model and response.model_id:
             result.model_id = response.model_id
             result._compute = self
