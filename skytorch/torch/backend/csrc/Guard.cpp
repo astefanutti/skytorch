@@ -84,6 +84,13 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
             auto stream_id =
                 get_method("get_stream")(d.index()).cast<c10::StreamId>();
             return c10::Stream(c10::Stream::UNSAFE, d, stream_id);
+        } catch (py::error_already_set& e) {
+            if (e.matches(PyExc_KeyboardInterrupt)) {
+                e.restore();
+                PyErr_Clear();
+                PyErr_SetInterrupt();
+            }
+            return c10::Stream(c10::Stream::DEFAULT, d);
         } catch (...) {
             return c10::Stream(c10::Stream::DEFAULT, d);
         }
@@ -111,6 +118,13 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
                 get_method("exchange_stream")(s.id(), s.device().index())
                     .cast<c10::StreamId>();
             return c10::Stream(c10::Stream::UNSAFE, s.device(), previous_stream_id);
+        } catch (py::error_already_set& e) {
+            if (e.matches(PyExc_KeyboardInterrupt)) {
+                e.restore();
+                PyErr_Clear();
+                PyErr_SetInterrupt();
+            }
+            return s;
         } catch (...) {
             return s;
         }

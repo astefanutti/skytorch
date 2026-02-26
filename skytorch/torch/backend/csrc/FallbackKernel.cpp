@@ -248,7 +248,21 @@ void autograd_fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* 
     } catch (py::error_already_set& e) {
         // During redispatch, device guard callbacks (e.g. exchange_device) call into
         // Python where a pending KeyboardInterrupt can raise py::error_already_set.
-        // Convert to c10::Error so it propagates safely through PyTorch's C++ dispatcher.
+        if (e.matches(PyExc_KeyboardInterrupt) ||
+            e.matches(PyExc_SystemExit) ||
+            e.matches(PyExc_GeneratorExit)) {
+            // Cannot re-throw py::error_already_set here — it would propagate
+            // through PyTorch's C++ dispatcher which only catches c10::Error,
+            // hitting noexcept boundaries and calling std::terminate().
+            // Instead, reschedule the signal and convert to c10::Error.
+            py::gil_scoped_acquire gil;
+            e.restore();
+            PyErr_Clear();
+            PyErr_SetInterrupt();
+            TORCH_CHECK(false, "KeyboardInterrupt");
+        }
+        // Convert regular exceptions to c10::Error so they propagate safely
+        // through PyTorch's C++ dispatcher.
         py::gil_scoped_acquire gil;
         e.restore();
         TORCH_CHECK(false, e.what());
@@ -337,7 +351,20 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
     call_python_fallback(op, stack);
 
     } catch (py::error_already_set& e) {
-        // Convert pybind11 exceptions to c10::Error so they propagate safely
+        if (e.matches(PyExc_KeyboardInterrupt) ||
+            e.matches(PyExc_SystemExit) ||
+            e.matches(PyExc_GeneratorExit)) {
+            // Cannot re-throw py::error_already_set here — it would propagate
+            // through PyTorch's C++ dispatcher which only catches c10::Error,
+            // hitting noexcept boundaries and calling std::terminate().
+            // Instead, reschedule the signal and convert to c10::Error.
+            // GIL is already held (acquired at top of fallback_kernel).
+            e.restore();
+            PyErr_Clear();
+            PyErr_SetInterrupt();
+            TORCH_CHECK(false, "KeyboardInterrupt");
+        }
+        // Convert regular exceptions to c10::Error so they propagate safely
         // through PyTorch's C++ dispatcher (which doesn't catch pybind11 exceptions).
         // Restore the Python error state so it re-surfaces at the Python/C++ boundary.
         e.restore();

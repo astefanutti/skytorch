@@ -115,7 +115,18 @@ static thread_local c10::DeviceIndex g_current_device = 0;
 // Device management functions
 c10::DeviceIndex device_count() {
     py::gil_scoped_acquire acquire;
-    return get_method("device_count")().cast<c10::DeviceIndex>();
+    try {
+        return get_method("device_count")().cast<c10::DeviceIndex>();
+    } catch (py::error_already_set& e) {
+        if (e.matches(PyExc_KeyboardInterrupt)) {
+            e.restore();
+            PyErr_Clear();
+            PyErr_SetInterrupt();
+            // Safe fallback: at least the current device exists
+            return g_current_device + 1;
+        }
+        throw;
+    }
 }
 
 c10::DeviceIndex current_device() {
@@ -129,12 +140,32 @@ void set_device(c10::DeviceIndex device) {
     g_current_device = device;
     // Then sync to Python for consistency
     py::gil_scoped_acquire acquire;
-    get_method("set_device")(device);
+    try {
+        get_method("set_device")(device);
+    } catch (py::error_already_set& e) {
+        if (e.matches(PyExc_KeyboardInterrupt)) {
+            e.restore();
+            PyErr_Clear();
+            PyErr_SetInterrupt();
+            return;
+        }
+        throw;
+    }
 }
 
 void set_device_count(c10::DeviceIndex count) {
     py::gil_scoped_acquire acquire;
-    get_method("set_device_count")(count);
+    try {
+        get_method("set_device_count")(count);
+    } catch (py::error_already_set& e) {
+        if (e.matches(PyExc_KeyboardInterrupt)) {
+            e.restore();
+            PyErr_Clear();
+            PyErr_SetInterrupt();
+            return;
+        }
+        throw;
+    }
 }
 
 c10::DeviceIndex exchange_device(c10::DeviceIndex device) {
@@ -143,7 +174,17 @@ c10::DeviceIndex exchange_device(c10::DeviceIndex device) {
     g_current_device = device;
     // Sync to Python
     py::gil_scoped_acquire acquire;
-    get_method("exchange_device")(device);
+    try {
+        get_method("exchange_device")(device);
+    } catch (py::error_already_set& e) {
+        if (e.matches(PyExc_KeyboardInterrupt)) {
+            e.restore();
+            PyErr_Clear();
+            PyErr_SetInterrupt();
+            return old;
+        }
+        throw;
+    }
     return old;
 }
 
