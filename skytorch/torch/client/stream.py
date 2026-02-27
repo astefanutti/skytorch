@@ -108,6 +108,7 @@ class StreamManager:
         # under a single lock, preserving FIFO ordering while reducing
         # call_soon_threadsafe calls by ~98%. Each entry is either:
         #   ("raw", bytes)    — raw binary execute_aten
+        #   ("aten", ExecuteAtenRequest) — protobuf execute_aten
         #   ("req", StreamRequest) — non-batched request (copy, update, register)
         #   ("ff", list[int])      — deferred delete tensor IDs
         self._mt_ops: list[tuple] = []
@@ -181,6 +182,17 @@ class StreamManager:
     # preventing unbounded GPU memory retention during large GC events.
     # Override with SKYTORCH_DELETE_THRESHOLD env var.
     _DELETE_FLUSH_THRESHOLD = int(os.environ.get("SKYTORCH_DELETE_THRESHOLD", "256"))
+
+    def _enqueue_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
+        """Buffer a protobuf execute_aten request for batching. Must run on the event loop thread."""
+        self._batch_buffer.append(request)
+        if len(self._batch_buffer) >= self._BATCH_FLUSH_THRESHOLD:
+            self._flush_batch()
+        elif not self._flush_scheduled:
+            self._flush_scheduled = True
+            self._batch_flush_timer = self._loop.call_later(
+                self._BATCH_COALESCE_DELAY, self._flush_batch
+            )
 
     def _enqueue_execute_aten_bytes(self, raw_bytes: bytes) -> None:
         """Buffer a raw binary execute_aten request for batching. Must run on the event loop thread."""
@@ -399,6 +411,8 @@ class StreamManager:
         for op_type, data in ops:
             if op_type == "raw":
                 self._enqueue_execute_aten_bytes(data)
+            elif op_type == "aten":
+                self._enqueue_execute_aten(data)
             elif op_type == "req":
                 self._enqueue_with_flush(data)
             elif op_type == "ff":
@@ -518,10 +532,9 @@ class StreamManager:
                 f"Executing {request.op_name} | "
                 f"inputs={input_tensor_ids} | outputs={output_tensor_ids}"
             )
-        serialized = request.SerializeToString()
         with self._mt_lock:
             self._drain_cpp_into_mt_ops()
-            self._mt_ops.append(("raw", serialized))
+            self._mt_ops.append(("aten", request))
             if not self._mt_wake_pending:
                 self._mt_wake_pending = True
                 self._loop.call_soon_threadsafe(self._drain_mt_ops)
