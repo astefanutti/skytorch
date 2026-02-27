@@ -23,7 +23,7 @@ The dispatch system uses three layers:
 
 import torch
 
-from .copy import _copy_from
+from .copy import _copy_from, _sky_to_copy
 from .dropout import _native_dropout
 from .dynamic import _masked_select, _masked_select_out
 from .scalar import _equal, _local_scalar_dense
@@ -33,6 +33,7 @@ _sky_lib_aten = torch.library.Library("aten", "IMPL")
 
 # Copy operations - handle device transfers
 _sky_lib_aten.impl("_copy_from", _copy_from, dispatch_key="PrivateUse1")
+_sky_lib_aten.impl("_to_copy", _sky_to_copy, dispatch_key="PrivateUse1")
 
 # Scalar operations - need to fetch values from device
 _sky_lib_aten.impl("_local_scalar_dense", _local_scalar_dense, dispatch_key="PrivateUse1")

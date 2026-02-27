@@ -216,6 +216,11 @@ class DeviceManager:
 
         _reset_speculation()
 
+        # Reset async copy state
+        from skytorch.torch.backend.aten.copy import _reset_async_copy
+
+        _reset_async_copy()
+
         # Clear cached stream managers, submit callback, and submit methods
         from skytorch.torch.backend.aten import dispatch as _dispatch_mod
 

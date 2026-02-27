@@ -254,17 +254,18 @@ SkyTorch can be configured via environment variables.
 
 ### Client
 
-| Variable                       | Default | Description                                                               |
-|--------------------------------|---------|---------------------------------------------------------------------------|
-| `SKYTORCH_GRPC_COMPRESSION`    | `gzip`  | gRPC compression (`none`, `deflate`, `gzip`)                              |
-| `SKYTORCH_BATCH_COALESCE_MS`   | `2`     | Delay (ms) to coalesce partial batches                                    |
-| `SKYTORCH_BATCH_THRESHOLD`     | `64`    | Ops buffered before forced flush                                          |
-| `SKYTORCH_DELETE_COALESCE_MS`  | `10`    | Delay (ms) to coalesce deferred tensor deletes                            |
-| `SKYTORCH_DELETE_THRESHOLD`    | `256`   | Deferred delete IDs buffered before forced flush                          |
-| `SKYTORCH_STREAMING`           | `1`     | Enable bidirectional gRPC streaming, must be set to `0` for IDE debugging |
-| `SKYTORCH_CPP_REQUEST_BUILDER` | `1`     | Use C++ fast path for request serialization                               |
-| `SKYTORCH_SPECULATIVE_SCALAR`  | `1`     | Predict `.item()` results to avoid sync                                   |
-| `SKYTORCH_PROFILE`             | `0`     | Enable lightweight profiling (~200ns/op overhead)                         |
+| Variable                       | Default | Description                                                                    |
+|--------------------------------|---------|--------------------------------------------------------------------------------|
+| `SKYTORCH_GRPC_COMPRESSION`    | `gzip`  | gRPC compression (`none`, `deflate`, `gzip`)                                   |
+| `SKYTORCH_BATCH_COALESCE_MS`   | `2`     | Delay (ms) to coalesce partial batches                                         |
+| `SKYTORCH_BATCH_THRESHOLD`     | `64`    | Ops buffered before forced flush                                               |
+| `SKYTORCH_DELETE_COALESCE_MS`  | `10`    | Delay (ms) to coalesce deferred tensor deletes                                 |
+| `SKYTORCH_DELETE_THRESHOLD`    | `256`   | Deferred delete IDs buffered before forced flush                               |
+| `SKYTORCH_STREAMING`           | `1`     | Enable bidirectional gRPC streaming, must be set to `0` for IDE debugging      |
+| `SKYTORCH_CPP_REQUEST_BUILDER` | `1`     | Use C++ fast path for request serialization                                    |
+| `SKYTORCH_SPECULATIVE_SCALAR`  | `1`     | Predict `.item()` results to avoid sync                                        |
+| `SKYTORCH_ASYNC_COPY`          | `0`     | Non-blocking copy to CPU for single-element tensors (e.g. for LLM inferencing) |
+| `SKYTORCH_PROFILE`             | `0`     | Enable lightweight profiling (~200ns/op overhead)                              |
 
 ### Server
 

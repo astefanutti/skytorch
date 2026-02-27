@@ -280,6 +280,33 @@ async def _copy_sky_to_sky_unary(
     )
 
 
+def copy_sky_to_cpu_async(tensor: torch.Tensor):
+    """Non-blocking copy of a single-element sky tensor to CPU.
+
+    Returns a concurrent.futures.Future resolving to the scalar value.
+    Reuses the streaming GetScalar RPC.
+
+    Args:
+        tensor: Source sky tensor (must have numel() == 1)
+
+    Returns:
+        concurrent.futures.Future resolving to a Python scalar
+    """
+    return run_async(_copy_sky_to_cpu_async_impl(tensor))
+
+
+async def _copy_sky_to_cpu_async_impl(tensor: torch.Tensor):
+    """Async implementation of copy_sky_to_cpu_async."""
+    compute = _require_compute(tensor)
+    tensor_id = get_tensor_id(tensor)
+    meta = _get_tensor_metadata_if_new(tensor)
+    metadata_proto = tensor_metadata_to_proto(meta) if meta else None
+    result = await get_scalar(compute, tensor_id, metadata_proto)
+    if meta is not None:
+        _register_tensor_locally(tensor)
+    return result
+
+
 async def get_scalar(compute: Compute, tensor_id: int, metadata=None):
     """
     Get a scalar value from a remote tensor via streaming GetScalar RPC.
