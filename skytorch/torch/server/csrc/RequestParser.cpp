@@ -8,7 +8,10 @@
  *
  * Key optimizations:
  * - memcpy-based reads (zero struct.unpack overhead)
- * - unordered_map caches for op lookups and torch attr resolution
+ * - OpInfo cache: per-op cached schema, defaults, coercion, return pattern
+ * - FNV-1a hash lookup: eliminates per-op std::string allocation
+ * - Pre-allocated reusable buffers: per-batch vector reuse
+ * - Specialized output extraction: fast-path single-tensor returns
  * - TensorStore (C++ unordered_map) replaces Python dict for GIL-free access
  * - Static C++ maps for dtype/memory_format/layout resolution
  * - Batch-level GIL release (~1.5ms continuous) instead of per-op release
@@ -23,6 +26,7 @@
 #include <torch/csrc/Dtype.h>
 #include <torch/csrc/MemoryFormat.h>
 #include <torch/csrc/Layout.h>
+#include <chrono>
 #include <cstring>
 #include <cstdio>
 #include <optional>
@@ -129,6 +133,50 @@ static inline double read_float64(const char* buf, size_t& pos) {
     return val;
 }
 
+// --- FNV-1a hash for op name lookup (Step 3) ---
+
+static inline uint64_t hash_bytes(const char* data, size_t len) {
+    uint64_t hash = 0xcbf29ce484222325ULL;  // FNV offset basis
+    for (size_t i = 0; i < len; i++) {
+        hash ^= static_cast<uint64_t>(static_cast<uint8_t>(data[i]));
+        hash *= 0x100000001b3ULL;  // FNV prime
+    }
+    return hash;
+}
+
+// --- Server profiling (Step 1) ---
+
+static bool g_server_profiling_enabled = false;
+static uint64_t g_prof_server_parse_ns = 0;
+static uint64_t g_prof_server_callboxed_ns = 0;
+static uint64_t g_prof_server_output_ns = 0;
+static uint64_t g_prof_server_op_count = 0;
+
+static inline uint64_t now_ns() {
+    return static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+void set_server_profiling_enabled(bool enabled) {
+    g_server_profiling_enabled = enabled;
+}
+
+py::dict get_server_profile_counters() {
+    py::dict d;
+    d["parse_ns"] = g_prof_server_parse_ns;
+    d["callboxed_ns"] = g_prof_server_callboxed_ns;
+    d["output_ns"] = g_prof_server_output_ns;
+    d["op_count"] = g_prof_server_op_count;
+    return d;
+}
+
+void reset_server_profile_counters() {
+    g_prof_server_parse_ns = 0;
+    g_prof_server_callboxed_ns = 0;
+    g_prof_server_output_ns = 0;
+    g_prof_server_op_count = 0;
+}
+
 // --- Static C++ maps for GIL-free dtype/format/layout resolution ---
 
 static const std::unordered_map<std::string, at::ScalarType> g_dtype_map = {
@@ -169,19 +217,11 @@ static std::optional<at::ScalarType> resolve_dtype_scalar(const char* s, size_t 
     return std::nullopt;
 }
 
-// --- Static caches (PyObject* pattern from Module.cpp:31-48 for safe shutdown) ---
+// --- OpInfo cache (Steps 2-3) ---
 
-// Maps op names ("aten.add.Tensor") to callable PyObject*
-static std::unordered_map<std::string, PyObject*> g_op_cache;
-
-// Maps op names to c10::OperatorHandle for GIL-free callBoxed dispatch
-static std::unordered_map<std::string, c10::OperatorHandle> g_op_handle_cache;
-
-// Per-op callBoxed blocklist: ops that have failed callBoxed and must always use Python.
-// Once an op fails (exception in callBoxed), it's added here permanently.
-// Coercion failures are NOT cached since they depend on per-call argument types.
-static std::unordered_map<std::string, bool> g_callboxed_blocked;
-
+// Unified cache keyed by FNV-1a hash of op name bytes.
+// Subsumes g_op_handle_cache, g_op_cache, g_callboxed_blocked.
+static std::unordered_map<uint64_t, OpInfo> g_op_info_cache;
 
 // Maps torch attribute strings ("torch.float32") to resolved Python objects
 static std::unordered_map<std::string, PyObject*> g_torch_attr_cache;
@@ -192,19 +232,13 @@ static PyObject* g_parse_dtype = nullptr;
 // --- Cache helpers ---
 
 /**
- * Get ATen op by name with caching.
- * Replaces _get_aten_op (service.py:598-612).
- *
+ * Get ATen op by name with caching (for Python fallback path).
  * Splits op_name by '.', walks torch.ops, caches result.
  * GIL must be held.
  */
 static PyObject* get_aten_op(const std::string& op_name) {
-    auto it = g_op_cache.find(op_name);
-    if (it != g_op_cache.end()) {
-        return it->second;
-    }
-
-    // Split by '.', walk torch.ops
+    // Check OpInfo cache first (op may already have py_op cached)
+    // This path is used when we already have the string but not the hash.
     py::object obj = py::module::import("torch").attr("ops");
     size_t start = 0;
     while (start < op_name.size()) {
@@ -217,7 +251,6 @@ static PyObject* get_aten_op(const std::string& op_name) {
 
     PyObject* raw = obj.ptr();
     Py_INCREF(raw);
-    g_op_cache[op_name] = raw;
     return raw;
 }
 
@@ -226,12 +259,8 @@ static PyObject* get_aten_op(const std::string& op_name) {
  *
  * Converts "aten.add.Tensor" → OperatorName("aten::add", "Tensor"),
  * then looks up via Dispatcher::findSchemaOrThrow.
- * Cached for fast repeated lookups.
  */
-static const c10::OperatorHandle& resolve_op_handle(const std::string& op_name) {
-    auto it = g_op_handle_cache.find(op_name);
-    if (it != g_op_handle_cache.end()) return it->second;
-
+static c10::OperatorHandle resolve_op_handle(const std::string& op_name) {
     // "aten.add.Tensor" → ns_name="aten::add", overload="Tensor"
     // "aten.sum.default" → ns_name="aten::sum", overload="" (default = no overload)
     auto dot1 = op_name.find('.');
@@ -242,10 +271,89 @@ static const c10::OperatorHandle& resolve_op_handle(const std::string& op_name) 
     // "default" in Python naming convention means no overload in C++
     if (overload_str == "default") overload_str.clear();
 
-    auto handle = c10::Dispatcher::singleton().findSchemaOrThrow(
+    return c10::Dispatcher::singleton().findSchemaOrThrow(
         ns_name.c_str(), overload_str.c_str());
-    auto [ins_it, _] = g_op_handle_cache.emplace(op_name, handle);
-    return ins_it->second;
+}
+
+/**
+ * Build an OpInfo entry for a given op name. Called on cache miss.
+ * GIL must be held (for get_aten_op).
+ */
+static OpInfo build_op_info(const std::string& op_name) {
+    OpInfo info;
+    info.handle = resolve_op_handle(op_name);
+    info.py_op = get_aten_op(op_name);
+
+    const auto& schema = info.handle->schema();
+    const auto& schema_args = schema.arguments();
+    info.num_schema_args = schema_args.size();
+
+    // Pre-resolve default values
+    info.default_values.resize(info.num_schema_args);
+    for (size_t i = 0; i < info.num_schema_args; i++) {
+        const auto& default_val = schema_args[i].default_value();
+        if (default_val.has_value()) {
+            info.default_values[i] = *default_val;
+        }
+        // else: IValue() (None) which is the default constructor
+    }
+
+    // Determine return pattern from schema
+    const auto& returns = schema.returns();
+    if (returns.size() == 1) {
+        auto kind = returns[0].type()->kind();
+        if (kind == c10::TypeKind::TensorType) {
+            info.return_pattern = RETURN_SINGLE_TENSOR;
+            info.expected_return_count = 1;
+        } else if (kind == c10::TypeKind::TupleType) {
+            info.return_pattern = RETURN_TUPLE;
+            auto tuple_type = returns[0].type()->cast<c10::TupleType>();
+            info.expected_return_count = static_cast<uint8_t>(
+                tuple_type ? tuple_type->elements().size() : 0);
+        } else {
+            info.return_pattern = RETURN_GENERIC;
+        }
+    } else if (returns.size() > 1) {
+        // Multiple returns are treated like a tuple
+        info.return_pattern = RETURN_TUPLE;
+        info.expected_return_count = static_cast<uint8_t>(returns.size());
+    } else {
+        info.return_pattern = RETURN_GENERIC;
+    }
+
+    // skip_coercion starts false, set to true after first successful no-coercion call
+    info.skip_coercion = false;
+    info.callboxed_blocked = false;
+
+    return info;
+}
+
+/**
+ * Get or create OpInfo for a given op name hash. On cache miss, constructs
+ * the string and builds OpInfo.
+ *
+ * When called from the batch path (gil_released=true), GIL is acquired
+ * for the cache miss path only.
+ */
+static OpInfo& get_or_create_op_info(
+    uint64_t op_hash, const char* op_name_buf, size_t op_name_len, bool gil_released)
+{
+    auto it = g_op_info_cache.find(op_hash);
+    if (it != g_op_info_cache.end()) {
+        return it->second;
+    }
+
+    // Cache miss: construct string, build OpInfo (needs GIL for get_aten_op)
+    std::string op_name(op_name_buf, op_name_len);
+
+    if (gil_released) {
+        py::gil_scoped_acquire acquire;
+        auto [ins_it, _] = g_op_info_cache.emplace(op_hash, build_op_info(op_name));
+        return ins_it->second;
+    } else {
+        auto [ins_it, _] = g_op_info_cache.emplace(op_hash, build_op_info(op_name));
+        return ins_it->second;
+    }
 }
 
 /**
@@ -774,19 +882,33 @@ static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
  *
  * When gil_released=false (single-op path), behaves like the original:
  * GIL is held throughout, released only during callBoxed.
+ *
+ * Optimizations (Steps 1-5):
+ * - OpInfo cache: skip schema/arguments/default/coercion lookups (Step 2)
+ * - FNV-1a hash: no per-op string allocation for op name (Step 3)
+ * - Pre-allocated buffers: output_ids and stack reused across ops (Step 4)
+ * - Specialized output extraction: fast-path single-tensor returns (Step 5)
+ * - Per-phase profiling: gated timing counters (Step 1)
  */
 static void execute_one_op(
-    const char* buf, size_t& pos, TensorStore& store, bool gil_released)
+    const char* buf, size_t& pos, TensorStore& store, bool gil_released,
+    std::vector<uint64_t>& output_ids, std::vector<c10::IValue>& stack)
 {
+    uint64_t _t_parse_start = 0;
+    if (g_server_profiling_enabled) {
+        _t_parse_start = now_ns();
+    }
+
     // Header (4 bytes)
     uint8_t num_args = read_uint8(buf, pos);
     uint8_t num_kwargs = read_uint8(buf, pos);
     uint8_t num_outputs = read_uint8(buf, pos);
     uint8_t num_metadata = read_uint8(buf, pos);
 
-    // Op name (uint16 len + bytes)
+    // Op name — hash raw bytes, no string allocation on cache hit (Step 3)
     uint16_t op_name_len = read_uint16(buf, pos);
-    std::string op_name(buf + pos, op_name_len);
+    const char* op_name_buf = buf + pos;
+    uint64_t op_hash = hash_bytes(op_name_buf, op_name_len);
     pos += op_name_len;
 
     // Parse metadata and auto-create tensors (GIL-free via TensorStore)
@@ -802,12 +924,14 @@ static void execute_one_op(
         }
     }
 
-    // Parse output tensor IDs
-    std::vector<uint64_t> output_tensor_ids;
-    output_tensor_ids.reserve(num_outputs);
+    // Parse output tensor IDs — reuse pre-allocated vector (Step 4)
+    output_ids.clear();
     for (uint8_t i = 0; i < num_outputs; i++) {
-        output_tensor_ids.push_back(read_uint64(buf, pos));
+        output_ids.push_back(read_uint64(buf, pos));
     }
+
+    // Get or create OpInfo (Step 2-3)
+    OpInfo& info = get_or_create_op_info(op_hash, op_name_buf, op_name_len, gil_released);
 
     // ── FALLBACK: kwargs present → must use Python path (requires GIL) ──
     if (num_kwargs > 0) {
@@ -832,14 +956,13 @@ static void execute_one_op(
             kwargs[name] = parse_arg_from_store(buf, pos, store);
         }
 
-        PyObject* op = get_aten_op(op_name);
         py::object result = py::reinterpret_steal<py::object>(
-            PyObject_Call(op, args.ptr(), kwargs.ptr())
+            PyObject_Call(info.py_op, args.ptr(), kwargs.ptr())
         );
         if (!result.ptr()) throw py::error_already_set();
 
         // Register output tensors via TensorStore
-        if (!output_tensor_ids.empty()) {
+        if (!output_ids.empty()) {
             std::vector<at::Tensor> result_tensors;
 
             if (THPVariable_Check(result.ptr())) {
@@ -862,51 +985,59 @@ static void execute_one_op(
                 }
             }
 
-            size_t count = std::min(output_tensor_ids.size(), result_tensors.size());
+            size_t count = std::min(output_ids.size(), result_tensors.size());
             for (size_t i = 0; i < count; i++) {
-                store.set(output_tensor_ids[i], std::move(result_tensors[i]));
+                store.set(output_ids[i], std::move(result_tensors[i]));
             }
+        }
+
+        if (g_server_profiling_enabled) {
+            uint64_t _t_end = now_ns();
+            g_prof_server_parse_ns += _t_end - _t_parse_start;
+            g_prof_server_op_count++;
         }
         return;
     }
 
     // ── Dispatch decision: callBoxed or PyObject_Call? ──
-    // Skip callBoxed for ops that previously threw exceptions (permanent blocklist).
-    // Coercion failures are checked per-call since they depend on argument types.
-    bool blocked = g_callboxed_blocked.count(op_name) > 0;
-
-    if (!blocked) {
+    if (!info.callboxed_blocked) {
         // ── callBoxed path: parse to IValues, dispatch (GIL-free) ──
         size_t saved_pos = pos;
 
-        const auto& op_handle = resolve_op_handle(op_name);
-        const auto& schema = op_handle.schema();
-        const auto& schema_args = schema.arguments();
+        // Reuse pre-allocated stack (Step 4)
+        stack.clear();
+        stack.reserve(info.num_schema_args);
 
-        std::vector<c10::IValue> stack;
-        stack.reserve(schema_args.size());
-
-        bool viable = true;
         for (uint8_t i = 0; i < num_args; i++) {
             stack.push_back(parse_arg_to_ivalue_gilfree(buf, pos, store));
         }
 
-        // Fill in default values for remaining schema arguments
-        for (size_t i = num_args; i < schema_args.size(); i++) {
-            const auto& default_val = schema_args[i].default_value();
-            if (default_val.has_value()) {
-                stack.push_back(*default_val);
-            } else {
-                stack.push_back(c10::IValue());
+        // Fill in default values from cached OpInfo (Step 2)
+        for (size_t i = num_args; i < info.num_schema_args; i++) {
+            stack.push_back(info.default_values[i]);
+        }
+
+        // Coercion check — skip entirely if previously verified (Step 2)
+        bool viable = true;
+        if (!info.skip_coercion) {
+            const auto& schema_args = info.handle->schema().arguments();
+            bool any_coerced = false;
+            for (size_t i = 0; i < stack.size() && i < schema_args.size(); i++) {
+                if (!coerce_ivalue(stack[i], schema_args[i].type())) {
+                    viable = false;
+                    break;
+                }
+            }
+            // If all args passed without needing coercion, mark skip for future
+            if (viable && !any_coerced) {
+                info.skip_coercion = true;
             }
         }
 
-        // Coerce IValue types to match schema (per-call, not cached)
-        for (size_t i = 0; i < stack.size() && i < schema_args.size(); i++) {
-            if (!coerce_ivalue(stack[i], schema_args[i].type())) {
-                viable = false;
-                break;
-            }
+        uint64_t _t_callboxed_start = 0;
+        if (g_server_profiling_enabled) {
+            _t_callboxed_start = now_ns();
+            g_prof_server_parse_ns += _t_callboxed_start - _t_parse_start;
         }
 
         if (viable) {
@@ -915,35 +1046,54 @@ static void execute_one_op(
                 // we're already without GIL. In single-op path (gil_released=false),
                 // we release it here.
                 if (gil_released) {
-                    op_handle.callBoxed(&stack);
+                    info.handle->callBoxed(&stack);
                 } else {
                     py::gil_scoped_release release;
-                    op_handle.callBoxed(&stack);
+                    info.handle->callBoxed(&stack);
                 }
             } catch (...) {
                 // Permanent failure — blocklist this op
-                g_callboxed_blocked[op_name] = true;
+                info.callboxed_blocked = true;
                 viable = false;
             }
         }
 
+        uint64_t _t_output_start = 0;
+        if (g_server_profiling_enabled) {
+            _t_output_start = now_ns();
+            g_prof_server_callboxed_ns += _t_output_start -
+                (_t_callboxed_start ? _t_callboxed_start : _t_parse_start);
+        }
+
         if (viable) {
-            // Register outputs directly in TensorStore (GIL-free)
-            if (!output_tensor_ids.empty()) {
-                std::vector<at::Tensor> result_tensors;
-                for (size_t si = 0; si < stack.size(); si++) {
-                    if (stack[si].isTensor()) {
-                        at::Tensor t = stack[si].toTensor();
+            // Register outputs — specialized by return pattern (Step 5)
+            if (!output_ids.empty()) {
+                if (info.return_pattern == RETURN_SINGLE_TENSOR && stack.size() >= 1) {
+                    // Fast path: most LLM ops return a single tensor
+                    if (stack[0].isTensor()) {
+                        at::Tensor t = stack[0].toTensor();
                         if (t.defined()) {
-                            result_tensors.push_back(std::move(t));
+                            store.set(output_ids[0], std::move(t));
+                        }
+                    }
+                } else {
+                    // Generic path: iterate stack for tensors
+                    size_t out_idx = 0;
+                    for (size_t si = 0; si < stack.size() && out_idx < output_ids.size(); si++) {
+                        if (stack[si].isTensor()) {
+                            at::Tensor t = stack[si].toTensor();
+                            if (t.defined()) {
+                                store.set(output_ids[out_idx], std::move(t));
+                                out_idx++;
+                            }
                         }
                     }
                 }
+            }
 
-                size_t count = std::min(output_tensor_ids.size(), result_tensors.size());
-                for (size_t i = 0; i < count; i++) {
-                    store.set(output_tensor_ids[i], std::move(result_tensors[i]));
-                }
+            if (g_server_profiling_enabled) {
+                g_prof_server_output_ns += now_ns() - _t_output_start;
+                g_prof_server_op_count++;
             }
             return;
         }
@@ -964,13 +1114,12 @@ static void execute_one_op(
             args[i] = parse_arg_from_store(buf, pos, store);
         }
 
-        PyObject* op = get_aten_op(op_name);
         py::object result = py::reinterpret_steal<py::object>(
-            PyObject_Call(op, args.ptr(), nullptr)
+            PyObject_Call(info.py_op, args.ptr(), nullptr)
         );
         if (!result.ptr()) throw py::error_already_set();
 
-        if (!output_tensor_ids.empty()) {
+        if (!output_ids.empty()) {
             std::vector<at::Tensor> result_tensors;
             if (THPVariable_Check(result.ptr())) {
                 result_tensors.push_back(THPVariable_Unpack(result.ptr()));
@@ -992,11 +1141,16 @@ static void execute_one_op(
                 }
             }
 
-            size_t count = std::min(output_tensor_ids.size(), result_tensors.size());
+            size_t count = std::min(output_ids.size(), result_tensors.size());
             for (size_t i = 0; i < count; i++) {
-                store.set(output_tensor_ids[i], std::move(result_tensors[i]));
+                store.set(output_ids[i], std::move(result_tensors[i]));
             }
         }
+    }
+
+    if (g_server_profiling_enabled) {
+        g_prof_server_parse_ns += now_ns() - _t_parse_start;
+        g_prof_server_op_count++;
     }
 }
 
@@ -1009,11 +1163,17 @@ void execute_raw_aten_inline(py::bytes data, TensorStore& store) {
         throw py::error_already_set();
     }
 
+    // Per-call buffers (not reusable across calls for single-op path)
+    std::vector<uint64_t> output_ids;
+    std::vector<c10::IValue> stack;
+    output_ids.reserve(4);
+    stack.reserve(16);
+
     size_t pos = 0;
-    execute_one_op(buf, pos, store, /*gil_released=*/false);
+    execute_one_op(buf, pos, store, /*gil_released=*/false, output_ids, stack);
 }
 
-void execute_raw_batched_aten_inline(py::bytes data, TensorStore& store) {
+size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store) {
     char* buf;
     Py_ssize_t len;
     if (PyBytes_AsStringAndSize(data.ptr(), &buf, &len) < 0) {
@@ -1021,31 +1181,60 @@ void execute_raw_batched_aten_inline(py::bytes data, TensorStore& store) {
     }
 
     size_t total = static_cast<size_t>(len);
+    size_t op_count = 0;
 
     {
         py::gil_scoped_release release;  // ~1.5ms continuous GIL-free
+
+        // Pre-allocate reusable buffers for the batch loop (Step 4)
+        std::vector<uint64_t> output_ids;
+        std::vector<c10::IValue> stack;
+        output_ids.reserve(16);
+        stack.reserve(16);
+
         size_t pos = 0;
         while (pos < total) {
             uint32_t op_len = read_uint32(buf, pos);
             size_t op_end = pos + op_len;
-            execute_one_op(buf, pos, store, /*gil_released=*/true);
+            execute_one_op(buf, pos, store, /*gil_released=*/true, output_ids, stack);
             // Ensure we advance past exactly this op's data
             pos = op_end;
+            op_count++;
         }
     }
     // GIL re-acquired; py::bytes destructor safe
+    return op_count;
+}
+
+bool batch_has_special_op(py::bytes data) {
+    char* buf;
+    Py_ssize_t len;
+    if (PyBytes_AsStringAndSize(data.ptr(), &buf, &len) < 0) {
+        throw py::error_already_set();
+    }
+
+    size_t total = static_cast<size_t>(len);
+    size_t pos = 0;
+    while (pos < total) {
+        uint32_t op_len = read_uint32(buf, pos);
+        // Check first byte of op data for special markers (>= 0xFE)
+        if (static_cast<uint8_t>(buf[pos]) >= 0xFE) {
+            return true;
+        }
+        pos += op_len;
+    }
+    return false;
 }
 
 void clear_op_cache() {
-    for (auto& pair : g_op_cache) {
-        Py_XDECREF(pair.second);
+    // Release Python references from OpInfo entries
+    for (auto& pair : g_op_info_cache) {
+        if (pair.second.py_op) {
+            Py_XDECREF(pair.second.py_op);
+            pair.second.py_op = nullptr;
+        }
     }
-    g_op_cache.clear();
-
-    // OperatorHandle doesn't hold Python refs — no Py_DECREF needed
-    g_op_handle_cache.clear();
-
-    g_callboxed_blocked.clear();
+    g_op_info_cache.clear();
 
     for (auto& pair : g_torch_attr_cache) {
         Py_XDECREF(pair.second);

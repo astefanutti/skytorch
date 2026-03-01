@@ -177,6 +177,105 @@ class ClientProfiler:
                 ]
             )
 
+        # Python fallback path and inter-op gap (from C++ counters)
+        if cpp:
+            _, _py_count = cpp.get("python_fallback_count", (0, 0))
+            _py_ns, _ = cpp.get("python_fallback_ns", (0, 0))
+            _gap_ns, _gap_count = cpp.get("inter_op_gap_ns", (0, 0))
+            if _py_count > 0:
+                lines.extend(
+                    [
+                        "Python fallback path:",
+                        f"  Ops handled:        {_py_count:>8,} / {total:,} "
+                        f"({_py_count / total * 100:.1f}%)",
+                        f"  Total time:         {_py_ns / _py_count / 1000:6.1f} us  |  "
+                        f"{_py_ns / 1_000_000:,.0f} ms",
+                        "",
+                    ]
+                )
+            if _gap_count > 0:
+                _gap_ms = _gap_ns / 1_000_000
+                _gap_pct = (_gap_ms / wall_ms * 100) if wall_ms > 0 else 0
+                lines.extend(
+                    [
+                        "Inter-op gap (C++):",
+                        f"  Total:              {_gap_ms:,.0f} ms ({_gap_pct:.0f}% of wall time)",
+                        f"  Per-gap avg:        {_gap_ns / _gap_count / 1000:.1f} us  "
+                        f"({_gap_count:,} gaps)",
+                    ]
+                )
+                # Gap decomposition
+                _gil_wait_ns, _ = cpp.get("gil_wait_ns", (0, 0))
+                _ag_ns, _ = cpp.get("autograd_overhead_ns", (0, 0))
+                _outside_ag_ns, _outside_ag_count = cpp.get(
+                    "outside_autograd_ns", (0, 0)
+                )
+                _total_ops = cpp_ops + _py_count
+                if _total_ops > 0:
+                    # autograd_overhead includes fallback_kernel time inside it.
+                    # "inside autograd overhead" = autograd_total - fallback_kernel_inner
+                    # This is: guard setup + callBoxed dispatch + device guard + guard teardown
+                    _fast_ns, _ = cpp.get("dispatch_cached_ns", (0, 0))
+                    _iv_ns, _ = cpp.get("ivalue_to_py_ns", (0, 0))
+                    _rw_ns, _ = cpp.get("rewrite_stack_ns", (0, 0))
+                    _fallback_ns = _fast_ns + _iv_ns + _rw_ns + _py_ns
+                    _ag_inner_ns = max(0, _ag_ns - _fallback_ns)
+                    # "outside autograd" = Python model code + PyTorch outer
+                    # dispatcher (Python binding boxing/unboxing, dispatch key
+                    # selection). Measured directly between autograd exit → entry.
+                    # "inside autograd overhead" = gap - outside - GIL
+                    # This captures: boxed dispatch infra inside autograd
+                    # (guard, callBoxed, device guard)
+                    lines.extend(
+                        [
+                            f"  Decomposition:",
+                            f"    Outside autograd: {_outside_ag_ns / 1_000_000:,.0f} ms  "
+                            f"({_outside_ag_ns / max(1, _outside_ag_count) / 1000:.1f} us/op)"
+                            f"  [Python model + outer dispatch]",
+                            f"    Inside autograd:  {_ag_inner_ns / 1_000_000:,.0f} ms  "
+                            f"({_ag_inner_ns / _total_ops / 1000:.1f} us/op)"
+                            f"  [guard + callBoxed + device guard]",
+                            f"    GIL acquisition:  {_gil_wait_ns / 1_000_000:,.0f} ms  "
+                            f"({_gil_wait_ns / _total_ops / 1000:.1f} us/op)",
+                        ]
+                    )
+                # Large gap decomposition (>1ms)
+                _lg_gil_ns, _lg_count = cpp.get("large_gap_gil_ns", (0, 0))
+                _lg_other_ns, _ = cpp.get("large_gap_other_ns", (0, 0))
+                if _lg_count > 0:
+                    _lg_total = _lg_gil_ns + _lg_other_ns
+                    lines.extend(
+                        [
+                            f"  Large gaps (>1ms):  {_lg_count:,} gaps, "
+                            f"{_lg_total / 1_000_000:,.0f} ms total",
+                            f"    GIL contention:   {_lg_gil_ns / 1_000_000:,.0f} ms  "
+                            f"({_lg_gil_ns / _lg_count / 1_000_000:.1f} ms avg)"
+                            f"  [event loop holding GIL]",
+                            f"    Other (pre-GIL):  {_lg_other_ns / 1_000_000:,.0f} ms  "
+                            f"({_lg_other_ns / _lg_count / 1_000_000:.1f} ms avg)"
+                            f"  [sync wait, Python, dispatch]",
+                        ]
+                    )
+                # Gap histogram
+                _hist = cpp.get("gap_histogram", None)
+                if _hist and any(v > 0 for v in _hist):
+                    _labels = ["<1us", "1-10us", "10-100us", "100us-1ms", "1-10ms", ">10ms"]
+                    _parts = []
+                    for lbl, cnt in zip(_labels, _hist):
+                        if cnt > 0:
+                            _parts.append(f"{lbl}:{cnt:,}")
+                    lines.append(f"  Histogram:          {' | '.join(_parts)}")
+                lines.append("")
+            _, _gil_count = cpp.get("gil_release_count", (0, 0))
+            if _gil_count > 0:
+                lines.extend(
+                    [
+                        "GIL releases:",
+                        f"  Count:              {_gil_count:,}",
+                        "",
+                    ]
+                )
+
         lines.extend(
             [
                 "Sync points:",
@@ -343,6 +442,42 @@ class ServerProfiler:
                     f"{self.sync_handle.total_ms:,.0f} ms total",
                 ]
             )
+
+        # C++ per-phase execution breakdown (Step 1)
+        try:
+            from skytorch.torch.server._C import (
+                get_server_profile_counters,
+                reset_server_profile_counters,
+            )
+
+            cpp_prof = get_server_profile_counters()
+            _cpp_op_count = cpp_prof["op_count"]
+            if _cpp_op_count > 0:
+                _parse_ns = cpp_prof["parse_ns"]
+                _callboxed_ns = cpp_prof["callboxed_ns"]
+                _output_ns = cpp_prof["output_ns"]
+                _total_profiled_ns = _parse_ns + _callboxed_ns + _output_ns
+                lines.extend(
+                    [
+                        "",
+                        f"C++ per-phase breakdown ({_cpp_op_count:,} ops):",
+                        f"  Parse (header+args): "
+                        f"{_parse_ns / _cpp_op_count / 1000:6.1f} us/op  |  "
+                        f"{_parse_ns / 1_000_000:,.0f} ms",
+                        f"  callBoxed dispatch:  "
+                        f"{_callboxed_ns / _cpp_op_count / 1000:6.1f} us/op  |  "
+                        f"{_callboxed_ns / 1_000_000:,.0f} ms",
+                        f"  Output extraction:   "
+                        f"{_output_ns / _cpp_op_count / 1000:6.1f} us/op  |  "
+                        f"{_output_ns / 1_000_000:,.0f} ms",
+                        f"  Total per-op:        "
+                        f"{_total_profiled_ns / _cpp_op_count / 1000:6.1f} us/op  |  "
+                        f"{_total_profiled_ns / 1_000_000:,.0f} ms",
+                    ]
+                )
+            reset_server_profile_counters()
+        except (ImportError, AttributeError):
+            pass
 
         lines.extend(
             [

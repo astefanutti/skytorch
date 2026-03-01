@@ -10,6 +10,8 @@ try:
     from skytorch.torch.server._C import (
         execute_raw_aten_inline as _cpp_execute_raw_aten_inline,
         execute_raw_batched_aten_inline as _cpp_execute_raw_batched_aten_inline,
+        batch_has_special_op as _cpp_batch_has_special_op,
+        set_server_profiling_enabled as _cpp_set_server_profiling_enabled,
     )
 
     _USE_CPP_PARSER = True
@@ -88,6 +90,10 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
     """
     chunk_state = [None]
 
+    # Enable C++ per-phase profiling when server profiler is active
+    if _USE_CPP_PARSER and server_profiler is not None:
+        _cpp_set_server_profiling_enabled(True)
+
     if server_profiler is not None:
         _cycle_backlog_ops = 0
         _cycle_backlog_time_ns = 0
@@ -164,21 +170,25 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                         server_profiler.hot_idle.add(_idle_ns)
 
                 raw_data = item[1]
-                if _USE_CPP_PARSER and not _batch_has_special_op(raw_data):
-                    _cpp_execute_raw_batched_aten_inline(raw_data, servicer.tensor_manager.store)
+                _n_ops = 0
+                if _USE_CPP_PARSER and not _cpp_batch_has_special_op(raw_data):
+                    _n_ops = _cpp_execute_raw_batched_aten_inline(
+                        raw_data, servicer.tensor_manager.store
+                    )
                 else:
                     _execute_mixed_batch(raw_data, servicer)
 
                 if server_profiler is not None:
                     _t1 = time.perf_counter_ns()
                     server_profiler.raw_batched_execute.add(_t1 - _t0)
-                    raw_data = item[1]
-                    _n_ops = 0
-                    _pos = 0
-                    while _pos < len(raw_data):
-                        _op_len = _STRUCT_I.unpack_from(raw_data, _pos)[0]
-                        _pos += 4 + _op_len
-                        _n_ops += 1
+                    if _n_ops == 0:
+                        # Mixed batch or Python path: count ops by scanning
+                        raw_data = item[1]
+                        _pos = 0
+                        while _pos < len(raw_data):
+                            _op_len = _STRUCT_I.unpack_from(raw_data, _pos)[0]
+                            _pos += 4 + _op_len
+                            _n_ops += 1
                     server_profiler.total_ops += _n_ops
                     _cycle_backlog_ops += _n_ops
                     _cycle_backlog_time_ns += _t1 - _t0

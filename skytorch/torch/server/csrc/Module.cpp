@@ -3,7 +3,7 @@
  *
  * pybind11 module definition for the server-side binary request parser.
  * Exports TensorStore, execute_raw_aten_inline, execute_raw_batched_aten_inline,
- * and clear_op_cache.
+ * batch_has_special_op, profiling functions, and clear_op_cache.
  *
  * Follows the pattern from backend/csrc/Module.cpp.
  */
@@ -41,13 +41,32 @@ PYBIND11_MODULE(_C, m) {
 
     m.def("execute_raw_batched_aten_inline",
         &skytorch::server::execute_raw_batched_aten_inline,
-        "Execute a batch of raw binary execute_aten requests inline",
+        "Execute a batch of raw binary execute_aten requests inline (returns op count)",
         py::arg("data"),
         py::arg("store"));
+
+    m.def("batch_has_special_op",
+        &skytorch::server::batch_has_special_op,
+        "Scan raw batch for special markers (copy_tensor, module forward)",
+        py::arg("data"));
 
     m.def("clear_op_cache",
         &skytorch::server::clear_op_cache,
         "Clear cached op/attr lookups (call before shutdown)");
+
+    // Server profiling functions (Step 1)
+    m.def("set_server_profiling_enabled",
+        &skytorch::server::set_server_profiling_enabled,
+        "Enable/disable per-phase server profiling",
+        py::arg("enabled"));
+
+    m.def("get_server_profile_counters",
+        &skytorch::server::get_server_profile_counters,
+        "Get server profiling counters (parse_ns, callboxed_ns, output_ns, op_count)");
+
+    m.def("reset_server_profile_counters",
+        &skytorch::server::reset_server_profile_counters,
+        "Reset server profiling counters to zero");
 
     // Register cleanup with atexit for safe shutdown
     py::module atexit = py::module::import("atexit");

@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <optional>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -62,6 +64,32 @@ public:
     void set_python(uint64_t id, py::object t);
 };
 
+// --- OpInfo cache (Steps 2-3, 5) ---
+
+// Return pattern tags for specialized output extraction
+enum ReturnPattern : uint8_t {
+    RETURN_SINGLE_TENSOR = 0,
+    RETURN_TUPLE = 1,
+    RETURN_GENERIC = 2,
+};
+
+/**
+ * Cached per-op schema information.
+ *
+ * Populated on first call, reused on subsequent calls to skip
+ * schema()/arguments()/default filling/coercion checks.
+ */
+struct OpInfo {
+    std::optional<c10::OperatorHandle> handle;
+    PyObject* py_op = nullptr;       // cached Python callable (for kwargs/fallback)
+    size_t num_schema_args = 0;
+    std::vector<c10::IValue> default_values;  // pre-resolved defaults
+    bool skip_coercion = false;       // true after first successful call without coercion
+    bool callboxed_blocked = false;   // true if callBoxed threw an exception
+    ReturnPattern return_pattern = RETURN_GENERIC;
+    uint8_t expected_return_count = 0;
+};
+
 /**
  * Execute a single raw binary execute_aten request inline.
  *
@@ -81,11 +109,21 @@ void execute_raw_aten_inline(py::bytes data, TensorStore& store);
  * Releases the GIL for the entire batch loop, re-acquiring only
  * when kwargs/fallback paths require Python API calls.
  *
+ * Returns the number of ops executed (for profiling).
+ *
  * Args:
  *   data: Concatenated binary ops, each prefixed with uint32 length
  *   store: Server tensor manager's TensorStore
  */
-void execute_raw_batched_aten_inline(py::bytes data, TensorStore& store);
+size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store);
+
+/**
+ * Scan a raw batched payload for special markers (>= 0xFE).
+ *
+ * The batch format is [uint32_len][op_data]... — checks the first byte
+ * of each op_data segment. Markers: 0xFE = copy_tensor, 0xFF = module forward.
+ */
+bool batch_has_special_op(py::bytes data);
 
 /**
  * Clear all cached op/attr lookups.
@@ -94,6 +132,12 @@ void execute_raw_batched_aten_inline(py::bytes data, TensorStore& store);
  * when static destructors run. Registered with atexit.
  */
 void clear_op_cache();
+
+// --- Server profiling (Step 1) ---
+
+void set_server_profiling_enabled(bool enabled);
+py::dict get_server_profile_counters();
+void reset_server_profile_counters();
 
 }  // namespace server
 }  // namespace skytorch
