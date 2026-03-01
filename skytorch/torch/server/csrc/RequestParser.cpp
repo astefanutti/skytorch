@@ -22,6 +22,7 @@
 #include <torch/extension.h>
 #include <torch/csrc/autograd/python_variable.h>
 #include <ATen/core/dispatch/Dispatcher.h>
+#include <ATen/core/LegacyTypeDispatch.h>
 #include <ATen/core/ivalue.h>
 #include <torch/csrc/Dtype.h>
 #include <torch/csrc/MemoryFormat.h>
@@ -1170,7 +1171,10 @@ void execute_raw_aten_inline(py::bytes data, TensorStore& store) {
     stack.reserve(16);
 
     size_t pos = 0;
-    execute_one_op(buf, pos, store, /*gil_released=*/false, output_ids, stack);
+    {
+        at::AutoDispatchBelowADInplaceOrView guard;  // Skip AutogradCUDA + ADInplaceOrView
+        execute_one_op(buf, pos, store, /*gil_released=*/false, output_ids, stack);
+    }
 }
 
 size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store) {
@@ -1185,6 +1189,7 @@ size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store) {
 
     {
         py::gil_scoped_release release;  // ~1.5ms continuous GIL-free
+        at::AutoDispatchBelowADInplaceOrView guard;  // Skip AutogradCUDA + ADInplaceOrView
 
         // Pre-allocate reusable buffers for the batch loop (Step 4)
         std::vector<uint64_t> output_ids;
