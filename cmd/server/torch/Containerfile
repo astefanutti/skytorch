@@ -2,8 +2,8 @@ FROM python:3.14-slim
 
 ARG TARGETARCH
 
-# Triton JIT-compiles a C launcher per kernel and needs a compiler + headers
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+# Compilers + headers: gcc for Triton JIT, g++ for PyTorch C++ extensions
+RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ libc6-dev && rm -rf /var/lib/apt/lists/*
 
 USER 1000
 
@@ -35,15 +35,18 @@ RUN WHEEL_ARCH=$([ "$TARGETARCH" = "amd64" ] && echo "x86_64" || echo "aarch64")
 # Must run AFTER all packages that depend on torch/triton (kernels, flash-attn)
 RUN pip install --no-cache-dir "triton==3.6.0"
 
-# Copy the skytorch Python package
-COPY --chown=1000:root pyproject.toml README.md VERSION.md ./
+# Copy the skytorch Python package (setup.py required for C++ extensions)
+COPY --chown=1000:root pyproject.toml setup.py README.md VERSION.md ./
 COPY --chown=1000:root skytorch/ skytorch/
 
-# Install project
-RUN pip install --no-cache-dir "."
+# Install ninja (build dependency for C++ extensions, not auto-installed with --no-build-isolation)
+RUN pip install --no-cache-dir ninja
 
-# Set Python path to include the app directory
-ENV PYTHONPATH=/app
+# Install project (--no-build-isolation required: C++ extensions need torch headers at build time)
+RUN pip install --no-cache-dir --no-build-isolation "."
+
+# Remove source tree so Python uses the installed package (which includes _C.so)
+RUN rm -rf skytorch/ setup.py pyproject.toml README.md VERSION.md
 
 # Disable stdout/stderr buffering so print() output appears immediately in container logs
 ENV PYTHONUNBUFFERED=1
