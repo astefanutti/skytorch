@@ -24,6 +24,7 @@
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <ATen/core/LegacyTypeDispatch.h>
 #include <ATen/core/ivalue.h>
+#include <ATen/ScalarOps.h>
 #include <torch/csrc/Dtype.h>
 #include <torch/csrc/MemoryFormat.h>
 #include <torch/csrc/Layout.h>
@@ -937,10 +938,21 @@ static c10::IValue parse_arg_to_ivalue_gilfree(
 static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
     auto kind = expected_type->kind();
 
-    // Schema expects Tensor but we have a scalar → fall back to Python path
-    // (Python bindings handle dtype matching automatically; scalar_to_tensor
-    // may produce wrong dtype e.g., Double instead of Float)
+    // Schema expects Tensor but we have a scalar → convert to 0-dim tensor.
+    // This mirrors what the client-side serializer does: 0-dim CPU tensors are
+    // serialized as scalar values for efficiency, and we reconstruct the tensor here.
+    // ATen kernels handle CPU scalar tensor → CUDA promotion automatically.
     if (kind == c10::TypeKind::TensorType && !val.isTensor() && !val.isNone()) {
+        if (val.isInt()) {
+            val = c10::IValue(at::scalar_to_tensor(val.toInt()));
+            return true;
+        } else if (val.isDouble()) {
+            val = c10::IValue(at::scalar_to_tensor(val.toDouble()));
+            return true;
+        } else if (val.isBool()) {
+            val = c10::IValue(at::scalar_to_tensor(val.toBool()));
+            return true;
+        }
         return false;
     }
 
