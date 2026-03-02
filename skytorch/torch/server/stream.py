@@ -53,34 +53,89 @@ def _batch_has_special_op(raw_data: bytes) -> bool:
     return False
 
 
-def _execute_mixed_batch(raw_data: bytes, servicer) -> None:
-    """Execute a raw batch that may contain ATen ops, module forward ops, and copy ops.
+def _execute_mixed_batch(raw_data: bytes, servicer) -> int:
+    """Execute a raw batch containing module_forward ops mixed with ATen/copy ops.
 
-    Dispatches each op individually: ATen ops go to C++ single-op parser
-    (if available) or Python parser, module forward ops (0xFF) go to
-    _handle_execute_module_forward_ff, copy ops (0xFE) go to _copy_tensor_sync.
+    Splits the batch into contiguous ATen segments (processed via C++ batch path
+    with batch-level GIL release) and module_forward ops (handled individually).
+    Copy_tensor ops (0xFE) are included in ATen segments since the C++ batch
+    path handles them inline.
+
+    Returns the total number of ops executed.
     """
     from skytorch.torch.server import service_pb2
 
     pos = 0
     n = len(raw_data)
+    n_ops = 0
+    segment_start = -1  # start offset of current ATen segment, -1 = no segment
+    store = servicer.tensor_manager.store if _USE_CPP_PARSER else None
+
     while pos < n:
+        op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
+        marker = raw_data[pos + 4]  # first byte of op_data
+
+        if marker == _MODULE_FORWARD_MARKER:
+            # Flush accumulated ATen segment via C++ batch path
+            if segment_start >= 0:
+                if _USE_CPP_PARSER:
+                    n_ops += _cpp_execute_raw_batched_aten_inline(
+                        raw_data[segment_start:pos], store
+                    )
+                else:
+                    n_ops += _execute_segment_python(
+                        raw_data, segment_start, pos, servicer
+                    )
+                segment_start = -1
+
+            # Handle module_forward individually
+            op_data = raw_data[pos + 4 : pos + 4 + op_len]
+            fwd_request = service_pb2.ExecuteModuleForwardRequest()
+            fwd_request.ParseFromString(op_data[1:])
+            servicer._handle_execute_module_forward_ff(fwd_request)
+            n_ops += 1
+            pos += 4 + op_len
+        else:
+            # ATen op or copy_tensor — accumulate into segment
+            if segment_start < 0:
+                segment_start = pos
+            pos += 4 + op_len
+
+    # Flush final segment
+    if segment_start >= 0:
+        if _USE_CPP_PARSER:
+            n_ops += _cpp_execute_raw_batched_aten_inline(
+                raw_data[segment_start:n], store
+            )
+        else:
+            n_ops += _execute_segment_python(
+                raw_data, segment_start, n, servicer
+            )
+
+    return n_ops
+
+
+def _execute_segment_python(
+    raw_data: bytes, start: int, end: int, servicer
+) -> int:
+    """Fallback: execute an ATen segment op-by-op via Python (no C++ parser)."""
+    pos = start
+    n_ops = 0
+    while pos < end:
         op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
         pos += 4
         op_data = raw_data[pos : pos + op_len]
         pos += op_len
-        if op_data[0] == _MODULE_FORWARD_MARKER:
-            fwd_request = service_pb2.ExecuteModuleForwardRequest()
-            fwd_request.ParseFromString(op_data[1:])
-            servicer._handle_execute_module_forward_ff(fwd_request)
-        elif op_data[0] == _COPY_TENSOR_MARKER:
+        if op_data[0] == _COPY_TENSOR_MARKER:
+            from skytorch.torch.server import service_pb2
+
             copy_request = service_pb2.CopyTensorRequest()
             copy_request.ParseFromString(op_data[1:])
             servicer._copy_tensor_sync(copy_request)
-        elif _USE_CPP_PARSER:
-            _cpp_execute_raw_aten_inline(op_data, servicer.tensor_manager.store)
         else:
             servicer._execute_raw_aten_inline(op_data)
+        n_ops += 1
+    return n_ops
 
 
 def stream_worker(work_queue, servicer, loop, server_profiler):
@@ -179,13 +234,13 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                     )
                 else:
                     _is_mixed = True
-                    _execute_mixed_batch(raw_data, servicer)
+                    _n_ops = _execute_mixed_batch(raw_data, servicer)
 
                 if server_profiler is not None:
                     _t1 = time.perf_counter_ns()
                     server_profiler.raw_batched_execute.add(_t1 - _t0)
                     if _n_ops == 0:
-                        # Mixed batch or Python path: count ops by scanning
+                        # Fallback: count ops by scanning (shouldn't happen now)
                         raw_data = item[1]
                         _pos = 0
                         while _pos < len(raw_data):
