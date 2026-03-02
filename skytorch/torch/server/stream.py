@@ -36,17 +36,18 @@ _COPY_TENSOR_MARKER = 0xFE
 
 
 def _batch_has_special_op(raw_data: bytes) -> bool:
-    """Scan a raw batched payload for any special marker (>= 0xFE).
+    """Scan a raw batched payload for module_forward marker (0xFF).
 
     The batch format is [uint32_len][op_data]... — we check the first byte
-    of each op_data segment. Markers: 0xFE = copy_tensor, 0xFF = module forward.
+    of each op_data segment. Only 0xFF (module forward) triggers mixed batch;
+    0xFE (copy_tensor) is handled inline in the C++ batch path.
     """
     pos = 0
     n = len(raw_data)
     while pos < n:
         op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
         pos += 4
-        if raw_data[pos] >= _COPY_TENSOR_MARKER:
+        if raw_data[pos] == _MODULE_FORWARD_MARKER:
             return True
         pos += op_len
     return False
@@ -171,11 +172,13 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
 
                 raw_data = item[1]
                 _n_ops = 0
+                _is_mixed = False
                 if _USE_CPP_PARSER and not _cpp_batch_has_special_op(raw_data):
                     _n_ops = _cpp_execute_raw_batched_aten_inline(
                         raw_data, servicer.tensor_manager.store
                     )
                 else:
+                    _is_mixed = True
                     _execute_mixed_batch(raw_data, servicer)
 
                 if server_profiler is not None:
@@ -190,6 +193,9 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                             _pos += 4 + _op_len
                             _n_ops += 1
                     server_profiler.total_ops += _n_ops
+                    if _is_mixed:
+                        server_profiler.mixed_batch_calls += 1
+                        server_profiler.mixed_batch_ops += _n_ops
                     _cycle_backlog_ops += _n_ops
                     _cycle_backlog_time_ns += _t1 - _t0
                     _last_was_exec = True

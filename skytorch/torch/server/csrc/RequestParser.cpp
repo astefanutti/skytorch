@@ -163,6 +163,28 @@ static uint64_t g_prof_server_parse_args_ns = 0;   // arg parsing + default fill
 static uint64_t g_prof_server_tensor_arg_count = 0; // number of tensor arguments parsed
 static uint64_t g_prof_server_metadata_create_count = 0; // number of tensor metadata creations
 
+// Python fallback instrumentation counters
+static uint64_t g_prof_server_kwargs_fallback_count = 0;
+static uint64_t g_prof_server_blocked_fallback_count = 0;
+static uint64_t g_prof_server_coercion_fallback_count = 0;
+static uint64_t g_prof_server_fallback_exec_ns = 0;
+
+// Copy_tensor inline profiling counters
+static uint64_t g_prof_server_copy_tensor_count = 0;
+static uint64_t g_prof_server_copy_tensor_total_ns = 0;
+static uint64_t g_prof_server_copy_tensor_gil_ns = 0;     // GIL acquisition wait
+static uint64_t g_prof_server_copy_tensor_proto_ns = 0;   // protobuf parse + field extraction
+static uint64_t g_prof_server_copy_tensor_meta_ns = 0;    // metadata tensor creation
+static uint64_t g_prof_server_copy_tensor_copy_ns = 0;    // dst.copy_(src) execution
+static uint64_t g_prof_server_copy_tensor_meta_count = 0; // metadata tensors created
+
+// Batch-level profiling counters (decompose Python wall time vs C++ time)
+static uint64_t g_prof_server_batch_count = 0;            // number of batch calls
+static uint64_t g_prof_server_batch_loop_ns = 0;          // total time inside the while loop
+static uint64_t g_prof_server_batch_boundary_ns = 0;      // time outside loop (GIL release/re-acquire, PyBytes)
+static uint64_t g_prof_server_batch_op_wall_ns = 0;       // wall time of execute_one_op calls (from outside)
+static uint64_t g_prof_server_batch_interop_ns = 0;       // gap between ops in the batch loop
+
 static inline uint64_t now_ns() {
     return static_cast<uint64_t>(
         std::chrono::steady_clock::now().time_since_epoch().count());
@@ -182,6 +204,22 @@ py::dict get_server_profile_counters() {
     d["parse_args_ns"] = g_prof_server_parse_args_ns;
     d["tensor_arg_count"] = g_prof_server_tensor_arg_count;
     d["metadata_create_count"] = g_prof_server_metadata_create_count;
+    d["kwargs_fallback_count"] = g_prof_server_kwargs_fallback_count;
+    d["blocked_fallback_count"] = g_prof_server_blocked_fallback_count;
+    d["coercion_fallback_count"] = g_prof_server_coercion_fallback_count;
+    d["fallback_exec_ns"] = g_prof_server_fallback_exec_ns;
+    d["copy_tensor_count"] = g_prof_server_copy_tensor_count;
+    d["copy_tensor_total_ns"] = g_prof_server_copy_tensor_total_ns;
+    d["copy_tensor_gil_ns"] = g_prof_server_copy_tensor_gil_ns;
+    d["copy_tensor_proto_ns"] = g_prof_server_copy_tensor_proto_ns;
+    d["copy_tensor_meta_ns"] = g_prof_server_copy_tensor_meta_ns;
+    d["copy_tensor_copy_ns"] = g_prof_server_copy_tensor_copy_ns;
+    d["copy_tensor_meta_count"] = g_prof_server_copy_tensor_meta_count;
+    d["batch_count"] = g_prof_server_batch_count;
+    d["batch_loop_ns"] = g_prof_server_batch_loop_ns;
+    d["batch_boundary_ns"] = g_prof_server_batch_boundary_ns;
+    d["batch_op_wall_ns"] = g_prof_server_batch_op_wall_ns;
+    d["batch_interop_ns"] = g_prof_server_batch_interop_ns;
     return d;
 }
 
@@ -194,6 +232,22 @@ void reset_server_profile_counters() {
     g_prof_server_parse_args_ns = 0;
     g_prof_server_tensor_arg_count = 0;
     g_prof_server_metadata_create_count = 0;
+    g_prof_server_kwargs_fallback_count = 0;
+    g_prof_server_blocked_fallback_count = 0;
+    g_prof_server_coercion_fallback_count = 0;
+    g_prof_server_fallback_exec_ns = 0;
+    g_prof_server_copy_tensor_count = 0;
+    g_prof_server_copy_tensor_total_ns = 0;
+    g_prof_server_copy_tensor_gil_ns = 0;
+    g_prof_server_copy_tensor_proto_ns = 0;
+    g_prof_server_copy_tensor_meta_ns = 0;
+    g_prof_server_copy_tensor_copy_ns = 0;
+    g_prof_server_copy_tensor_meta_count = 0;
+    g_prof_server_batch_count = 0;
+    g_prof_server_batch_loop_ns = 0;
+    g_prof_server_batch_boundary_ns = 0;
+    g_prof_server_batch_op_wall_ns = 0;
+    g_prof_server_batch_interop_ns = 0;
 }
 
 // --- Static C++ maps for GIL-free dtype/format/layout resolution ---
@@ -225,15 +279,35 @@ static const std::unordered_map<std::string, at::Layout> g_layout_map = {
     {"torch.sparse_coo", at::Layout::Sparse},
 };
 
+// Hash-based lookup maps (eliminate per-lookup std::string allocation)
+static std::unordered_map<uint64_t, at::ScalarType> g_dtype_hash_map;
+static std::unordered_map<uint64_t, at::MemoryFormat> g_memory_format_hash_map;
+static std::unordered_map<uint64_t, at::Layout> g_layout_hash_map;
+static bool g_hash_maps_inited = false;
+
+static void init_hash_maps() {
+    if (g_hash_maps_inited) return;
+    for (const auto& [key, val] : g_dtype_map)
+        g_dtype_hash_map[hash_bytes(key.c_str(), key.size())] = val;
+    for (const auto& [key, val] : g_memory_format_map)
+        g_memory_format_hash_map[hash_bytes(key.c_str(), key.size())] = val;
+    for (const auto& [key, val] : g_layout_map)
+        g_layout_hash_map[hash_bytes(key.c_str(), key.size())] = val;
+    g_hash_maps_inited = true;
+}
+
 /**
- * Resolve dtype string to at::ScalarType using static map (GIL-free).
- * Returns nullopt if not found in the static map.
+ * Resolve dtype string to at::ScalarType using hash map (GIL-free, no string alloc).
+ * Falls back to string-keyed map for safety.
  */
 static std::optional<at::ScalarType> resolve_dtype_scalar(const char* s, size_t len) {
+    if (!g_hash_maps_inited) init_hash_maps();
+    auto it = g_dtype_hash_map.find(hash_bytes(s, len));
+    if (it != g_dtype_hash_map.end()) return it->second;
+    // String fallback for safety
     std::string key(s, len);
-    auto it = g_dtype_map.find(key);
-    if (it != g_dtype_map.end()) return it->second;
-    return std::nullopt;
+    auto sit = g_dtype_map.find(key);
+    return (sit != g_dtype_map.end()) ? std::optional(sit->second) : std::nullopt;
 }
 
 // --- OpInfo cache (Steps 2-3) ---
@@ -421,6 +495,12 @@ static PyObject* get_parse_dtype() {
     return g_parse_dtype;
 }
 
+// --- Dispatch key helper for direct TensorImpl construction (§1) ---
+
+static c10::DispatchKeySet dispatch_keyset_for_device(c10::DeviceType dt) {
+    return c10::DispatchKeySet(c10::computeDispatchKey(c10::nullopt, c10::kStrided, dt));
+}
+
 // --- Tensor metadata helpers ---
 
 /**
@@ -457,28 +537,28 @@ static void parse_and_create_tensor_gilfree(
     uint64_t tensor_id = read_uint64(buf, pos);
     uint8_t ndim = read_uint8(buf, pos);
 
-    // Read shape and stride
-    std::vector<int64_t> shape(ndim);
+    // Read shape and stride — stack-allocated for ndim ≤ 8 (§2)
+    c10::SmallVector<int64_t, 8> shape(ndim);
     for (uint8_t i = 0; i < ndim; i++) {
         shape[i] = read_int64(buf, pos);
     }
-    std::vector<int64_t> stride(ndim);
+    c10::SmallVector<int64_t, 8> stride(ndim);
     for (uint8_t i = 0; i < ndim; i++) {
         stride[i] = read_int64(buf, pos);
     }
 
-    // dtype string (uint8 len + bytes)
+    // dtype string — hash raw bytes, no string allocation (§3)
     uint8_t dtype_len = read_uint8(buf, pos);
-    std::string dtype_str(buf + pos, dtype_len);
+    const char* dtype_ptr = buf + pos;
     pos += dtype_len;
 
     // storage_offset, nbytes
     int64_t storage_offset = read_int64(buf, pos);
     int64_t nbytes = read_int64(buf, pos);
 
-    // device_type string (uint8 len + bytes)
+    // device_type — direct construction from raw bytes (§4)
     uint8_t dt_len = read_uint8(buf, pos);
-    std::string device_type(buf + pos, dt_len);
+    const char* dt_ptr = buf + pos;
     pos += dt_len;
 
     // device_index
@@ -493,35 +573,48 @@ static void parse_and_create_tensor_gilfree(
         has_ref = true;
     }
 
-    // Resolve dtype via static map (GIL-free)
-    auto scalar_type_opt = resolve_dtype_scalar(dtype_str.c_str(), dtype_str.size());
+    // Resolve dtype via hash map — no string allocation (§3)
+    auto scalar_type_opt = resolve_dtype_scalar(dtype_ptr, dtype_len);
     if (!scalar_type_opt.has_value()) {
-        throw std::runtime_error("Unknown dtype: " + dtype_str);
+        throw std::runtime_error("Unknown dtype: " + std::string(dtype_ptr, dtype_len));
     }
     auto scalar_type = *scalar_type_opt;
 
-    // Build device — c10::Device(string) parses "cpu", "cuda:0", etc.
-    std::string device_str = device_type;
-    if (device_index >= 0) {
-        device_str += ":" + std::to_string(device_index);
+    // Direct device construction — no string concat/parse (§4)
+    c10::DeviceType dev_type;
+    if (dt_len == 4 && std::memcmp(dt_ptr, "cuda", 4) == 0) {
+        dev_type = c10::kCUDA;
+    } else if (dt_len == 3 && std::memcmp(dt_ptr, "cpu", 3) == 0) {
+        dev_type = c10::kCPU;
+    } else {
+        dev_type = c10::Device(std::string(dt_ptr, dt_len)).type();
     }
-    c10::Device device(device_str);
-    auto options = at::TensorOptions().dtype(scalar_type).device(device);
+    c10::Device device(dev_type, static_cast<c10::DeviceIndex>(device_index));
+
+    // Direct TensorImpl construction — bypass ATen dispatcher (§1)
+    auto key_set = dispatch_keyset_for_device(device.type());
+    auto type_meta = caffe2::TypeMeta::fromScalarType(scalar_type);
 
     at::Tensor tensor;
     if (has_ref) {
         // Create view from existing tensor's storage
         at::Tensor& base = store.get(tensor_ref);
-        auto storage = base.storage();
-        tensor = at::empty({0}, options).set_(storage, storage_offset, shape, stride);
+        auto impl = c10::make_intrusive<at::TensorImpl>(
+            c10::Storage(base.storage()), key_set, type_meta);
+        impl->set_sizes_and_strides(shape, stride);
+        impl->set_storage_offset(storage_offset);
+        tensor = at::Tensor(std::move(impl));
     } else {
         // Create new tensor with fresh storage
-        // Compute storage_numel from nbytes and element size
-        int64_t elem_size = c10::elementSize(scalar_type);
-        int64_t storage_numel = (nbytes + elem_size - 1) / elem_size;
-        auto storage_tensor = at::empty({storage_numel}, options);
-        auto storage = storage_tensor.storage();
-        tensor = at::empty({0}, options).set_(storage, storage_offset, shape, stride);
+        auto* allocator = c10::GetAllocator(device.type());
+        auto storage = c10::Storage(
+            c10::Storage::use_byte_size_t(),
+            static_cast<size_t>(nbytes), allocator, false);
+        auto impl = c10::make_intrusive<at::TensorImpl>(
+            std::move(storage), key_set, type_meta);
+        impl->set_sizes_and_strides(shape, stride);
+        impl->set_storage_offset(storage_offset);
+        tensor = at::Tensor(std::move(impl));
     }
 
     store.set(tensor_id, std::move(tensor));
@@ -539,12 +632,12 @@ static void parse_and_create_tensor_python(
     uint64_t tensor_id = read_uint64(buf, pos);
     uint8_t ndim = read_uint8(buf, pos);
 
-    // Read shape and stride
-    std::vector<int64_t> shape(ndim);
+    // Read shape and stride — stack-allocated for ndim ≤ 8 (§2)
+    c10::SmallVector<int64_t, 8> shape(ndim);
     for (uint8_t i = 0; i < ndim; i++) {
         shape[i] = read_int64(buf, pos);
     }
-    std::vector<int64_t> stride(ndim);
+    c10::SmallVector<int64_t, 8> stride(ndim);
     for (uint8_t i = 0; i < ndim; i++) {
         stride[i] = read_int64(buf, pos);
     }
@@ -713,33 +806,33 @@ static c10::IValue parse_arg_to_ivalue_gilfree(
         bool val = read_uint8(buf, pos) != 0;
         return c10::IValue(val);
     }
-    case 0x05: {  // DTYPE → at::ScalarType (GIL-free via static map)
+    case 0x05: {  // DTYPE → at::ScalarType (GIL-free via hash map, no string alloc)
         uint8_t slen = read_uint8(buf, pos);
-        std::string key(buf + pos, slen);
+        if (!g_hash_maps_inited) init_hash_maps();
+        auto it = g_dtype_hash_map.find(hash_bytes(buf + pos, slen));
         pos += slen;
-        auto it = g_dtype_map.find(key);
-        if (it == g_dtype_map.end()) {
-            throw std::runtime_error("Unknown dtype in IValue path: " + key);
+        if (it == g_dtype_hash_map.end()) {
+            throw std::runtime_error("Unknown dtype in IValue path");
         }
         return c10::IValue(static_cast<int64_t>(it->second));
     }
-    case 0x06: {  // MEMORY_FORMAT → at::MemoryFormat (GIL-free via static map)
+    case 0x06: {  // MEMORY_FORMAT → at::MemoryFormat (GIL-free via hash map)
         uint8_t slen = read_uint8(buf, pos);
-        std::string key(buf + pos, slen);
+        if (!g_hash_maps_inited) init_hash_maps();
+        auto it = g_memory_format_hash_map.find(hash_bytes(buf + pos, slen));
         pos += slen;
-        auto it = g_memory_format_map.find(key);
-        if (it == g_memory_format_map.end()) {
-            throw std::runtime_error("Unknown memory_format in IValue path: " + key);
+        if (it == g_memory_format_hash_map.end()) {
+            throw std::runtime_error("Unknown memory_format in IValue path");
         }
         return c10::IValue(static_cast<int64_t>(it->second));
     }
-    case 0x07: {  // LAYOUT → at::Layout (GIL-free via static map)
+    case 0x07: {  // LAYOUT → at::Layout (GIL-free via hash map)
         uint8_t slen = read_uint8(buf, pos);
-        std::string key(buf + pos, slen);
+        if (!g_hash_maps_inited) init_hash_maps();
+        auto it = g_layout_hash_map.find(hash_bytes(buf + pos, slen));
         pos += slen;
-        auto it = g_layout_map.find(key);
-        if (it == g_layout_map.end()) {
-            throw std::runtime_error("Unknown layout in IValue path: " + key);
+        if (it == g_layout_hash_map.end()) {
+            throw std::runtime_error("Unknown layout in IValue path");
         }
         return c10::IValue(static_cast<int64_t>(it->second));
     }
@@ -962,6 +1055,8 @@ static void execute_one_op(
 
     // ── FALLBACK: kwargs present → must use Python path (requires GIL) ──
     if (num_kwargs > 0) {
+        if (g_server_profiling_enabled) g_prof_server_kwargs_fallback_count++;
+
         // Acquire GIL if we don't have it (batch path)
         auto acquire = gil_released
             ? std::make_optional<py::gil_scoped_acquire>()
@@ -982,6 +1077,8 @@ static void execute_one_op(
             pos += name_len;
             kwargs[name] = parse_arg_from_store(buf, pos, store);
         }
+
+        uint64_t _t_exec = g_server_profiling_enabled ? now_ns() : 0;
 
         py::object result = py::reinterpret_steal<py::object>(
             PyObject_Call(info.py_op, args.ptr(), kwargs.ptr())
@@ -1020,7 +1117,8 @@ static void execute_one_op(
 
         if (g_server_profiling_enabled) {
             uint64_t _t_end = now_ns();
-            g_prof_server_parse_ns += _t_end - _t_parse_start;
+            g_prof_server_parse_ns += _t_exec - _t_parse_start;
+            g_prof_server_fallback_exec_ns += _t_end - _t_exec;
             g_prof_server_op_count++;
         }
         return;
@@ -1052,6 +1150,7 @@ static void execute_one_op(
             for (size_t i = 0; i < stack.size() && i < schema_args.size(); i++) {
                 if (!coerce_ivalue(stack[i], schema_args[i].type())) {
                     viable = false;
+                    if (g_server_profiling_enabled) g_prof_server_coercion_fallback_count++;
                     break;
                 }
             }
@@ -1128,9 +1227,13 @@ static void execute_one_op(
 
         // Coercion failed — rewind and fall through to Python path
         pos = saved_pos;
+    } else {
+        // callboxed_blocked — increment counter
+        if (g_server_profiling_enabled) g_prof_server_blocked_fallback_count++;
     }
 
     // ── Python path: parse to py::objects, dispatch via PyObject_Call ──
+    uint64_t _t_fb_exec = 0;
     {
         // Acquire GIL if we don't have it (batch path)
         auto acquire = gil_released
@@ -1141,6 +1244,8 @@ static void execute_one_op(
         for (uint8_t i = 0; i < num_args; i++) {
             args[i] = parse_arg_from_store(buf, pos, store);
         }
+
+        _t_fb_exec = g_server_profiling_enabled ? now_ns() : 0;
 
         py::object result = py::reinterpret_steal<py::object>(
             PyObject_Call(info.py_op, args.ptr(), nullptr)
@@ -1177,7 +1282,9 @@ static void execute_one_op(
     }
 
     if (g_server_profiling_enabled) {
-        g_prof_server_parse_ns += now_ns() - _t_parse_start;
+        uint64_t _t_end = now_ns();
+        g_prof_server_parse_ns += _t_fb_exec - _t_parse_start;
+        g_prof_server_fallback_exec_ns += _t_end - _t_fb_exec;
         g_prof_server_op_count++;
     }
 }
@@ -1214,6 +1321,8 @@ size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store) {
     size_t total = static_cast<size_t>(len);
     size_t op_count = 0;
 
+    uint64_t _bt_func_start = g_server_profiling_enabled ? now_ns() : 0;
+
     {
         py::gil_scoped_release release;  // ~1.5ms continuous GIL-free
         at::AutoDispatchBelowADInplaceOrView guard;  // Skip AutogradCUDA + ADInplaceOrView
@@ -1224,17 +1333,164 @@ size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store) {
         output_ids.reserve(16);
         stack.reserve(16);
 
+        uint64_t _bt_loop_start = g_server_profiling_enabled ? now_ns() : 0;
+        uint64_t _bt_last_op_end = _bt_loop_start;
+
         size_t pos = 0;
         while (pos < total) {
             uint32_t op_len = read_uint32(buf, pos);
             size_t op_end = pos + op_len;
+
+            if (static_cast<uint8_t>(buf[pos]) == 0xFE) {
+                // copy_tensor: parse protobuf with GIL, execute copy_ (§6)
+                uint64_t _ct_t0 = g_server_profiling_enabled ? now_ns() : 0;
+                {
+                    py::gil_scoped_acquire acquire;
+
+                    uint64_t _ct_t_gil = g_server_profiling_enabled ? now_ns() : 0;
+
+                    py::module service_pb2 = py::module::import(
+                        "skytorch.torch.server.service_pb2");
+                    py::object copy_req = service_pb2.attr("CopyTensorRequest")();
+                    py::bytes proto_bytes(buf + pos + 1, op_len - 1);
+                    copy_req.attr("ParseFromString")(proto_bytes);
+
+                    uint64_t _ct_t_proto = g_server_profiling_enabled ? now_ns() : 0;
+
+                    // Handle metadata auto-creation for src/dst if needed
+                    for (const char* field : {"src_metadata", "dst_metadata"}) {
+                        if (copy_req.attr("HasField")(field).cast<bool>()) {
+                            py::object meta = copy_req.attr(field);
+                            uint64_t tid = meta.attr("tensor_id").cast<uint64_t>();
+                            if (!store.contains(tid)) {
+                                if (g_server_profiling_enabled)
+                                    g_prof_server_copy_tensor_meta_count++;
+                                // Extract protobuf fields and create tensor
+                                py::list py_shape = meta.attr("shape").cast<py::list>();
+                                py::list py_stride = meta.attr("stride").cast<py::list>();
+                                uint8_t ndim = static_cast<uint8_t>(py_shape.size());
+                                c10::SmallVector<int64_t, 8> m_shape(ndim);
+                                c10::SmallVector<int64_t, 8> m_stride(ndim);
+                                for (uint8_t i = 0; i < ndim; i++) {
+                                    m_shape[i] = py_shape[i].cast<int64_t>();
+                                    m_stride[i] = py_stride[i].cast<int64_t>();
+                                }
+                                std::string dtype_s = meta.attr("dtype").cast<std::string>();
+                                auto st_opt = resolve_dtype_scalar(
+                                    dtype_s.c_str(), dtype_s.size());
+                                if (!st_opt.has_value()) {
+                                    throw std::runtime_error(
+                                        "Unknown dtype in copy metadata: " + dtype_s);
+                                }
+                                auto st = *st_opt;
+                                std::string dt_s = meta.attr("device_type").cast<std::string>();
+                                int32_t di = meta.attr("device_index").cast<int32_t>();
+                                c10::DeviceType dev_t;
+                                if (dt_s == "cuda") {
+                                    dev_t = c10::kCUDA;
+                                } else if (dt_s == "cpu") {
+                                    dev_t = c10::kCPU;
+                                } else {
+                                    dev_t = c10::Device(dt_s).type();
+                                }
+                                c10::Device dev(dev_t,
+                                    static_cast<c10::DeviceIndex>(di));
+                                int64_t s_offset = meta.attr(
+                                    "storage_offset").cast<int64_t>();
+                                auto ks = dispatch_keyset_for_device(dev.type());
+                                auto tm = caffe2::TypeMeta::fromScalarType(st);
+
+                                at::Tensor t;
+                                if (meta.attr("HasField")(
+                                        "tensor_ref").cast<bool>()) {
+                                    uint64_t ref = meta.attr(
+                                        "tensor_ref").cast<uint64_t>();
+                                    at::Tensor& base = store.get(ref);
+                                    auto impl = c10::make_intrusive<at::TensorImpl>(
+                                        c10::Storage(base.storage()), ks, tm);
+                                    impl->set_sizes_and_strides(m_shape, m_stride);
+                                    impl->set_storage_offset(s_offset);
+                                    t = at::Tensor(std::move(impl));
+                                } else {
+                                    int64_t nb = meta.attr("nbytes").cast<int64_t>();
+                                    auto* alloc = c10::GetAllocator(dev.type());
+                                    auto stg = c10::Storage(
+                                        c10::Storage::use_byte_size_t(),
+                                        static_cast<size_t>(nb), alloc, false);
+                                    auto impl = c10::make_intrusive<at::TensorImpl>(
+                                        std::move(stg), ks, tm);
+                                    impl->set_sizes_and_strides(m_shape, m_stride);
+                                    impl->set_storage_offset(s_offset);
+                                    t = at::Tensor(std::move(impl));
+                                }
+                                store.set(tid, std::move(t));
+                            }
+                        }
+                    }
+
+                    uint64_t _ct_t_meta = g_server_profiling_enabled ? now_ns() : 0;
+
+                    uint64_t src_id = copy_req.attr(
+                        "src_tensor_id").cast<uint64_t>();
+                    uint64_t dst_id = copy_req.attr(
+                        "dst_tensor_id").cast<uint64_t>();
+                    at::Tensor& src = store.get(src_id);
+                    at::Tensor& dst = store.get(dst_id);
+                    dst.copy_(src);
+
+                    if (g_server_profiling_enabled) {
+                        uint64_t _ct_t_end = now_ns();
+                        g_prof_server_copy_tensor_count++;
+                        g_prof_server_copy_tensor_gil_ns += _ct_t_gil - _ct_t0;
+                        g_prof_server_copy_tensor_proto_ns += _ct_t_proto - _ct_t_gil;
+                        g_prof_server_copy_tensor_meta_ns += _ct_t_meta - _ct_t_proto;
+                        g_prof_server_copy_tensor_copy_ns += _ct_t_end - _ct_t_meta;
+                        g_prof_server_copy_tensor_total_ns += _ct_t_end - _ct_t0;
+                    }
+                }
+                pos = op_end;
+                op_count++;
+                if (g_server_profiling_enabled) _bt_last_op_end = now_ns();
+                continue;
+            }
+
+            if (g_server_profiling_enabled) {
+                g_prof_server_batch_interop_ns += now_ns() - _bt_last_op_end;
+            }
+
+            uint64_t _bt_op_start = g_server_profiling_enabled ? now_ns() : 0;
             execute_one_op(buf, pos, store, /*gil_released=*/true, output_ids, stack);
+            if (g_server_profiling_enabled) {
+                uint64_t _bt_op_end = now_ns();
+                g_prof_server_batch_op_wall_ns += _bt_op_end - _bt_op_start;
+                _bt_last_op_end = _bt_op_end;
+            }
+
             // Ensure we advance past exactly this op's data
             pos = op_end;
             op_count++;
         }
+
+        if (g_server_profiling_enabled) {
+            uint64_t _bt_loop_end = now_ns();
+            uint64_t _this_loop_ns = _bt_loop_end - _bt_loop_start;
+            g_prof_server_batch_loop_ns += _this_loop_ns;
+            g_prof_server_batch_count++;
+        }
     }
-    // GIL re-acquired; py::bytes destructor safe
+    // GIL re-acquired here (py::gil_scoped_release destructor)
+
+    if (g_server_profiling_enabled) {
+        uint64_t _bt_func_end = now_ns();
+        // boundary = total function time - loop time for THIS call
+        // We approximate by using the accumulated loop_ns delta from before the scope end
+        // Since we can't easily get per-call loop_ns here, we compute func_total and subtract later
+        g_prof_server_batch_boundary_ns += _bt_func_end - _bt_func_start;
+        // Note: batch_boundary_ns accumulates total function wall time.
+        // Actual boundary overhead = batch_boundary_ns - batch_loop_ns (computed in Python).
+    }
+
+    // py::bytes destructor safe (GIL held)
     return op_count;
 }
 
@@ -1249,8 +1505,8 @@ bool batch_has_special_op(py::bytes data) {
     size_t pos = 0;
     while (pos < total) {
         uint32_t op_len = read_uint32(buf, pos);
-        // Check first byte of op data for special markers (>= 0xFE)
-        if (static_cast<uint8_t>(buf[pos]) >= 0xFE) {
+        // Only flag 0xFF (module_forward) — 0xFE (copy_tensor) handled inline (§6)
+        if (static_cast<uint8_t>(buf[pos]) == 0xFF) {
             return true;
         }
         pos += op_len;

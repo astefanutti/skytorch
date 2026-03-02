@@ -13,6 +13,9 @@
 #include <pybind11/pybind11.h>
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <ATen/core/ivalue.h>
+#include <c10/core/TensorImpl.h>
+#include <c10/core/Allocator.h>
+#include <c10/util/SmallVector.h>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -119,10 +122,11 @@ void execute_raw_aten_inline(py::bytes data, TensorStore& store);
 size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store);
 
 /**
- * Scan a raw batched payload for special markers (>= 0xFE).
+ * Scan a raw batched payload for module_forward marker (0xFF).
  *
  * The batch format is [uint32_len][op_data]... — checks the first byte
- * of each op_data segment. Markers: 0xFE = copy_tensor, 0xFF = module forward.
+ * of each op_data segment. Only 0xFF (module forward) triggers mixed batch;
+ * 0xFE (copy_tensor) is handled inline in the C++ batch path.
  */
 bool batch_has_special_op(py::bytes data);
 

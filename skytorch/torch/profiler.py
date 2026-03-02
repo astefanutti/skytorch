@@ -360,6 +360,10 @@ class ServerProfiler:
         self.raw_batched_execute = Counter()
         self.total_ops: int = 0
 
+        # Mixed batch tracking
+        self.mixed_batch_calls: int = 0
+        self.mixed_batch_ops: int = 0
+
         # Sync counters
         self.sync_handle = Counter()
         self.scalar_gpu_sync = Counter()
@@ -407,7 +411,13 @@ class ServerProfiler:
             f"  Raw execute:        {self.raw_execute.count:,} calls | "
             f"{self.raw_execute.total_ms:,.0f} ms",
             f"  Batched execute:    {self.raw_batched_execute.count:,} calls | "
-            f"{self.raw_batched_execute.total_ms:,.0f} ms",
+            f"{self.raw_batched_execute.total_ms:,.0f} ms"
+            + (
+                f"  ({self.mixed_batch_calls:,} mixed, "
+                f"{self.mixed_batch_ops:,} ops)"
+                if self.mixed_batch_calls > 0
+                else ""
+            ),
             f"  Total execution:    {exec_ms:,.0f} ms ({exec_pct:.0f}%)",
             f"  Sync handle:        {sync_count:,} calls | "
             f"{self.sync_handle.total_ms:,.0f} ms ({sync_pct:.0f}%)",
@@ -502,8 +512,95 @@ class ServerProfiler:
                     if _metadata_create_count > 0:
                         lines.append(
                             f"    Metadata creates: {_metadata_create_count:,} "
-                            f"(at::empty overhead)"
+                            f"(direct TensorImpl)"
                         )
+                # Python fallback instrumentation
+                _kwargs_fb = cpp_prof.get("kwargs_fallback_count", 0)
+                _blocked_fb = cpp_prof.get("blocked_fallback_count", 0)
+                _coercion_fb = cpp_prof.get("coercion_fallback_count", 0)
+                _fallback_exec_ns = cpp_prof.get("fallback_exec_ns", 0)
+                _fb_total = _kwargs_fb + _blocked_fb + _coercion_fb
+                if _fb_total > 0:
+                    _fb_exec_us = (
+                        _fallback_exec_ns / _fb_total / 1000 if _fb_total > 0 else 0
+                    )
+                    lines.extend(
+                        [
+                            f"  Python fallback ops: {_fb_total:,}",
+                            f"    kwargs:            {_kwargs_fb:,}",
+                            f"    callboxed_blocked: {_blocked_fb:,}",
+                            f"    coercion failure:  {_coercion_fb:,}",
+                            f"    Execution time:    {_fb_exec_us:6.1f} us/op  |  "
+                            f"{_fallback_exec_ns / 1_000_000:,.0f} ms",
+                        ]
+                    )
+                # Copy_tensor inline profiling
+                _ct_count = cpp_prof.get("copy_tensor_count", 0)
+                if _ct_count > 0:
+                    _ct_total = cpp_prof.get("copy_tensor_total_ns", 0)
+                    _ct_gil = cpp_prof.get("copy_tensor_gil_ns", 0)
+                    _ct_proto = cpp_prof.get("copy_tensor_proto_ns", 0)
+                    _ct_meta = cpp_prof.get("copy_tensor_meta_ns", 0)
+                    _ct_copy = cpp_prof.get("copy_tensor_copy_ns", 0)
+                    _ct_meta_count = cpp_prof.get("copy_tensor_meta_count", 0)
+                    lines.extend(
+                        [
+                            f"  Copy_tensor ops:     {_ct_count:,}  "
+                            f"({_ct_total / _ct_count / 1000:.1f} us/op  |  "
+                            f"{_ct_total / 1_000_000:,.0f} ms)",
+                            f"    GIL acquire:       "
+                            f"{_ct_gil / _ct_count / 1000:6.1f} us/op  |  "
+                            f"{_ct_gil / 1_000_000:,.0f} ms",
+                            f"    Protobuf parse:    "
+                            f"{_ct_proto / _ct_count / 1000:6.1f} us/op  |  "
+                            f"{_ct_proto / 1_000_000:,.0f} ms",
+                            f"    Metadata create:   "
+                            f"{_ct_meta / _ct_count / 1000:6.1f} us/op  |  "
+                            f"{_ct_meta / 1_000_000:,.0f} ms"
+                            + (
+                                f"  ({_ct_meta_count:,} tensors)"
+                                if _ct_meta_count > 0
+                                else ""
+                            ),
+                            f"    copy_() exec:      "
+                            f"{_ct_copy / _ct_count / 1000:6.1f} us/op  |  "
+                            f"{_ct_copy / 1_000_000:,.0f} ms",
+                        ]
+                    )
+                # Batch-level decomposition
+                _bt_count = cpp_prof.get("batch_count", 0)
+                _bt_loop = cpp_prof.get("batch_loop_ns", 0)
+                _bt_boundary = cpp_prof.get("batch_boundary_ns", 0)
+                _bt_op_wall = cpp_prof.get("batch_op_wall_ns", 0)
+                _bt_interop = cpp_prof.get("batch_interop_ns", 0)
+                if _bt_count > 0 and _bt_boundary > 0:
+                    _bt_boundary_only = _bt_boundary - _bt_loop
+                    _bt_op_internal = (
+                        _parse_ns + _callboxed_ns + _output_ns + _fallback_exec_ns
+                    )
+                    _bt_op_overhead = _bt_op_wall - _bt_op_internal
+                    _batched_exec_ms = self.raw_batched_execute.total_ms
+                    _py_vs_cpp = _batched_exec_ms - _bt_boundary / 1_000_000
+                    lines.extend(
+                        [
+                            "",
+                            f"  Batch decomposition ({_bt_count:,} C++ batch calls):",
+                            f"    C++ func wall:     "
+                            f"{_bt_boundary / 1_000_000:,.0f} ms  "
+                            f"(loop: {_bt_loop / 1_000_000:,.0f} ms  |  "
+                            f"boundary: {_bt_boundary_only / 1_000_000:,.0f} ms)",
+                            f"    Op wall (outside):  "
+                            f"{_bt_op_wall / 1_000_000:,.0f} ms  "
+                            f"(internal: {_bt_op_internal / 1_000_000:,.0f} ms  |  "
+                            f"overhead: {_bt_op_overhead / 1_000_000:,.0f} ms)",
+                            f"    Inter-op gap:       "
+                            f"{_bt_interop / 1_000_000:,.0f} ms  "
+                            f"({_bt_interop / _cpp_op_count / 1000:.2f} us/op)",
+                            f"    Python↔C++ gap:     "
+                            f"{_py_vs_cpp:,.0f} ms  "
+                            f"(Python wall - C++ func wall)",
+                        ]
+                    )
             reset_server_profile_counters()
         except (ImportError, AttributeError):
             pass
