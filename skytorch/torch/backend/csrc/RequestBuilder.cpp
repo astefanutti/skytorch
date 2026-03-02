@@ -31,6 +31,22 @@ std::atomic<int64_t> g_prof_ivalue_to_py_ns{0};
 std::atomic<int64_t> g_prof_dispatch_cached_ns{0};
 std::atomic<int64_t> g_prof_submit_ns{0};
 std::atomic<int64_t> g_prof_rewrite_stack_ns{0};
+// Python fallback path counters (measured in FallbackKernel.cpp)
+std::atomic<int64_t> g_prof_python_fallback_count{0};
+std::atomic<int64_t> g_prof_python_fallback_ns{0};
+// Last dispatch end timestamp for inter-op gap measurement across paths
+std::atomic<int64_t> g_prof_last_dispatch_end_ns{0};
+std::atomic<int64_t> g_prof_inter_op_gap_total_ns{0};
+std::atomic<int64_t> g_prof_inter_op_gap_count{0};
+std::atomic<int64_t> g_prof_gil_release_count{0};
+std::atomic<int64_t> g_prof_gil_wait_ns{0};
+std::atomic<int64_t> g_prof_autograd_overhead_ns{0};
+std::atomic<int64_t> g_prof_outside_autograd_ns{0};
+std::atomic<int64_t> g_prof_outside_autograd_count{0};
+std::atomic<int64_t> g_prof_gap_hist[6] = {{0}, {0}, {0}, {0}, {0}, {0}};
+std::atomic<int64_t> g_prof_large_gap_gil_ns{0};
+std::atomic<int64_t> g_prof_large_gap_other_ns{0};
+std::atomic<int64_t> g_prof_large_gap_count{0};
 
 // Set of tensor IDs already registered with the server.
 // Checked in C++ to avoid Python dict lookups per tensor.
@@ -1053,6 +1069,45 @@ py::tuple compute_dispatch_context(
     return build_context_result(h, input_tensors, sky_device_index);
 }
 
+// --- Recursive sky device index scanner ---
+// Scans a Python object (including inside lists/tuples) for a sky tensor
+// to determine the sky device index. Used by dispatch_cached_aten before
+// hash_and_serialize_arg, which needs the device mapping for serialization.
+// Without recursion, ops like torch.cat (List[Tensor]) would fail to find
+// the sky device in their list argument and return None (uncacheable).
+
+static int64_t find_sky_device_recursive(PyObject* obj) {
+    if (THPVariable_Check(obj)) {
+        const auto& tensor = THPVariable_Unpack(obj);
+        if (tensor.device().type() == c10::DeviceType::PrivateUse1) {
+            return tensor.device().index();
+        }
+        return -1;
+    }
+    if (THPDevice_Check(obj)) {
+        const auto& device_obj = reinterpret_cast<THPDevice*>(obj)->device;
+        if (device_obj.type() == c10::DeviceType::PrivateUse1) {
+            return device_obj.has_index() ? device_obj.index() : 0;
+        }
+        return -1;
+    }
+    if (PyList_Check(obj)) {
+        Py_ssize_t n = PyList_GET_SIZE(obj);
+        for (Py_ssize_t i = 0; i < n; i++) {
+            int64_t idx = find_sky_device_recursive(PyList_GET_ITEM(obj, i));
+            if (idx >= 0) return idx;
+        }
+    }
+    if (PyTuple_Check(obj)) {
+        Py_ssize_t n = PyTuple_GET_SIZE(obj);
+        for (Py_ssize_t i = 0; i < n; i++) {
+            int64_t idx = find_sky_device_recursive(PyTuple_GET_ITEM(obj, i));
+            if (idx >= 0) return idx;
+        }
+    }
+    return -1;
+}
+
 // --- Fused hash + serialize for dispatch_cached_aten ---
 
 // Forward declaration
@@ -1357,6 +1412,20 @@ static bool hash_and_serialize_arg(
     }
 
     // Unsupported type — uncacheable
+    // Diagnostic logging (enabled by SKYTORCH_LOG_UNCACHEABLE=1 env var)
+    {
+        static const bool log_uncacheable =
+            (std::getenv("SKYTORCH_LOG_UNCACHEABLE") != nullptr);
+        if (log_uncacheable) {
+            PyObject* type_name = PyObject_GetAttrString(
+                reinterpret_cast<PyObject*>(Py_TYPE(ptr)), "__qualname__");
+            if (type_name) {
+                fprintf(stderr, "[skytorch] uncacheable arg type: %s\n",
+                        PyUnicode_AsUTF8(type_name));
+                Py_DECREF(type_name);
+            }
+        }
+    }
     return false;
 }
 
@@ -1404,19 +1473,13 @@ py::object dispatch_cached_aten(
 
     // We need a preliminary scan to find sky_device_index before we can determine
     // remote device mapping. But hash_and_serialize_arg needs the mapping for
-    // serialization. So: first check if we can get device from first tensor arg.
-    // If not found in first pass, we fall back.
-    // Strategy: Do a quick scan for sky device index first.
+    // serialization. Recursively scan args including inside lists/tuples to find
+    // sky tensors (needed for ops like torch.cat that take List[Tensor]).
     if (sky_device_index < 0) {
         Py_ssize_t n_args = PyTuple_GET_SIZE(args.ptr());
         for (Py_ssize_t i = 0; i < n_args && sky_device_index < 0; i++) {
-            PyObject* arg = PyTuple_GET_ITEM(args.ptr(), i);
-            if (THPVariable_Check(arg)) {
-                const auto& tensor = THPVariable_Unpack(arg);
-                if (tensor.device().type() == c10::DeviceType::PrivateUse1) {
-                    sky_device_index = tensor.device().index();
-                }
-            }
+            sky_device_index = find_sky_device_recursive(
+                PyTuple_GET_ITEM(args.ptr(), i));
         }
     }
 
@@ -1727,6 +1790,57 @@ py::object dispatch_cached_aten(
     return py::reinterpret_steal<py::object>(wrapper);
 }
 
+py::list flush_raw_batches(int threshold) {
+    // 1. Lock + swap g_raw_submit_buffer
+    std::vector<std::string> drained;
+    {
+        std::lock_guard<std::mutex> lock(g_raw_submit_mutex);
+        drained.swap(g_raw_submit_buffer);
+        g_raw_submit_wake_pending = false;
+    }
+
+    if (drained.empty()) {
+        return py::list();
+    }
+
+    py::list result;
+
+    // 2. Split into batches of <= threshold ops
+    size_t i = 0;
+    while (i < drained.size()) {
+        size_t batch_end = std::min(i + static_cast<size_t>(threshold), drained.size());
+        size_t count = batch_end - i;
+
+        if (count == 1) {
+            // 3a. Single op: return raw bytes directly
+            result.append(py::make_tuple(
+                py::bytes(drained[i]),
+                1
+            ));
+        } else {
+            // 3b. Multiple ops: concatenate with uint32 LE length prefixes
+            size_t total_size = 0;
+            for (size_t j = i; j < batch_end; j++) {
+                total_size += 4 + drained[j].size();
+            }
+            std::string concat;
+            concat.reserve(total_size);
+            for (size_t j = i; j < batch_end; j++) {
+                uint32_t len = static_cast<uint32_t>(drained[j].size());
+                concat.append(reinterpret_cast<const char*>(&len), 4);
+                concat.append(drained[j]);
+            }
+            result.append(py::make_tuple(
+                py::bytes(concat),
+                static_cast<int>(count)
+            ));
+        }
+        i = batch_end;
+    }
+
+    return result;
+}
+
 void set_profiling_enabled(bool enabled) {
     g_profiling_enabled = enabled;
 }
@@ -1742,6 +1856,33 @@ py::dict get_cpp_profile_counters() {
     d["dispatch_cached_ns"] = make_pair(g_prof_dispatch_cached_ns, count);
     d["submit_ns"] = make_pair(g_prof_submit_ns, count);
     d["rewrite_stack_ns"] = make_pair(g_prof_rewrite_stack_ns, count);
+    // Python fallback path counters
+    int64_t py_count = g_prof_python_fallback_count.load(std::memory_order_relaxed);
+    d["python_fallback_count"] = py::make_tuple(int64_t(0), py_count);
+    d["python_fallback_ns"] = make_pair(g_prof_python_fallback_ns, py_count);
+    // Inter-op gap (unified across C++ and Python paths)
+    int64_t gap_count = g_prof_inter_op_gap_count.load(std::memory_order_relaxed);
+    d["inter_op_gap_ns"] = make_pair(g_prof_inter_op_gap_total_ns, gap_count);
+    // GIL release count
+    int64_t gil_count = g_prof_gil_release_count.load(std::memory_order_relaxed);
+    d["gil_release_count"] = py::make_tuple(int64_t(0), gil_count);
+    // GIL acquisition wait time
+    d["gil_wait_ns"] = make_pair(g_prof_gil_wait_ns, count + py_count);
+    // Autograd overhead (includes fallback_kernel time inside)
+    d["autograd_overhead_ns"] = make_pair(g_prof_autograd_overhead_ns, count + py_count);
+    // Outside autograd: Python model code + PyTorch outer dispatcher
+    int64_t outside_count = g_prof_outside_autograd_count.load(std::memory_order_relaxed);
+    d["outside_autograd_ns"] = make_pair(g_prof_outside_autograd_ns, outside_count);
+    // Large gap (>1ms) decomposition
+    int64_t lg_count = g_prof_large_gap_count.load(std::memory_order_relaxed);
+    d["large_gap_gil_ns"] = make_pair(g_prof_large_gap_gil_ns, lg_count);
+    d["large_gap_other_ns"] = make_pair(g_prof_large_gap_other_ns, lg_count);
+    // Gap histogram: <1µs, 1-10µs, 10-100µs, 100µs-1ms, 1-10ms, >10ms
+    py::list hist;
+    for (int i = 0; i < 6; i++) {
+        hist.append(g_prof_gap_hist[i].load(std::memory_order_relaxed));
+    }
+    d["gap_histogram"] = hist;
     return d;
 }
 
@@ -1751,6 +1892,22 @@ void reset_cpp_profile_counters() {
     g_prof_dispatch_cached_ns.store(0, std::memory_order_relaxed);
     g_prof_submit_ns.store(0, std::memory_order_relaxed);
     g_prof_rewrite_stack_ns.store(0, std::memory_order_relaxed);
+    g_prof_python_fallback_count.store(0, std::memory_order_relaxed);
+    g_prof_python_fallback_ns.store(0, std::memory_order_relaxed);
+    g_prof_last_dispatch_end_ns.store(0, std::memory_order_relaxed);
+    g_prof_inter_op_gap_total_ns.store(0, std::memory_order_relaxed);
+    g_prof_inter_op_gap_count.store(0, std::memory_order_relaxed);
+    g_prof_gil_release_count.store(0, std::memory_order_relaxed);
+    g_prof_gil_wait_ns.store(0, std::memory_order_relaxed);
+    g_prof_autograd_overhead_ns.store(0, std::memory_order_relaxed);
+    g_prof_outside_autograd_ns.store(0, std::memory_order_relaxed);
+    g_prof_outside_autograd_count.store(0, std::memory_order_relaxed);
+    g_prof_large_gap_gil_ns.store(0, std::memory_order_relaxed);
+    g_prof_large_gap_other_ns.store(0, std::memory_order_relaxed);
+    g_prof_large_gap_count.store(0, std::memory_order_relaxed);
+    for (int i = 0; i < 6; i++) {
+        g_prof_gap_hist[i].store(0, std::memory_order_relaxed);
+    }
 }
 
 // --- Fire-and-forget ops counter ---

@@ -355,6 +355,9 @@ PYBIND11_MODULE(_C, m) {
         py::arg("raw_bytes"));
     m.def("_drain_raw_submit_buffer", &skytorch::drain_raw_submit_buffer,
         "Drain all pending raw bytes from the C++ submit buffer");
+    m.def("_flush_raw_batches", &skytorch::flush_raw_batches,
+        "Drain C++ submit buffer and build batched request payloads",
+        py::arg("threshold"));
     // Fire-and-forget ops counter (atomic, GIL-free)
     m.def("_increment_ops_counter", &skytorch::increment_ops_counter,
         "Increment the fire-and-forget ops counter");

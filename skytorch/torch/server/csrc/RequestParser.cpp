@@ -1289,6 +1289,141 @@ static void execute_one_op(
     }
 }
 
+// --- Internal: process ATen segment from raw buffer range ---
+
+/**
+ * Process a contiguous ATen segment from buf[start..end).
+ * The segment must be in [uint32_len][op_data]... format.
+ * Handles 0xFE (copy_tensor) inline. GIL must NOT be held.
+ * Buffers (output_ids, stack) are reused across calls.
+ */
+static size_t execute_aten_segment(
+    char* buf, size_t start, size_t end, TensorStore& store,
+    std::vector<uint64_t>& output_ids, std::vector<c10::IValue>& stack)
+{
+    size_t pos = start;
+    size_t op_count = 0;
+    uint64_t _bt_last_op_end = g_server_profiling_enabled ? now_ns() : 0;
+
+    while (pos < end) {
+        uint32_t op_len = read_uint32(buf, pos);
+        size_t op_end = pos + op_len;
+
+        if (static_cast<uint8_t>(buf[pos]) == 0xFE) {
+            // copy_tensor inline — same as in execute_raw_batched_aten_inline
+            uint64_t _ct_t0 = g_server_profiling_enabled ? now_ns() : 0;
+            {
+                py::gil_scoped_acquire acquire;
+                uint64_t _ct_t_gil = g_server_profiling_enabled ? now_ns() : 0;
+
+                py::module service_pb2 = py::module::import(
+                    "skytorch.torch.server.service_pb2");
+                py::object copy_req = service_pb2.attr("CopyTensorRequest")();
+                py::bytes proto_bytes(buf + pos + 1, op_len - 1);
+                copy_req.attr("ParseFromString")(proto_bytes);
+
+                uint64_t _ct_t_proto = g_server_profiling_enabled ? now_ns() : 0;
+
+                for (const char* field : {"src_metadata", "dst_metadata"}) {
+                    if (copy_req.attr("HasField")(field).cast<bool>()) {
+                        py::object meta = copy_req.attr(field);
+                        uint64_t tid = meta.attr("tensor_id").cast<uint64_t>();
+                        if (!store.contains(tid)) {
+                            if (g_server_profiling_enabled)
+                                g_prof_server_copy_tensor_meta_count++;
+                            py::list py_shape = meta.attr("shape").cast<py::list>();
+                            py::list py_stride = meta.attr("stride").cast<py::list>();
+                            uint8_t ndim = static_cast<uint8_t>(py_shape.size());
+                            c10::SmallVector<int64_t, 8> m_shape(ndim);
+                            c10::SmallVector<int64_t, 8> m_stride(ndim);
+                            for (uint8_t i = 0; i < ndim; i++) {
+                                m_shape[i] = py_shape[i].cast<int64_t>();
+                                m_stride[i] = py_stride[i].cast<int64_t>();
+                            }
+                            std::string dtype_s = meta.attr("dtype").cast<std::string>();
+                            auto st_opt = resolve_dtype_scalar(
+                                dtype_s.c_str(), dtype_s.size());
+                            if (!st_opt.has_value())
+                                throw std::runtime_error(
+                                    "Unknown dtype in copy metadata: " + dtype_s);
+                            auto st = *st_opt;
+                            std::string dt_s = meta.attr("device_type").cast<std::string>();
+                            int32_t di = meta.attr("device_index").cast<int32_t>();
+                            c10::DeviceType dev_t;
+                            if (dt_s == "cuda") dev_t = c10::kCUDA;
+                            else if (dt_s == "cpu") dev_t = c10::kCPU;
+                            else dev_t = c10::Device(dt_s).type();
+                            c10::Device dev(dev_t, static_cast<c10::DeviceIndex>(di));
+                            int64_t s_offset = meta.attr("storage_offset").cast<int64_t>();
+                            auto ks = dispatch_keyset_for_device(dev.type());
+                            auto tm = caffe2::TypeMeta::fromScalarType(st);
+                            at::Tensor t;
+                            if (meta.attr("HasField")("tensor_ref").cast<bool>()) {
+                                uint64_t ref = meta.attr("tensor_ref").cast<uint64_t>();
+                                at::Tensor& base = store.get(ref);
+                                auto impl = c10::make_intrusive<at::TensorImpl>(
+                                    c10::Storage(base.storage()), ks, tm);
+                                impl->set_sizes_and_strides(m_shape, m_stride);
+                                impl->set_storage_offset(s_offset);
+                                t = at::Tensor(std::move(impl));
+                            } else {
+                                int64_t nb = meta.attr("nbytes").cast<int64_t>();
+                                auto* alloc = c10::GetAllocator(dev.type());
+                                auto stg = c10::Storage(
+                                    c10::Storage::use_byte_size_t(),
+                                    static_cast<size_t>(nb), alloc, false);
+                                auto impl = c10::make_intrusive<at::TensorImpl>(
+                                    std::move(stg), ks, tm);
+                                impl->set_sizes_and_strides(m_shape, m_stride);
+                                impl->set_storage_offset(s_offset);
+                                t = at::Tensor(std::move(impl));
+                            }
+                            store.set(tid, std::move(t));
+                        }
+                    }
+                }
+
+                uint64_t _ct_t_meta = g_server_profiling_enabled ? now_ns() : 0;
+                uint64_t src_id = copy_req.attr("src_tensor_id").cast<uint64_t>();
+                uint64_t dst_id = copy_req.attr("dst_tensor_id").cast<uint64_t>();
+                at::Tensor& src = store.get(src_id);
+                at::Tensor& dst = store.get(dst_id);
+                dst.copy_(src);
+
+                if (g_server_profiling_enabled) {
+                    uint64_t _ct_t_end = now_ns();
+                    g_prof_server_copy_tensor_count++;
+                    g_prof_server_copy_tensor_gil_ns += _ct_t_gil - _ct_t0;
+                    g_prof_server_copy_tensor_proto_ns += _ct_t_proto - _ct_t_gil;
+                    g_prof_server_copy_tensor_meta_ns += _ct_t_meta - _ct_t_proto;
+                    g_prof_server_copy_tensor_copy_ns += _ct_t_end - _ct_t_meta;
+                    g_prof_server_copy_tensor_total_ns += _ct_t_end - _ct_t0;
+                }
+            }
+            pos = op_end;
+            op_count++;
+            if (g_server_profiling_enabled) _bt_last_op_end = now_ns();
+            continue;
+        }
+
+        if (g_server_profiling_enabled) {
+            g_prof_server_batch_interop_ns += now_ns() - _bt_last_op_end;
+        }
+
+        uint64_t _bt_op_start = g_server_profiling_enabled ? now_ns() : 0;
+        execute_one_op(buf, pos, store, /*gil_released=*/true, output_ids, stack);
+        if (g_server_profiling_enabled) {
+            uint64_t _bt_op_end = now_ns();
+            g_prof_server_batch_op_wall_ns += _bt_op_end - _bt_op_start;
+            _bt_last_op_end = _bt_op_end;
+        }
+
+        pos = op_end;
+        op_count++;
+    }
+    return op_count;
+}
+
 // --- Exported functions ---
 
 void execute_raw_aten_inline(py::bytes data, TensorStore& store) {
@@ -1324,173 +1459,107 @@ size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store) {
     uint64_t _bt_func_start = g_server_profiling_enabled ? now_ns() : 0;
 
     {
-        py::gil_scoped_release release;  // ~1.5ms continuous GIL-free
-        at::AutoDispatchBelowADInplaceOrView guard;  // Skip AutogradCUDA + ADInplaceOrView
+        py::gil_scoped_release release;
+        at::AutoDispatchBelowADInplaceOrView guard;
 
-        // Pre-allocate reusable buffers for the batch loop (Step 4)
         std::vector<uint64_t> output_ids;
         std::vector<c10::IValue> stack;
         output_ids.reserve(16);
         stack.reserve(16);
 
         uint64_t _bt_loop_start = g_server_profiling_enabled ? now_ns() : 0;
-        uint64_t _bt_last_op_end = _bt_loop_start;
 
-        size_t pos = 0;
-        while (pos < total) {
-            uint32_t op_len = read_uint32(buf, pos);
-            size_t op_end = pos + op_len;
-
-            if (static_cast<uint8_t>(buf[pos]) == 0xFE) {
-                // copy_tensor: parse protobuf with GIL, execute copy_ (§6)
-                uint64_t _ct_t0 = g_server_profiling_enabled ? now_ns() : 0;
-                {
-                    py::gil_scoped_acquire acquire;
-
-                    uint64_t _ct_t_gil = g_server_profiling_enabled ? now_ns() : 0;
-
-                    py::module service_pb2 = py::module::import(
-                        "skytorch.torch.server.service_pb2");
-                    py::object copy_req = service_pb2.attr("CopyTensorRequest")();
-                    py::bytes proto_bytes(buf + pos + 1, op_len - 1);
-                    copy_req.attr("ParseFromString")(proto_bytes);
-
-                    uint64_t _ct_t_proto = g_server_profiling_enabled ? now_ns() : 0;
-
-                    // Handle metadata auto-creation for src/dst if needed
-                    for (const char* field : {"src_metadata", "dst_metadata"}) {
-                        if (copy_req.attr("HasField")(field).cast<bool>()) {
-                            py::object meta = copy_req.attr(field);
-                            uint64_t tid = meta.attr("tensor_id").cast<uint64_t>();
-                            if (!store.contains(tid)) {
-                                if (g_server_profiling_enabled)
-                                    g_prof_server_copy_tensor_meta_count++;
-                                // Extract protobuf fields and create tensor
-                                py::list py_shape = meta.attr("shape").cast<py::list>();
-                                py::list py_stride = meta.attr("stride").cast<py::list>();
-                                uint8_t ndim = static_cast<uint8_t>(py_shape.size());
-                                c10::SmallVector<int64_t, 8> m_shape(ndim);
-                                c10::SmallVector<int64_t, 8> m_stride(ndim);
-                                for (uint8_t i = 0; i < ndim; i++) {
-                                    m_shape[i] = py_shape[i].cast<int64_t>();
-                                    m_stride[i] = py_stride[i].cast<int64_t>();
-                                }
-                                std::string dtype_s = meta.attr("dtype").cast<std::string>();
-                                auto st_opt = resolve_dtype_scalar(
-                                    dtype_s.c_str(), dtype_s.size());
-                                if (!st_opt.has_value()) {
-                                    throw std::runtime_error(
-                                        "Unknown dtype in copy metadata: " + dtype_s);
-                                }
-                                auto st = *st_opt;
-                                std::string dt_s = meta.attr("device_type").cast<std::string>();
-                                int32_t di = meta.attr("device_index").cast<int32_t>();
-                                c10::DeviceType dev_t;
-                                if (dt_s == "cuda") {
-                                    dev_t = c10::kCUDA;
-                                } else if (dt_s == "cpu") {
-                                    dev_t = c10::kCPU;
-                                } else {
-                                    dev_t = c10::Device(dt_s).type();
-                                }
-                                c10::Device dev(dev_t,
-                                    static_cast<c10::DeviceIndex>(di));
-                                int64_t s_offset = meta.attr(
-                                    "storage_offset").cast<int64_t>();
-                                auto ks = dispatch_keyset_for_device(dev.type());
-                                auto tm = caffe2::TypeMeta::fromScalarType(st);
-
-                                at::Tensor t;
-                                if (meta.attr("HasField")(
-                                        "tensor_ref").cast<bool>()) {
-                                    uint64_t ref = meta.attr(
-                                        "tensor_ref").cast<uint64_t>();
-                                    at::Tensor& base = store.get(ref);
-                                    auto impl = c10::make_intrusive<at::TensorImpl>(
-                                        c10::Storage(base.storage()), ks, tm);
-                                    impl->set_sizes_and_strides(m_shape, m_stride);
-                                    impl->set_storage_offset(s_offset);
-                                    t = at::Tensor(std::move(impl));
-                                } else {
-                                    int64_t nb = meta.attr("nbytes").cast<int64_t>();
-                                    auto* alloc = c10::GetAllocator(dev.type());
-                                    auto stg = c10::Storage(
-                                        c10::Storage::use_byte_size_t(),
-                                        static_cast<size_t>(nb), alloc, false);
-                                    auto impl = c10::make_intrusive<at::TensorImpl>(
-                                        std::move(stg), ks, tm);
-                                    impl->set_sizes_and_strides(m_shape, m_stride);
-                                    impl->set_storage_offset(s_offset);
-                                    t = at::Tensor(std::move(impl));
-                                }
-                                store.set(tid, std::move(t));
-                            }
-                        }
-                    }
-
-                    uint64_t _ct_t_meta = g_server_profiling_enabled ? now_ns() : 0;
-
-                    uint64_t src_id = copy_req.attr(
-                        "src_tensor_id").cast<uint64_t>();
-                    uint64_t dst_id = copy_req.attr(
-                        "dst_tensor_id").cast<uint64_t>();
-                    at::Tensor& src = store.get(src_id);
-                    at::Tensor& dst = store.get(dst_id);
-                    dst.copy_(src);
-
-                    if (g_server_profiling_enabled) {
-                        uint64_t _ct_t_end = now_ns();
-                        g_prof_server_copy_tensor_count++;
-                        g_prof_server_copy_tensor_gil_ns += _ct_t_gil - _ct_t0;
-                        g_prof_server_copy_tensor_proto_ns += _ct_t_proto - _ct_t_gil;
-                        g_prof_server_copy_tensor_meta_ns += _ct_t_meta - _ct_t_proto;
-                        g_prof_server_copy_tensor_copy_ns += _ct_t_end - _ct_t_meta;
-                        g_prof_server_copy_tensor_total_ns += _ct_t_end - _ct_t0;
-                    }
-                }
-                pos = op_end;
-                op_count++;
-                if (g_server_profiling_enabled) _bt_last_op_end = now_ns();
-                continue;
-            }
-
-            if (g_server_profiling_enabled) {
-                g_prof_server_batch_interop_ns += now_ns() - _bt_last_op_end;
-            }
-
-            uint64_t _bt_op_start = g_server_profiling_enabled ? now_ns() : 0;
-            execute_one_op(buf, pos, store, /*gil_released=*/true, output_ids, stack);
-            if (g_server_profiling_enabled) {
-                uint64_t _bt_op_end = now_ns();
-                g_prof_server_batch_op_wall_ns += _bt_op_end - _bt_op_start;
-                _bt_last_op_end = _bt_op_end;
-            }
-
-            // Ensure we advance past exactly this op's data
-            pos = op_end;
-            op_count++;
-        }
+        op_count = execute_aten_segment(buf, 0, total, store, output_ids, stack);
 
         if (g_server_profiling_enabled) {
-            uint64_t _bt_loop_end = now_ns();
-            uint64_t _this_loop_ns = _bt_loop_end - _bt_loop_start;
-            g_prof_server_batch_loop_ns += _this_loop_ns;
+            g_prof_server_batch_loop_ns += now_ns() - _bt_loop_start;
             g_prof_server_batch_count++;
         }
     }
-    // GIL re-acquired here (py::gil_scoped_release destructor)
 
     if (g_server_profiling_enabled) {
-        uint64_t _bt_func_end = now_ns();
-        // boundary = total function time - loop time for THIS call
-        // We approximate by using the accumulated loop_ns delta from before the scope end
-        // Since we can't easily get per-call loop_ns here, we compute func_total and subtract later
-        g_prof_server_batch_boundary_ns += _bt_func_end - _bt_func_start;
-        // Note: batch_boundary_ns accumulates total function wall time.
-        // Actual boundary overhead = batch_boundary_ns - batch_loop_ns (computed in Python).
+        g_prof_server_batch_boundary_ns += now_ns() - _bt_func_start;
     }
 
-    // py::bytes destructor safe (GIL held)
+    return op_count;
+}
+
+size_t execute_raw_mixed_batch_inline(
+    py::bytes data, TensorStore& store, py::object module_forward_cb)
+{
+    char* buf;
+    Py_ssize_t len;
+    if (PyBytes_AsStringAndSize(data.ptr(), &buf, &len) < 0) {
+        throw py::error_already_set();
+    }
+
+    size_t total = static_cast<size_t>(len);
+    size_t op_count = 0;
+
+    uint64_t _bt_func_start = g_server_profiling_enabled ? now_ns() : 0;
+
+    {
+        py::gil_scoped_release release;
+        at::AutoDispatchBelowADInplaceOrView guard;
+
+        std::vector<uint64_t> output_ids;
+        std::vector<c10::IValue> stack;
+        output_ids.reserve(16);
+        stack.reserve(16);
+
+        uint64_t _bt_loop_start = g_server_profiling_enabled ? now_ns() : 0;
+
+        size_t pos = 0;
+        size_t segment_start = 0;
+        bool has_segment = false;
+
+        while (pos < total) {
+            uint32_t op_len;
+            std::memcpy(&op_len, buf + pos, 4);
+
+            if (static_cast<uint8_t>(buf[pos + 4]) == 0xFF) {
+                // Flush accumulated ATen segment
+                if (has_segment) {
+                    op_count += execute_aten_segment(
+                        buf, segment_start, pos, store, output_ids, stack);
+                    has_segment = false;
+                }
+
+                // Handle module_forward via Python callback (needs GIL)
+                {
+                    py::gil_scoped_acquire acquire;
+                    // Pass the raw data buffer, op offset, and op end to callback
+                    // Callback receives (data, op_data_start, op_data_end) for
+                    // binary parsing without bytes copy
+                    module_forward_cb(data, pos + 4, pos + 4 + op_len);
+                }
+                op_count++;
+                pos += 4 + op_len;
+            } else {
+                if (!has_segment) {
+                    segment_start = pos;
+                    has_segment = true;
+                }
+                pos += 4 + op_len;
+            }
+        }
+
+        // Flush final segment
+        if (has_segment) {
+            op_count += execute_aten_segment(
+                buf, segment_start, total, store, output_ids, stack);
+        }
+
+        if (g_server_profiling_enabled) {
+            g_prof_server_batch_loop_ns += now_ns() - _bt_loop_start;
+            g_prof_server_batch_count++;
+        }
+    }
+
+    if (g_server_profiling_enabled) {
+        g_prof_server_batch_boundary_ns += now_ns() - _bt_func_start;
+    }
+
     return op_count;
 }
 

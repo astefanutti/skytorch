@@ -15,6 +15,7 @@ import asyncio
 import collections
 import logging
 import os
+import struct
 import threading
 import time
 from dataclasses import dataclass
@@ -353,15 +354,20 @@ class StreamManager:
         self._pending.clear()
 
     def _drain_cpp_into_mt_ops(self) -> None:
-        """Drain C++ raw submit buffer into _mt_ops. Caller must hold _mt_lock."""
+        """Drain C++ raw submit buffer into _mt_ops. Caller must hold _mt_lock.
+
+        Uses C++ flush_raw_batches to build batched payloads in C++,
+        reducing event loop GIL-holding time from ~200-500us (Python
+        drain + struct.pack + bytes.join) to ~5-10us (C++ concatenation).
+        """
         if not self._cpp_submit_available:
             return
         try:
-            from skytorch.torch.backend._C import _drain_raw_submit_buffer
+            from skytorch.torch.backend._C import _flush_raw_batches
 
-            cpp_ops = _drain_raw_submit_buffer()
-            for data in cpp_ops:
-                self._mt_ops.append(("raw", data))
+            batches = _flush_raw_batches(self._BATCH_FLUSH_THRESHOLD)
+            for batch_bytes, count in batches:
+                self._mt_ops.append(("cpp_batch", (batch_bytes, count)))
         except (ImportError, AttributeError):
             pass
 
@@ -411,6 +417,25 @@ class StreamManager:
         for op_type, data in ops:
             if op_type == "raw":
                 self._enqueue_execute_aten_bytes(data)
+            elif op_type == "cpp_batch":
+                # Pre-batched by C++ flush_raw_batches: (bytes, count).
+                # Flush any pending _raw_batch_buffer first to preserve FIFO
+                # ordering with prior "raw" entries.
+                self._flush_raw_batch()
+                batch_bytes, count = data
+                if PROFILING_ENABLED:
+                    from skytorch.torch.profiler import ClientProfiler
+
+                    _prof = ClientProfiler.get()
+                    _prof.batch_count.add_count()
+                    _prof.batch_size_total += count
+                    if count > _prof.batch_size_max:
+                        _prof.batch_size_max = count
+                if count == 1:
+                    req = service_pb2.StreamRequest(raw_execute_aten=batch_bytes)
+                else:
+                    req = service_pb2.StreamRequest(raw_batched_execute_aten=batch_bytes)
+                self._request_queue.put_nowait(req)
             elif op_type == "aten":
                 self._enqueue_execute_aten(data)
             elif op_type == "req":
@@ -868,16 +893,31 @@ class StreamManager:
         Used when output tensors are pre-allocated by the client (cached shapes).
         The request must have output_tensor_ids and output_metadata populated.
 
-        Serialized with a 0xFF marker byte prefix and routed through the raw
-        binary ATen batching pipeline, so module forward ops are batched with
-        surrounding ATen ops instead of forcing an immediate flush.
+        Serialized as binary with a 0xFF marker byte prefix:
+        [0xFF][model_id:u64][path_len:u16][path:utf8][n_in:u8][in_ids:u64...][n_out:u8][out_ids:u64...]
+
+        Routed through the raw binary ATen batching pipeline, so module forward
+        ops are batched with surrounding ATen ops.
         """
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 f"Executing module forward (ff): model_id={request.model_id} "
                 f"module={request.module_path} outputs={list(request.output_tensor_ids)}"
             )
-        raw_bytes = b"\xff" + request.SerializeToString()
+        path_bytes = request.module_path.encode("utf-8")
+        n_in = len(request.input_tensor_ids)
+        n_out = len(request.output_tensor_ids)
+        raw_bytes = struct.pack(
+            f"<BQH{len(path_bytes)}sB{n_in}QB{n_out}Q",
+            0xFF,
+            request.model_id,
+            len(path_bytes),
+            path_bytes,
+            n_in,
+            *request.input_tensor_ids,
+            n_out,
+            *request.output_tensor_ids,
+        )
         self.submit_execute_aten_bytes(raw_bytes)
 
     def submit_release_model(self, request: service_pb2.ReleaseModelRequest) -> None:

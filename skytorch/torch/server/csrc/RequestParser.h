@@ -122,6 +122,17 @@ void execute_raw_aten_inline(py::bytes data, TensorStore& store);
 size_t execute_raw_batched_aten_inline(py::bytes data, TensorStore& store);
 
 /**
+ * Execute a mixed batch: ATen segments via C++ batch path, module_forward via callback.
+ *
+ * Scans the batch buffer for 0xFF markers. Contiguous ATen/copy_tensor segments
+ * are processed directly from the original buffer (no copy). Module_forward ops
+ * trigger the Python callback with (data, offset, end) for binary parsing.
+ * Returns the number of ops executed.
+ */
+size_t execute_raw_mixed_batch_inline(
+    py::bytes data, TensorStore& store, py::object module_forward_cb);
+
+/**
  * Scan a raw batched payload for module_forward marker (0xFF).
  *
  * The batch format is [uint32_len][op_data]... — checks the first byte

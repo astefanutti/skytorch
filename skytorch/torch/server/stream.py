@@ -4,12 +4,15 @@ import logging
 import struct
 import time
 
+import torch
+
 logger = logging.getLogger(__name__)
 
 try:
     from skytorch.torch.server._C import (
         execute_raw_aten_inline as _cpp_execute_raw_aten_inline,
         execute_raw_batched_aten_inline as _cpp_execute_raw_batched_aten_inline,
+        execute_raw_mixed_batch_inline as _cpp_execute_raw_mixed_batch_inline,
         batch_has_special_op as _cpp_batch_has_special_op,
         set_server_profiling_enabled as _cpp_set_server_profiling_enabled,
     )
@@ -19,6 +22,8 @@ except ImportError:
     _USE_CPP_PARSER = False
 
 _STRUCT_I = struct.Struct("<I")  # uint32
+_STRUCT_Q = struct.Struct("<Q")  # uint64
+_STRUCT_H = struct.Struct("<H")  # uint16
 
 # Work item type tags for the per-stream worker queue
 RAW = 0
@@ -33,6 +38,84 @@ SHUTDOWN = 5
 # and no ATen op has 254+ arguments.
 _MODULE_FORWARD_MARKER = 0xFF
 _COPY_TENSOR_MARKER = 0xFE
+
+
+def _parse_and_execute_module_forward_binary(data: bytes, pos: int, end: int, servicer) -> None:
+    """Parse binary module_forward format and execute directly.
+
+    Binary format (after 0xFF marker byte):
+    [model_id:u64][path_len:u16][path:utf8][n_in:u8][in_ids:u64...][n_out:u8][out_ids:u64...]
+
+    Avoids protobuf object creation and ParseFromString overhead.
+    """
+    # Skip marker byte
+    p = pos + 1
+
+    model_id = _STRUCT_Q.unpack_from(data, p)[0]
+    p += 8
+
+    path_len = _STRUCT_H.unpack_from(data, p)[0]
+    p += 2
+    module_path = data[p : p + path_len].decode("utf-8")
+    p += path_len
+
+    n_in = data[p]
+    p += 1
+    input_ids = struct.unpack_from(f"<{n_in}Q", data, p)
+    p += n_in * 8
+
+    n_out = data[p]
+    p += 1
+    output_ids = struct.unpack_from(f"<{n_out}Q", data, p)
+
+    # Resolve module (cached)
+    key = (model_id, module_path)
+    module = servicer._module_cache.get(key)
+    if module is None:
+        model = servicer._retained_models.get(model_id)
+        if model is None:
+            raise RuntimeError(f"Model {model_id} not found")
+        module = model
+        if module_path:
+            for part in module_path.split("."):
+                if part.isdigit():
+                    module = module[int(part)]
+                else:
+                    module = getattr(module, part)
+        servicer._module_cache[key] = module
+
+    # Get inputs from TensorStore directly
+    store = servicer.tensor_manager.store
+    if store is not None:
+        inputs = [store.get(tid) for tid in input_ids]
+    else:
+        inputs = [servicer.tensor_manager.get(tid) for tid in input_ids]
+
+    # Execute
+    result = module(*inputs)
+
+    # Normalize result
+    if isinstance(result, torch.Tensor):
+        result_tensors = [result]
+    elif isinstance(result, (tuple, list)):
+        result_tensors = [t for t in result if isinstance(t, torch.Tensor)]
+    else:
+        result_tensors = []
+
+    # Validate and register outputs
+    if len(result_tensors) != len(output_ids):
+        raise RuntimeError(
+            f"Module forward output count mismatch for {module_path}: "
+            f"expected {len(output_ids)}, got {len(result_tensors)}"
+        )
+    if store is not None:
+        for tid, tensor in zip(output_ids, result_tensors):
+            if tensor is not None:
+                store.set(tid, tensor)
+    else:
+        for tid, tensor in zip(output_ids, result_tensors):
+            if tensor is not None:
+                servicer.tensor_manager.register(tid, tensor)
 
 
 def _batch_has_special_op(raw_data: bytes) -> bool:
@@ -63,51 +146,47 @@ def _execute_mixed_batch(raw_data: bytes, servicer) -> int:
 
     Returns the total number of ops executed.
     """
-    from skytorch.torch.server import service_pb2
+    if _USE_CPP_PARSER:
+        # C++ handles scanning, segment splitting, and ATen batch execution.
+        # Only module_forward ops call back to Python (no bytes copy for ATen segments).
+        store = servicer.tensor_manager.store
 
+        def _module_forward_cb(data, start, end):
+            """Callback from C++ for module_forward ops — receives raw buffer offsets."""
+            with torch.no_grad():
+                _parse_and_execute_module_forward_binary(data, start, end, servicer)
+
+        return _cpp_execute_raw_mixed_batch_inline(raw_data, store, _module_forward_cb)
+
+    # Python fallback: scan and split manually
     pos = 0
     n = len(raw_data)
     n_ops = 0
-    segment_start = -1  # start offset of current ATen segment, -1 = no segment
-    store = servicer.tensor_manager.store if _USE_CPP_PARSER else None
+    segment_start = -1
 
-    while pos < n:
-        op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
-        marker = raw_data[pos + 4]  # first byte of op_data
+    with torch.no_grad():
+        while pos < n:
+            op_len = _STRUCT_I.unpack_from(raw_data, pos)[0]
+            marker = raw_data[pos + 4]
 
-        if marker == _MODULE_FORWARD_MARKER:
-            # Flush accumulated ATen segment via C++ batch path
-            if segment_start >= 0:
-                if _USE_CPP_PARSER:
-                    n_ops += _cpp_execute_raw_batched_aten_inline(
-                        raw_data[segment_start:pos], store
-                    )
-                else:
+            if marker == _MODULE_FORWARD_MARKER:
+                if segment_start >= 0:
                     n_ops += _execute_segment_python(
                         raw_data, segment_start, pos, servicer
                     )
-                segment_start = -1
+                    segment_start = -1
 
-            # Handle module_forward individually
-            op_data = raw_data[pos + 4 : pos + 4 + op_len]
-            fwd_request = service_pb2.ExecuteModuleForwardRequest()
-            fwd_request.ParseFromString(op_data[1:])
-            servicer._handle_execute_module_forward_ff(fwd_request)
-            n_ops += 1
-            pos += 4 + op_len
-        else:
-            # ATen op or copy_tensor — accumulate into segment
-            if segment_start < 0:
-                segment_start = pos
-            pos += 4 + op_len
+                _parse_and_execute_module_forward_binary(
+                    raw_data, pos + 4, pos + 4 + op_len, servicer
+                )
+                n_ops += 1
+                pos += 4 + op_len
+            else:
+                if segment_start < 0:
+                    segment_start = pos
+                pos += 4 + op_len
 
-    # Flush final segment
-    if segment_start >= 0:
-        if _USE_CPP_PARSER:
-            n_ops += _cpp_execute_raw_batched_aten_inline(
-                raw_data[segment_start:n], store
-            )
-        else:
+        if segment_start >= 0:
             n_ops += _execute_segment_python(
                 raw_data, segment_start, n, servicer
             )
@@ -186,11 +265,10 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
 
                 data = item[1]
                 if data[0] == _MODULE_FORWARD_MARKER:
-                    from skytorch.torch.server import service_pb2
-
-                    fwd_request = service_pb2.ExecuteModuleForwardRequest()
-                    fwd_request.ParseFromString(data[1:])
-                    servicer._handle_execute_module_forward_ff(fwd_request)
+                    with torch.no_grad():
+                        _parse_and_execute_module_forward_binary(
+                            data, 0, len(data), servicer
+                        )
                 elif data[0] == _COPY_TENSOR_MARKER:
                     from skytorch.torch.server import service_pb2
 

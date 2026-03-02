@@ -278,6 +278,18 @@ void cpp_submit_raw_py(py::bytes raw_bytes);
 py::list drain_raw_submit_buffer();
 
 /**
+ * Drain the C++ raw submit buffer and build batched request payloads.
+ *
+ * Atomically swaps the buffer, splits ops into batches of <= threshold,
+ * and for multi-op batches, concatenates with uint32 LE length prefixes.
+ *
+ * Returns: list of (bytes, count) tuples where:
+ *   - count == 1: bytes is a single raw op (use raw_execute_aten)
+ *   - count > 1: bytes is concatenated with length prefixes (use raw_batched_execute_aten)
+ */
+py::list flush_raw_batches(int threshold);
+
+/**
  * Increment the fire-and-forget ops counter (atomic, relaxed ordering).
  * Called from the dispatch path for each submitted op.
  */

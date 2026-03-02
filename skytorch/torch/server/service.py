@@ -93,6 +93,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         # Retained models from ExecuteFunction with retain_model=True
         self._retained_models: dict[int, torch.nn.Module] = {}
         self._next_model_id = 1
+        # Cached resolved module callables: (model_id, module_path) → module
+        self._module_cache: dict[tuple[int, str], torch.nn.Module] = {}
 
     def _ensure_tensor_exists(self, metadata: service_pb2.TensorMetadata) -> torch.Tensor:
         """
@@ -1276,7 +1278,16 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         self,
         request: service_pb2.ExecuteModuleForwardRequest,
     ) -> tuple[torch.nn.Module | None, str | None]:
-        """Resolve a module from a retained model. Returns (module, error_message)."""
+        """Resolve a module from a retained model. Returns (module, error_message).
+
+        Results are cached per (model_id, module_path) to avoid repeated
+        string splitting and getattr chain traversal (~50K calls/benchmark).
+        """
+        key = (request.model_id, request.module_path)
+        cached = self._module_cache.get(key)
+        if cached is not None:
+            return cached, None
+
         model = self._retained_models.get(request.model_id)
         if model is None:
             return None, f"Model {request.model_id} not found"
@@ -1288,6 +1299,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                     module = module[int(part)]
                 else:
                     module = getattr(module, part)
+
+        self._module_cache[key] = module
         return module, None
 
     def _execute_module_forward(
@@ -1297,14 +1310,19 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """Execute a module's forward and return flat list of output tensors.
 
         Returns (result_tensors, error_message). On error, result_tensors is empty.
+        Uses TensorStore.get_python() directly to avoid Python dict wrapper overhead.
         """
         module, error = self._resolve_module(request)
         if error:
             return [], error
 
+        store = self.tensor_manager.store
         try:
-            inputs = [self.tensor_manager.get(tid) for tid in request.input_tensor_ids]
-        except ValueError as e:
+            if store is not None:
+                inputs = [store.get(tid) for tid in request.input_tensor_ids]
+            else:
+                inputs = [self.tensor_manager.get(tid) for tid in request.input_tensor_ids]
+        except (ValueError, RuntimeError) as e:
             return [], str(e)
 
         if logger.isEnabledFor(logging.DEBUG):
@@ -1313,8 +1331,7 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 f"module={request.module_path} inputs={list(request.input_tensor_ids)}"
             )
 
-        with torch.no_grad():
-            result = module(*inputs)
+        result = module(*inputs)
 
         # Normalize result to flat list of tensors
         if isinstance(result, torch.Tensor):
@@ -1397,9 +1414,13 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
                 f"expected {len(request.output_tensor_ids)}, got {len(result_tensors)}"
             )
 
+        store = self.tensor_manager.store
         for tid, tensor in zip(request.output_tensor_ids, result_tensors, strict=False):
             if tensor is not None:
-                self.tensor_manager.register(tid, tensor)
+                if store is not None:
+                    store.set(tid, tensor)
+                else:
+                    self.tensor_manager.register(tid, tensor)
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -1411,6 +1432,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """Release a retained model synchronously."""
         model = self._retained_models.pop(request.model_id, None)
         if model is not None:
+            # Invalidate cached module callables for this model
+            self._module_cache = {
+                k: v for k, v in self._module_cache.items() if k[0] != request.model_id
+            }
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"Released retained model {request.model_id}")
         else:

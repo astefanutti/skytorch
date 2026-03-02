@@ -48,6 +48,14 @@ PYBIND11_MODULE(_C, m) {
         py::arg("data"),
         py::arg("store"));
 
+    m.def("execute_raw_mixed_batch_inline",
+        &skytorch::server::execute_raw_mixed_batch_inline,
+        "Execute a mixed batch: ATen segments via C++ batch path, "
+        "module_forward via callback (returns op count)",
+        py::arg("data"),
+        py::arg("store"),
+        py::arg("module_forward_cb"));
+
     m.def("batch_has_special_op",
         &skytorch::server::batch_has_special_op,
         "Scan raw batch for special markers (copy_tensor, module forward)",
