@@ -92,6 +92,11 @@ struct OpInfo {
     bool callboxed_blocked = false;   // true if callBoxed threw an exception
     ReturnPattern return_pattern = RETURN_GENERIC;
     uint8_t expected_return_count = 0;
+    // Kwarg name hash → schema argument index (for kwargs→positional mapping)
+    std::unordered_map<uint64_t, size_t> kwarg_hash_to_idx;
+    bool kwarg_map_populated = false;
+    // Op name for diagnostics
+    std::string op_name;
 };
 
 /**

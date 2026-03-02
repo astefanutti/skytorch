@@ -524,16 +524,31 @@ class ServerProfiler:
                     _fb_exec_us = (
                         _fallback_exec_ns / _fb_total / 1000 if _fb_total > 0 else 0
                     )
+                    _kwargs_resolved = cpp_prof.get("kwargs_resolved_count", 0)
                     lines.extend(
                         [
                             f"  Python fallback ops: {_fb_total:,}",
-                            f"    kwargs:            {_kwargs_fb:,}",
+                            f"    kwargs:            {_kwargs_fb:,}"
+                            + (
+                                f"  (resolved to callBoxed: {_kwargs_resolved:,})"
+                                if _kwargs_resolved > 0
+                                else ""
+                            ),
                             f"    callboxed_blocked: {_blocked_fb:,}",
                             f"    coercion failure:  {_coercion_fb:,}",
                             f"    Execution time:    {_fb_exec_us:6.1f} us/op  |  "
                             f"{_fallback_exec_ns / 1_000_000:,.0f} ms",
                         ]
                     )
+                    # Show blocked op names if available
+                    _blocked_ops = cpp_prof.get("blocked_op_counts", {})
+                    if _blocked_ops:
+                        _sorted = sorted(
+                            _blocked_ops.items(), key=lambda x: x[1], reverse=True
+                        )
+                        lines.append(f"    Blocked ops (top {min(10, len(_sorted))}):")
+                        for _op_name, _count in _sorted[:10]:
+                            lines.append(f"      {_op_name}: {_count:,}")
                 # Copy_tensor inline profiling
                 _ct_count = cpp_prof.get("copy_tensor_count", 0)
                 if _ct_count > 0:

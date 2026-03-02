@@ -178,6 +178,12 @@ static uint64_t g_prof_server_copy_tensor_meta_ns = 0;    // metadata tensor cre
 static uint64_t g_prof_server_copy_tensor_copy_ns = 0;    // dst.copy_(src) execution
 static uint64_t g_prof_server_copy_tensor_meta_count = 0; // metadata tensors created
 
+// Kwargs→positional resolution counter
+static uint64_t g_prof_server_kwargs_resolved_count = 0;  // kwargs ops successfully resolved to callBoxed
+
+// Blocked op diagnostics: op_name → call count
+static std::unordered_map<std::string, uint64_t> g_prof_server_blocked_op_counts;
+
 // Batch-level profiling counters (decompose Python wall time vs C++ time)
 static uint64_t g_prof_server_batch_count = 0;            // number of batch calls
 static uint64_t g_prof_server_batch_loop_ns = 0;          // total time inside the while loop
@@ -215,6 +221,15 @@ py::dict get_server_profile_counters() {
     d["copy_tensor_meta_ns"] = g_prof_server_copy_tensor_meta_ns;
     d["copy_tensor_copy_ns"] = g_prof_server_copy_tensor_copy_ns;
     d["copy_tensor_meta_count"] = g_prof_server_copy_tensor_meta_count;
+    d["kwargs_resolved_count"] = g_prof_server_kwargs_resolved_count;
+    // Blocked op diagnostics: top ops by call count
+    {
+        py::dict blocked_ops;
+        for (const auto& [name, count] : g_prof_server_blocked_op_counts) {
+            blocked_ops[py::str(name)] = count;
+        }
+        d["blocked_op_counts"] = blocked_ops;
+    }
     d["batch_count"] = g_prof_server_batch_count;
     d["batch_loop_ns"] = g_prof_server_batch_loop_ns;
     d["batch_boundary_ns"] = g_prof_server_batch_boundary_ns;
@@ -243,6 +258,8 @@ void reset_server_profile_counters() {
     g_prof_server_copy_tensor_meta_ns = 0;
     g_prof_server_copy_tensor_copy_ns = 0;
     g_prof_server_copy_tensor_meta_count = 0;
+    g_prof_server_kwargs_resolved_count = 0;
+    g_prof_server_blocked_op_counts.clear();
     g_prof_server_batch_count = 0;
     g_prof_server_batch_loop_ns = 0;
     g_prof_server_batch_boundary_ns = 0;
@@ -417,6 +434,16 @@ static OpInfo build_op_info(const std::string& op_name) {
     // skip_coercion starts false, set to true after first successful no-coercion call
     info.skip_coercion = false;
     info.callboxed_blocked = false;
+
+    // Pre-build kwarg name hash → schema index map
+    for (size_t i = 0; i < schema_args.size(); i++) {
+        const auto& name = schema_args[i].name();
+        info.kwarg_hash_to_idx[hash_bytes(name.c_str(), name.size())] = i;
+    }
+    info.kwarg_map_populated = true;
+
+    // Store op name for diagnostics
+    info.op_name = op_name;
 
     return info;
 }
@@ -1053,11 +1080,114 @@ static void execute_one_op(
         g_prof_server_parse_meta_ns += _t_args_start - _t_parse_start;
     }
 
-    // ── FALLBACK: kwargs present → must use Python path (requires GIL) ──
+    // ── kwargs present: try GIL-free callBoxed with kwargs→positional resolution ──
+    if (num_kwargs > 0 && !info.callboxed_blocked) {
+        size_t saved_pos = pos;
+
+        // Start with defaults, overwrite with positional args, then kwargs
+        stack.clear();
+        stack = info.default_values;  // copy defaults
+
+        // Parse positional args into positions 0..num_args-1
+        for (uint8_t i = 0; i < num_args; i++) {
+            stack[i] = parse_arg_to_ivalue_gilfree(buf, pos, store);
+        }
+
+        // Parse kwargs and map to schema positions via hash lookup
+        bool kwargs_resolved = true;
+        for (uint8_t i = 0; i < num_kwargs; i++) {
+            uint8_t name_len = read_uint8(buf, pos);
+            const char* name_ptr = buf + pos;
+            pos += name_len;
+
+            uint64_t name_hash = hash_bytes(name_ptr, name_len);
+            auto it = info.kwarg_hash_to_idx.find(name_hash);
+            if (it == info.kwarg_hash_to_idx.end()) {
+                kwargs_resolved = false;
+                break;
+            }
+            stack[it->second] = parse_arg_to_ivalue_gilfree(buf, pos, store);
+        }
+
+        if (kwargs_resolved) {
+            // Coercion check
+            bool viable = true;
+            if (!info.skip_coercion) {
+                const auto& schema_args = info.handle->schema().arguments();
+                for (size_t i = 0; i < stack.size() && i < schema_args.size(); i++) {
+                    if (!coerce_ivalue(stack[i], schema_args[i].type())) {
+                        viable = false;
+                        if (g_server_profiling_enabled) g_prof_server_coercion_fallback_count++;
+                        break;
+                    }
+                }
+            }
+
+            uint64_t _t_callboxed_start = 0;
+            if (g_server_profiling_enabled) {
+                _t_callboxed_start = now_ns();
+                g_prof_server_parse_ns += _t_callboxed_start - _t_parse_start;
+                g_prof_server_parse_args_ns += _t_callboxed_start - _t_args_start;
+            }
+
+            if (viable) {
+                try {
+                    if (gil_released) {
+                        info.handle->callBoxed(&stack);
+                    } else {
+                        py::gil_scoped_release release;
+                        info.handle->callBoxed(&stack);
+                    }
+
+                    // Success — register outputs and return
+                    uint64_t _t_output_start = 0;
+                    if (g_server_profiling_enabled) {
+                        _t_output_start = now_ns();
+                        g_prof_server_callboxed_ns += _t_output_start - _t_callboxed_start;
+                        g_prof_server_kwargs_resolved_count++;
+                    }
+
+                    if (!output_ids.empty()) {
+                        if (info.return_pattern == RETURN_SINGLE_TENSOR && stack.size() >= 1) {
+                            if (stack[0].isTensor()) {
+                                at::Tensor t = stack[0].toTensor();
+                                if (t.defined()) {
+                                    store.set(output_ids[0], std::move(t));
+                                }
+                            }
+                        } else {
+                            size_t out_idx = 0;
+                            for (size_t si = 0; si < stack.size() && out_idx < output_ids.size(); si++) {
+                                if (stack[si].isTensor()) {
+                                    at::Tensor t = stack[si].toTensor();
+                                    if (t.defined()) {
+                                        store.set(output_ids[out_idx], std::move(t));
+                                        out_idx++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (g_server_profiling_enabled) {
+                        g_prof_server_output_ns += now_ns() - _t_output_start;
+                        g_prof_server_op_count++;
+                    }
+                    return;
+                } catch (...) {
+                    info.callboxed_blocked = true;
+                }
+            }
+        }
+
+        // Kwargs resolution failed or callBoxed failed — rewind to Python path
+        pos = saved_pos;
+    }
+
+    // ── kwargs Python fallback (kwargs couldn't be resolved or op is blocked) ──
     if (num_kwargs > 0) {
         if (g_server_profiling_enabled) g_prof_server_kwargs_fallback_count++;
 
-        // Acquire GIL if we don't have it (batch path)
         auto acquire = gil_released
             ? std::make_optional<py::gil_scoped_acquire>()
             : std::nullopt;
@@ -1085,7 +1215,6 @@ static void execute_one_op(
         );
         if (!result.ptr()) throw py::error_already_set();
 
-        // Register output tensors via TensorStore
         if (!output_ids.empty()) {
             std::vector<at::Tensor> result_tensors;
 
@@ -1228,8 +1357,11 @@ static void execute_one_op(
         // Coercion failed — rewind and fall through to Python path
         pos = saved_pos;
     } else {
-        // callboxed_blocked — increment counter
-        if (g_server_profiling_enabled) g_prof_server_blocked_fallback_count++;
+        // callboxed_blocked — increment counter and track op name
+        if (g_server_profiling_enabled) {
+            g_prof_server_blocked_fallback_count++;
+            g_prof_server_blocked_op_counts[info.op_name]++;
+        }
     }
 
     // ── Python path: parse to py::objects, dispatch via PyObject_Call ──
