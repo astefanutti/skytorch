@@ -475,6 +475,35 @@ class ServerProfiler:
                         f"{_total_profiled_ns / 1_000_000:,.0f} ms",
                     ]
                 )
+                # Sub-phase parse breakdown
+                _parse_meta_ns = cpp_prof.get("parse_meta_ns", 0)
+                _parse_args_ns = cpp_prof.get("parse_args_ns", 0)
+                _tensor_arg_count = cpp_prof.get("tensor_arg_count", 0)
+                _metadata_create_count = cpp_prof.get("metadata_create_count", 0)
+                if _parse_meta_ns > 0 or _parse_args_ns > 0:
+                    lines.extend(
+                        [
+                            f"  Parse sub-phases:",
+                            f"    Meta (hdr+hash+meta+OpInfo): "
+                            f"{_parse_meta_ns / _cpp_op_count / 1000:6.1f} us/op  |  "
+                            f"{_parse_meta_ns / 1_000_000:,.0f} ms",
+                            f"    Args (parse+defaults+coerce):"
+                            f" {_parse_args_ns / _cpp_op_count / 1000:6.1f} us/op  |  "
+                            f"{_parse_args_ns / 1_000_000:,.0f} ms",
+                        ]
+                    )
+                    if _tensor_arg_count > 0:
+                        _per_tensor_arg_ns = _parse_args_ns / _tensor_arg_count
+                        lines.append(
+                            f"    Tensor args: {_tensor_arg_count:,} "
+                            f"({_tensor_arg_count / _cpp_op_count:.1f}/op, "
+                            f"{_per_tensor_arg_ns / 1000:.2f} us/tensor-arg)"
+                        )
+                    if _metadata_create_count > 0:
+                        lines.append(
+                            f"    Metadata creates: {_metadata_create_count:,} "
+                            f"(at::empty overhead)"
+                        )
             reset_server_profile_counters()
         except (ImportError, AttributeError):
             pass

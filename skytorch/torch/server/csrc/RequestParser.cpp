@@ -71,6 +71,10 @@ size_t TensorStore::size() const {
     return tensors_.size();
 }
 
+void TensorStore::reserve(size_t n) {
+    tensors_.reserve(n);
+}
+
 py::object TensorStore::get_python(uint64_t id) {
     auto it = tensors_.find(id);
     if (it == tensors_.end()) {
@@ -153,6 +157,12 @@ static uint64_t g_prof_server_callboxed_ns = 0;
 static uint64_t g_prof_server_output_ns = 0;
 static uint64_t g_prof_server_op_count = 0;
 
+// Sub-phase profiling counters (parse breakdown)
+static uint64_t g_prof_server_parse_meta_ns = 0;   // header + op name hash + metadata + output IDs + OpInfo
+static uint64_t g_prof_server_parse_args_ns = 0;   // arg parsing + default filling + coercion
+static uint64_t g_prof_server_tensor_arg_count = 0; // number of tensor arguments parsed
+static uint64_t g_prof_server_metadata_create_count = 0; // number of tensor metadata creations
+
 static inline uint64_t now_ns() {
     return static_cast<uint64_t>(
         std::chrono::steady_clock::now().time_since_epoch().count());
@@ -168,6 +178,10 @@ py::dict get_server_profile_counters() {
     d["callboxed_ns"] = g_prof_server_callboxed_ns;
     d["output_ns"] = g_prof_server_output_ns;
     d["op_count"] = g_prof_server_op_count;
+    d["parse_meta_ns"] = g_prof_server_parse_meta_ns;
+    d["parse_args_ns"] = g_prof_server_parse_args_ns;
+    d["tensor_arg_count"] = g_prof_server_tensor_arg_count;
+    d["metadata_create_count"] = g_prof_server_metadata_create_count;
     return d;
 }
 
@@ -176,6 +190,10 @@ void reset_server_profile_counters() {
     g_prof_server_callboxed_ns = 0;
     g_prof_server_output_ns = 0;
     g_prof_server_op_count = 0;
+    g_prof_server_parse_meta_ns = 0;
+    g_prof_server_parse_args_ns = 0;
+    g_prof_server_tensor_arg_count = 0;
+    g_prof_server_metadata_create_count = 0;
 }
 
 // --- Static C++ maps for GIL-free dtype/format/layout resolution ---
@@ -682,6 +700,7 @@ static c10::IValue parse_arg_to_ivalue_gilfree(
     switch (arg_type) {
     case 0x01: {  // TENSOR_ID → at::Tensor (GIL-free via TensorStore)
         uint64_t tid = read_uint64(buf, pos);
+        if (g_server_profiling_enabled) g_prof_server_tensor_arg_count++;
         return c10::IValue(store.get(tid));
     }
     case 0x00:  // NONE
@@ -921,6 +940,7 @@ static void execute_one_op(
         if (store.contains(tensor_id)) {
             skip_tensor_metadata(buf, pos);
         } else {
+            if (g_server_profiling_enabled) g_prof_server_metadata_create_count++;
             parse_and_create_tensor_gilfree(buf, pos, store);
         }
     }
@@ -933,6 +953,12 @@ static void execute_one_op(
 
     // Get or create OpInfo (Step 2-3)
     OpInfo& info = get_or_create_op_info(op_hash, op_name_buf, op_name_len, gil_released);
+
+    uint64_t _t_args_start = 0;
+    if (g_server_profiling_enabled) {
+        _t_args_start = now_ns();
+        g_prof_server_parse_meta_ns += _t_args_start - _t_parse_start;
+    }
 
     // ── FALLBACK: kwargs present → must use Python path (requires GIL) ──
     if (num_kwargs > 0) {
@@ -1039,6 +1065,7 @@ static void execute_one_op(
         if (g_server_profiling_enabled) {
             _t_callboxed_start = now_ns();
             g_prof_server_parse_ns += _t_callboxed_start - _t_parse_start;
+            g_prof_server_parse_args_ns += _t_callboxed_start - _t_args_start;
         }
 
         if (viable) {

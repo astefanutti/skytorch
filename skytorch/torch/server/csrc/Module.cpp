@@ -31,7 +31,10 @@ PYBIND11_MODULE(_C, m) {
         .def("__contains__", &skytorch::server::TensorStore::contains,
             py::arg("id"))
         .def("__len__", &skytorch::server::TensorStore::size)
-        .def("clear", &skytorch::server::TensorStore::clear);
+        .def("clear", &skytorch::server::TensorStore::clear)
+        .def("reserve", &skytorch::server::TensorStore::reserve,
+            "Pre-size the hash map to avoid rehashing",
+            py::arg("n"));
 
     m.def("execute_raw_aten_inline",
         &skytorch::server::execute_raw_aten_inline,

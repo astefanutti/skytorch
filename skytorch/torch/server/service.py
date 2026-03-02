@@ -864,6 +864,8 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         """Parse tensor metadata from binary and create tensor directly. Returns new position.
 
         Bypasses protobuf TensorMetadata construction for faster tensor creation.
+        All metadata fields are always parsed to advance pos correctly, even if
+        the tensor already exists (defense-in-depth against ID collisions).
         """
         tensor_id = _STRUCT_Q.unpack_from(data, pos)[0]
         pos += 8
@@ -909,6 +911,10 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
         if has_tensor_ref:
             tensor_ref = _STRUCT_Q.unpack_from(data, pos)[0]
             pos += 8
+
+        # Skip creation if tensor already exists (defense-in-depth against ID collisions)
+        if tensor_id in self.tensor_manager:
+            return pos
 
         # Create tensor directly (no protobuf intermediary)
         dtype = parse_dtype(dtype_str)

@@ -58,6 +58,7 @@ public:
     bool erase(uint64_t id);
     void clear();
     size_t size() const;
+    void reserve(size_t n);
 
     // Python API (GIL required, for service.py)
     py::object get_python(uint64_t id);
