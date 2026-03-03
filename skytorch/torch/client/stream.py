@@ -42,6 +42,39 @@ logger = logging.getLogger(__name__)
 STREAM_CHUNK_SIZE = 1024 * 1024
 
 
+def _serialize_tensor_metadata_binary(meta) -> bytes:
+    """Serialize a TensorMetadata proto to the ATen binary tensor metadata format.
+
+    Format: [tensor_id:u64][ndim:u8][shape:i64×ndim][stride:i64×ndim]
+            [dtype_len:u8][dtype:bytes][storage_offset:i64][nbytes:i64]
+            [device_type_len:u8][device_type:bytes][device_index:i32]
+            [has_tensor_ref:u8][tensor_ref:u64 if has]
+    """
+    shape = list(meta.shape)
+    stride = list(meta.stride) if meta.stride else [0] * len(shape)
+    ndim = len(shape)
+    dtype_bytes = meta.dtype.encode("utf-8")
+    device_type_bytes = meta.device_type.encode("utf-8")
+    has_ref = meta.HasField("tensor_ref")
+
+    parts = [
+        struct.pack(f"<QB{ndim}q{ndim}q", meta.tensor_id, ndim, *shape, *stride),
+        struct.pack(f"<B{len(dtype_bytes)}s", len(dtype_bytes), dtype_bytes),
+        struct.pack("<qq", meta.storage_offset, meta.nbytes),
+        struct.pack(
+            f"<B{len(device_type_bytes)}si",
+            len(device_type_bytes),
+            device_type_bytes,
+            meta.device_index,
+        ),
+    ]
+    if has_ref:
+        parts.append(struct.pack("<BQ", 1, meta.tensor_ref))
+    else:
+        parts.append(b"\x00")
+    return b"".join(parts)
+
+
 @dataclass
 class PendingRequest:
     """Tracks a pending request awaiting response."""
@@ -585,16 +618,27 @@ class StreamManager:
     def submit_copy_tensor(self, request: service_pb2.CopyTensorRequest) -> None:
         """Submit a fire-and-forget copy_tensor request (callable from any thread).
 
-        Serialized with a 0xFE marker byte prefix and routed through the raw
-        binary ATen batching pipeline, so copy ops are batched with surrounding
-        ATen ops instead of forcing an immediate flush.
+        Serialized as binary with a 0xFE marker byte prefix:
+        [0xFE][src_id:u64][dst_id:u64][has_src:u8][src_meta...][has_dst:u8][dst_meta...]
+
+        Where metadata (if present) uses the same binary format as ATen op
+        tensor metadata, enabling GIL-free server-side parsing.
         """
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 f"Copying tensor {request.src_tensor_id} " f"to tensor {request.dst_tensor_id}"
             )
-        raw_bytes = b"\xfe" + request.SerializeToString()
-        self.submit_execute_aten_bytes(raw_bytes)
+        parts = [
+            struct.pack("<BQQ", 0xFE, request.src_tensor_id, request.dst_tensor_id),
+        ]
+        for field in ("src_metadata", "dst_metadata"):
+            if request.HasField(field):
+                meta = getattr(request, field)
+                parts.append(b"\x01")
+                parts.append(_serialize_tensor_metadata_binary(meta))
+            else:
+                parts.append(b"\x00")
+        self.submit_execute_aten_bytes(b"".join(parts))
 
     def submit_register_tensors(self, request: service_pb2.RegisterTensorsRequest) -> None:
         """Submit a fire-and-forget register_tensors request (callable from any thread)."""

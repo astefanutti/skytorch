@@ -118,6 +118,60 @@ def _parse_and_execute_module_forward_binary(data: bytes, pos: int, end: int, se
                 servicer.tensor_manager.register(tid, tensor)
 
 
+def _parse_and_execute_copy_tensor_binary(data: bytes, servicer) -> None:
+    """Parse binary copy_tensor and execute dst.copy_(src).
+
+    Binary format (starting at 0xFE marker):
+    [0xFE][src_id:u64][dst_id:u64][has_src:u8][src_meta...][has_dst:u8][dst_meta...]
+
+    Metadata (if present) uses ATen binary tensor metadata format.
+    For individual RAW ops, data starts at the 0xFE marker.
+    For C++ batch path, copy_tensor is handled entirely in C++ (GIL-free).
+    This function is only used for individual RAW ops and Python fallback.
+    """
+    p = 1  # skip 0xFE marker
+    src_id = _STRUCT_Q.unpack_from(data, p)[0]
+    p += 8
+    dst_id = _STRUCT_Q.unpack_from(data, p)[0]
+    p += 8
+
+    # Skip metadata sections — for individual RAW ops, tensors should
+    # already exist in the store (metadata was handled during batch processing).
+    # The binary metadata format is the same as ATen ops, so we skip it
+    # by reading through the fields.
+    for _ in range(2):  # src_metadata, dst_metadata
+        has_meta = data[p]
+        p += 1
+        if has_meta:
+            # Skip: tensor_id(8) + ndim(1) + shape+stride(ndim*16) +
+            #        dtype_len(1) + dtype + offset(8) + nbytes(8) +
+            #        dt_len(1) + device_type + device_index(4) +
+            #        has_ref(1) + ref(8 if has_ref)
+            p += 8  # tensor_id
+            ndim = data[p]
+            p += 1 + ndim * 16  # ndim + shape + stride
+            dtype_len = data[p]
+            p += 1 + dtype_len  # dtype_len + dtype
+            p += 16  # storage_offset + nbytes
+            dt_len = data[p]
+            p += 1 + dt_len + 4  # dt_len + device_type + device_index
+            has_ref = data[p]
+            p += 1
+            if has_ref:
+                p += 8  # tensor_ref
+
+    # For individual RAW copy ops, use _copy_tensor_sync logic
+    # (tensors must already exist)
+    store = servicer.tensor_manager.store
+    if store is not None:
+        src = store.get(src_id)
+        dst = store.get(dst_id)
+    else:
+        src = servicer.tensor_manager.get(src_id)
+        dst = servicer.tensor_manager.get(dst_id)
+    dst.copy_(src)
+
+
 def _batch_has_special_op(raw_data: bytes) -> bool:
     """Scan a raw batched payload for module_forward marker (0xFF).
 
@@ -206,11 +260,7 @@ def _execute_segment_python(
         op_data = raw_data[pos : pos + op_len]
         pos += op_len
         if op_data[0] == _COPY_TENSOR_MARKER:
-            from skytorch.torch.server import service_pb2
-
-            copy_request = service_pb2.CopyTensorRequest()
-            copy_request.ParseFromString(op_data[1:])
-            servicer._copy_tensor_sync(copy_request)
+            _parse_and_execute_copy_tensor_binary(op_data, servicer)
         else:
             servicer._execute_raw_aten_inline(op_data)
         n_ops += 1
@@ -270,11 +320,15 @@ def stream_worker(work_queue, servicer, loop, server_profiler):
                             data, 0, len(data), servicer
                         )
                 elif data[0] == _COPY_TENSOR_MARKER:
-                    from skytorch.torch.server import service_pb2
-
-                    copy_request = service_pb2.CopyTensorRequest()
-                    copy_request.ParseFromString(data[1:])
-                    servicer._copy_tensor_sync(copy_request)
+                    if _USE_CPP_PARSER:
+                        # Route through C++ batch path which handles 0xFE inline
+                        # (including metadata creation via parse_and_create_tensor_gilfree)
+                        batch = _STRUCT_I.pack(len(data)) + data
+                        _cpp_execute_raw_batched_aten_inline(
+                            batch, servicer.tensor_manager.store
+                        )
+                    else:
+                        _parse_and_execute_copy_tensor_binary(data, servicer)
                 elif _USE_CPP_PARSER:
                     _cpp_execute_raw_aten_inline(data, servicer.tensor_manager.store)
                 else:

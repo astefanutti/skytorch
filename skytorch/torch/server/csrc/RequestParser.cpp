@@ -1454,95 +1454,59 @@ static size_t execute_aten_segment(
         size_t op_end = pos + op_len;
 
         if (static_cast<uint8_t>(buf[pos]) == 0xFE) {
-            // copy_tensor inline — same as in execute_raw_batched_aten_inline
+            // copy_tensor — binary format, fully GIL-free
+            // Format: [0xFE][src_id:u64][dst_id:u64][has_src:u8][src_meta...][has_dst:u8][dst_meta...]
             uint64_t _ct_t0 = g_server_profiling_enabled ? now_ns() : 0;
-            {
-                py::gil_scoped_acquire acquire;
-                uint64_t _ct_t_gil = g_server_profiling_enabled ? now_ns() : 0;
 
-                py::module service_pb2 = py::module::import(
-                    "skytorch.torch.server.service_pb2");
-                py::object copy_req = service_pb2.attr("CopyTensorRequest")();
-                py::bytes proto_bytes(buf + pos + 1, op_len - 1);
-                copy_req.attr("ParseFromString")(proto_bytes);
+            pos++;  // skip 0xFE marker
+            uint64_t src_id = read_uint64(buf, pos);
+            uint64_t dst_id = read_uint64(buf, pos);
 
-                uint64_t _ct_t_proto = g_server_profiling_enabled ? now_ns() : 0;
+            uint64_t _ct_t_parse = g_server_profiling_enabled ? now_ns() : 0;
 
-                for (const char* field : {"src_metadata", "dst_metadata"}) {
-                    if (copy_req.attr("HasField")(field).cast<bool>()) {
-                        py::object meta = copy_req.attr(field);
-                        uint64_t tid = meta.attr("tensor_id").cast<uint64_t>();
-                        if (!store.contains(tid)) {
-                            if (g_server_profiling_enabled)
-                                g_prof_server_copy_tensor_meta_count++;
-                            py::list py_shape = meta.attr("shape").cast<py::list>();
-                            py::list py_stride = meta.attr("stride").cast<py::list>();
-                            uint8_t ndim = static_cast<uint8_t>(py_shape.size());
-                            c10::SmallVector<int64_t, 8> m_shape(ndim);
-                            c10::SmallVector<int64_t, 8> m_stride(ndim);
-                            for (uint8_t i = 0; i < ndim; i++) {
-                                m_shape[i] = py_shape[i].cast<int64_t>();
-                                m_stride[i] = py_stride[i].cast<int64_t>();
-                            }
-                            std::string dtype_s = meta.attr("dtype").cast<std::string>();
-                            auto st_opt = resolve_dtype_scalar(
-                                dtype_s.c_str(), dtype_s.size());
-                            if (!st_opt.has_value())
-                                throw std::runtime_error(
-                                    "Unknown dtype in copy metadata: " + dtype_s);
-                            auto st = *st_opt;
-                            std::string dt_s = meta.attr("device_type").cast<std::string>();
-                            int32_t di = meta.attr("device_index").cast<int32_t>();
-                            c10::DeviceType dev_t;
-                            if (dt_s == "cuda") dev_t = c10::kCUDA;
-                            else if (dt_s == "cpu") dev_t = c10::kCPU;
-                            else dev_t = c10::Device(dt_s).type();
-                            c10::Device dev(dev_t, static_cast<c10::DeviceIndex>(di));
-                            int64_t s_offset = meta.attr("storage_offset").cast<int64_t>();
-                            auto ks = dispatch_keyset_for_device(dev.type());
-                            auto tm = caffe2::TypeMeta::fromScalarType(st);
-                            at::Tensor t;
-                            if (meta.attr("HasField")("tensor_ref").cast<bool>()) {
-                                uint64_t ref = meta.attr("tensor_ref").cast<uint64_t>();
-                                at::Tensor& base = store.get(ref);
-                                auto impl = c10::make_intrusive<at::TensorImpl>(
-                                    c10::Storage(base.storage()), ks, tm);
-                                impl->set_sizes_and_strides(m_shape, m_stride);
-                                impl->set_storage_offset(s_offset);
-                                t = at::Tensor(std::move(impl));
-                            } else {
-                                int64_t nb = meta.attr("nbytes").cast<int64_t>();
-                                auto* alloc = c10::GetAllocator(dev.type());
-                                auto stg = c10::Storage(
-                                    c10::Storage::use_byte_size_t(),
-                                    static_cast<size_t>(nb), alloc, false);
-                                auto impl = c10::make_intrusive<at::TensorImpl>(
-                                    std::move(stg), ks, tm);
-                                impl->set_sizes_and_strides(m_shape, m_stride);
-                                impl->set_storage_offset(s_offset);
-                                t = at::Tensor(std::move(impl));
-                            }
-                            store.set(tid, std::move(t));
-                        }
-                    }
+            // Optional src metadata
+            uint8_t has_src_meta = read_uint8(buf, pos);
+            if (has_src_meta) {
+                uint64_t tid;
+                std::memcpy(&tid, buf + pos, 8);
+                if (store.contains(tid)) {
+                    skip_tensor_metadata(buf, pos);
+                } else {
+                    if (g_server_profiling_enabled)
+                        g_prof_server_copy_tensor_meta_count++;
+                    parse_and_create_tensor_gilfree(buf, pos, store);
                 }
+            }
 
-                uint64_t _ct_t_meta = g_server_profiling_enabled ? now_ns() : 0;
-                uint64_t src_id = copy_req.attr("src_tensor_id").cast<uint64_t>();
-                uint64_t dst_id = copy_req.attr("dst_tensor_id").cast<uint64_t>();
-                at::Tensor& src = store.get(src_id);
-                at::Tensor& dst = store.get(dst_id);
-                dst.copy_(src);
-
-                if (g_server_profiling_enabled) {
-                    uint64_t _ct_t_end = now_ns();
-                    g_prof_server_copy_tensor_count++;
-                    g_prof_server_copy_tensor_gil_ns += _ct_t_gil - _ct_t0;
-                    g_prof_server_copy_tensor_proto_ns += _ct_t_proto - _ct_t_gil;
-                    g_prof_server_copy_tensor_meta_ns += _ct_t_meta - _ct_t_proto;
-                    g_prof_server_copy_tensor_copy_ns += _ct_t_end - _ct_t_meta;
-                    g_prof_server_copy_tensor_total_ns += _ct_t_end - _ct_t0;
+            // Optional dst metadata
+            uint8_t has_dst_meta = read_uint8(buf, pos);
+            if (has_dst_meta) {
+                uint64_t tid;
+                std::memcpy(&tid, buf + pos, 8);
+                if (store.contains(tid)) {
+                    skip_tensor_metadata(buf, pos);
+                } else {
+                    if (g_server_profiling_enabled)
+                        g_prof_server_copy_tensor_meta_count++;
+                    parse_and_create_tensor_gilfree(buf, pos, store);
                 }
+            }
+
+            uint64_t _ct_t_meta = g_server_profiling_enabled ? now_ns() : 0;
+
+            // Execute copy
+            at::Tensor& src = store.get(src_id);
+            at::Tensor& dst = store.get(dst_id);
+            dst.copy_(src);
+
+            if (g_server_profiling_enabled) {
+                uint64_t _ct_t_end = now_ns();
+                g_prof_server_copy_tensor_count++;
+                g_prof_server_copy_tensor_gil_ns += 0;  // no GIL needed
+                g_prof_server_copy_tensor_proto_ns += _ct_t_parse - _ct_t0;
+                g_prof_server_copy_tensor_meta_ns += _ct_t_meta - _ct_t_parse;
+                g_prof_server_copy_tensor_copy_ns += _ct_t_end - _ct_t_meta;
+                g_prof_server_copy_tensor_total_ns += _ct_t_end - _ct_t0;
             }
             pos = op_end;
             op_count++;
