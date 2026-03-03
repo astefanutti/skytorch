@@ -440,8 +440,6 @@ static OpInfo build_op_info(const std::string& op_name) {
         info.return_pattern = RETURN_GENERIC;
     }
 
-    // skip_coercion starts false, set to true after first successful no-coercion call
-    info.skip_coercion = false;
     info.callboxed_blocked = false;
 
     // Pre-build kwarg name hash → schema index map
@@ -941,9 +939,12 @@ static c10::IValue parse_arg_to_ivalue_gilfree(
  * Coerce an IValue to match the expected schema type.
  *
  * Handles list type specialization (GenericList → IntList, DoubleList, etc.)
- * and scalar-to-Tensor coercion. Returns true if coercion was possible.
+ * and scalar-to-Tensor coercion.
+ * Returns true if coercion was possible (val may have been modified in-place).
+ * Sets `did_coerce` to true if the value was actually modified.
  */
-static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
+static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type,
+                          bool& did_coerce) {
     auto kind = expected_type->kind();
 
     // Schema expects Tensor but we have a scalar → convert to 0-dim tensor.
@@ -951,17 +952,22 @@ static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
     // serialized as scalar values for efficiency, and we reconstruct the tensor here.
     // ATen kernels handle CPU scalar tensor → CUDA promotion automatically.
     if (kind == c10::TypeKind::TensorType && !val.isTensor() && !val.isNone()) {
+        at::Tensor t;
         if (val.isInt()) {
-            val = c10::IValue(at::scalar_to_tensor(val.toInt()));
-            return true;
+            t = at::scalar_to_tensor(val.toInt());
         } else if (val.isDouble()) {
-            val = c10::IValue(at::scalar_to_tensor(val.toDouble()));
-            return true;
+            t = at::scalar_to_tensor(val.toDouble());
         } else if (val.isBool()) {
-            val = c10::IValue(at::scalar_to_tensor(val.toBool()));
-            return true;
+            t = at::scalar_to_tensor(val.toBool());
+        } else {
+            return false;
         }
-        return false;
+        // Mark as wrapped scalar so type promotion treats it as a scalar,
+        // not a regular tensor (avoids float32 × float64 → float64 upcast).
+        t.unsafeGetTensorImpl()->set_wrapped_number(true);
+        val = c10::IValue(std::move(t));
+        did_coerce = true;
+        return true;
     }
 
     // GenericList → specialized list coercion
@@ -977,6 +983,7 @@ static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
                     typed.push_back(generic_list.get(i).toInt());
                 }
                 val = c10::IValue(std::move(typed));
+                did_coerce = true;
                 return true;
             } else if (elem_kind == c10::TypeKind::FloatType) {
                 std::vector<double> typed;
@@ -985,6 +992,7 @@ static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
                     typed.push_back(generic_list.get(i).toDouble());
                 }
                 val = c10::IValue(std::move(typed));
+                did_coerce = true;
                 return true;
             } else if (elem_kind == c10::TypeKind::TensorType) {
                 std::vector<at::Tensor> typed;
@@ -993,6 +1001,7 @@ static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
                     typed.push_back(generic_list.get(i).toTensor());
                 }
                 val = c10::IValue(std::move(typed));
+                did_coerce = true;
                 return true;
             } else if (elem_kind == c10::TypeKind::OptionalType) {
                 // e.g., Tensor?[] for aten::index
@@ -1009,6 +1018,7 @@ static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
                         }
                     }
                     val = c10::IValue(std::move(typed));
+                    did_coerce = true;
                     return true;
                 }
             } else if (elem_kind == c10::TypeKind::BoolType) {
@@ -1018,6 +1028,7 @@ static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
                     typed.push_back(generic_list.get(i).toBool());
                 }
                 val = c10::IValue(std::move(typed));
+                did_coerce = true;
                 return true;
             }
         }
@@ -1026,7 +1037,7 @@ static bool coerce_ivalue(c10::IValue& val, const c10::TypePtr& expected_type) {
     // Optional type — unwrap and try coercing the inner type
     if (kind == c10::TypeKind::OptionalType && !val.isNone()) {
         auto inner_type = expected_type->containedType(0);
-        return coerce_ivalue(val, inner_type);
+        return coerce_ivalue(val, inner_type, did_coerce);
     }
 
     return true;  // No coercion needed
@@ -1130,12 +1141,15 @@ static void execute_one_op(
         }
 
         if (kwargs_resolved) {
-            // Coercion check
+            // Coercion: always run (scalar→Tensor, GenericList→typed list).
+            // Cannot skip because argument types may vary between calls
+            // (e.g., mul.Tensor sometimes gets (Tensor,Tensor), sometimes (Tensor,Double)).
             bool viable = true;
-            if (!info.skip_coercion) {
+            {
                 const auto& schema_args = info.handle->schema().arguments();
                 for (size_t i = 0; i < stack.size() && i < schema_args.size(); i++) {
-                    if (!coerce_ivalue(stack[i], schema_args[i].type())) {
+                    bool did_coerce = false;
+                    if (!coerce_ivalue(stack[i], schema_args[i].type(), did_coerce)) {
                         viable = false;
                         if (g_server_profiling_enabled) g_prof_server_coercion_fallback_count++;
                         break;
@@ -1295,21 +1309,18 @@ static void execute_one_op(
             stack.push_back(info.default_values[i]);
         }
 
-        // Coercion check — skip entirely if previously verified (Step 2)
+        // Coercion: always run (scalar→Tensor, GenericList→typed list).
+        // Cannot skip because argument types may vary between calls.
         bool viable = true;
-        if (!info.skip_coercion) {
+        {
             const auto& schema_args = info.handle->schema().arguments();
-            bool any_coerced = false;
             for (size_t i = 0; i < stack.size() && i < schema_args.size(); i++) {
-                if (!coerce_ivalue(stack[i], schema_args[i].type())) {
+                bool did_coerce = false;
+                if (!coerce_ivalue(stack[i], schema_args[i].type(), did_coerce)) {
                     viable = false;
                     if (g_server_profiling_enabled) g_prof_server_coercion_fallback_count++;
                     break;
                 }
-            }
-            // If all args passed without needing coercion, mark skip for future
-            if (viable && !any_coerced) {
-                info.skip_coercion = true;
             }
         }
 

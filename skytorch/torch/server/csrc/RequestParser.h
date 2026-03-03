@@ -88,7 +88,6 @@ struct OpInfo {
     PyObject* py_op = nullptr;       // cached Python callable (for kwargs/fallback)
     size_t num_schema_args = 0;
     std::vector<c10::IValue> default_values;  // pre-resolved defaults
-    bool skip_coercion = false;       // true after first successful call without coercion
     bool callboxed_blocked = false;   // true if callBoxed threw an exception
     std::string callboxed_error;      // exception message from first callBoxed failure
     ReturnPattern return_pattern = RETURN_GENERIC;
