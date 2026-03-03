@@ -182,8 +182,9 @@ static uint64_t g_prof_server_copy_tensor_meta_count = 0; // metadata tensors cr
 // Kwargs→positional resolution counter
 static uint64_t g_prof_server_kwargs_resolved_count = 0;  // kwargs ops successfully resolved to callBoxed
 
-// Blocked op diagnostics: op_name → call count
+// Blocked op diagnostics: op_name → call count, op_name → first error message
 static std::unordered_map<std::string, uint64_t> g_prof_server_blocked_op_counts;
+static std::unordered_map<std::string, std::string> g_prof_server_blocked_op_errors;
 
 // Batch-level profiling counters (decompose Python wall time vs C++ time)
 static uint64_t g_prof_server_batch_count = 0;            // number of batch calls
@@ -223,13 +224,19 @@ py::dict get_server_profile_counters() {
     d["copy_tensor_copy_ns"] = g_prof_server_copy_tensor_copy_ns;
     d["copy_tensor_meta_count"] = g_prof_server_copy_tensor_meta_count;
     d["kwargs_resolved_count"] = g_prof_server_kwargs_resolved_count;
-    // Blocked op diagnostics: top ops by call count
+    // Blocked op diagnostics: top ops by call count + error messages
     {
         py::dict blocked_ops;
         for (const auto& [name, count] : g_prof_server_blocked_op_counts) {
             blocked_ops[py::str(name)] = count;
         }
         d["blocked_op_counts"] = blocked_ops;
+
+        py::dict blocked_errors;
+        for (const auto& [name, err] : g_prof_server_blocked_op_errors) {
+            blocked_errors[py::str(name)] = py::str(err);
+        }
+        d["blocked_op_errors"] = blocked_errors;
     }
     d["batch_count"] = g_prof_server_batch_count;
     d["batch_loop_ns"] = g_prof_server_batch_loop_ns;
@@ -261,6 +268,7 @@ void reset_server_profile_counters() {
     g_prof_server_copy_tensor_meta_count = 0;
     g_prof_server_kwargs_resolved_count = 0;
     g_prof_server_blocked_op_counts.clear();
+    g_prof_server_blocked_op_errors.clear();
     g_prof_server_batch_count = 0;
     g_prof_server_batch_loop_ns = 0;
     g_prof_server_batch_boundary_ns = 0;
@@ -1186,8 +1194,12 @@ static void execute_one_op(
                         g_prof_server_op_count++;
                     }
                     return;
+                } catch (const std::exception& e) {
+                    info.callboxed_blocked = true;
+                    info.callboxed_error = e.what();
                 } catch (...) {
                     info.callboxed_blocked = true;
+                    info.callboxed_error = "unknown exception";
                 }
             }
         }
@@ -1319,9 +1331,14 @@ static void execute_one_op(
                     py::gil_scoped_release release;
                     info.handle->callBoxed(&stack);
                 }
-            } catch (...) {
+            } catch (const std::exception& e) {
                 // Permanent failure — blocklist this op
                 info.callboxed_blocked = true;
+                info.callboxed_error = e.what();
+                viable = false;
+            } catch (...) {
+                info.callboxed_blocked = true;
+                info.callboxed_error = "unknown exception";
                 viable = false;
             }
         }
@@ -1369,10 +1386,15 @@ static void execute_one_op(
         // Coercion failed — rewind and fall through to Python path
         pos = saved_pos;
     } else {
-        // callboxed_blocked — increment counter and track op name
+        // callboxed_blocked — increment counter and track op name + error
         if (g_server_profiling_enabled) {
             g_prof_server_blocked_fallback_count++;
             g_prof_server_blocked_op_counts[info.op_name]++;
+            if (!info.callboxed_error.empty() &&
+                g_prof_server_blocked_op_errors.find(info.op_name) ==
+                    g_prof_server_blocked_op_errors.end()) {
+                g_prof_server_blocked_op_errors[info.op_name] = info.callboxed_error;
+            }
         }
     }
 

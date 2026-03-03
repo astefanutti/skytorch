@@ -540,15 +540,18 @@ class ServerProfiler:
                             f"{_fallback_exec_ns / 1_000_000:,.0f} ms",
                         ]
                     )
-                    # Show blocked op names if available
+                    # Show blocked op names and error messages
                     _blocked_ops = cpp_prof.get("blocked_op_counts", {})
+                    _blocked_errors = cpp_prof.get("blocked_op_errors", {})
                     if _blocked_ops:
                         _sorted = sorted(
                             _blocked_ops.items(), key=lambda x: x[1], reverse=True
                         )
                         lines.append(f"    Blocked ops (top {min(10, len(_sorted))}):")
                         for _op_name, _count in _sorted[:10]:
-                            lines.append(f"      {_op_name}: {_count:,}")
+                            _err = _blocked_errors.get(_op_name, "")
+                            _err_sfx = f"  [{_err[:120]}]" if _err else ""
+                            lines.append(f"      {_op_name}: {_count:,}{_err_sfx}")
                 # Copy_tensor inline profiling
                 _ct_count = cpp_prof.get("copy_tensor_count", 0)
                 if _ct_count > 0:
