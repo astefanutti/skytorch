@@ -23,16 +23,6 @@ from skytorch.torch.backend import _client
 # generate loop is only used by the streamer).
 _ASYNC_COPY_ENABLED = os.environ.get("SKYTORCH_ASYNC_COPY", "0") == "1"
 
-# Back-pressure: the previous async future. Validated before issuing the
-# next async copy to prevent the client from racing ahead of the server.
-_async_prev_future = None
-
-
-def _reset_async_copy() -> None:
-    """Reset async copy state. Called on device reset / stream close."""
-    global _async_prev_future
-    _async_prev_future = None
-
 
 def _copy_from_device(tensor: torch.Tensor) -> torch.Tensor:
     """Copy data from sky tensor to cpu tensor.
@@ -76,8 +66,7 @@ def _copy_from_device_async(from_: torch.Tensor, target_dtype: torch.dtype) -> t
     """Non-blocking sky→cpu copy for single-element tensors.
 
     Returns a DeferredScalarTensor immediately. The actual value is resolved
-    lazily when tolist() or item() is called. Back-pressure is enforced by
-    validating the previous async future before issuing a new one.
+    lazily when tolist() or item() is called on the returned tensor.
 
     Args:
         from_: Source sky tensor (numel() == 1)
@@ -86,18 +75,9 @@ def _copy_from_device_async(from_: torch.Tensor, target_dtype: torch.dtype) -> t
     Returns:
         DeferredScalarTensor wrapping the backing tensor
     """
-    global _async_prev_future
-
     from skytorch.torch.backend.aten.deferred import DeferredScalarTensor
 
-    # Back-pressure: validate previous async copy completed.
-    # On warm servers, the previous future is already resolved (server had a
-    # full forward pass to process it), so this is essentially free.
-    if _async_prev_future is not None:
-        _async_prev_future.result()
-
     future = _client.copy_sky_to_cpu_async(from_)
-    _async_prev_future = future
 
     return DeferredScalarTensor.create(from_.shape, target_dtype, future)
 
