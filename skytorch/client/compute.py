@@ -121,6 +121,7 @@ class Compute:
         labels: Optional[Dict[str, str]] = None,
         annotations: Optional[Dict[str, str]] = None,
         suspend: bool = False,
+        node: Optional[str] = None,
         volumes: Optional[List[Dict[str, str]]] = None,
         on_events: Optional[Callable[[CoreV1Event], None]] = None,
         on_metrics: Optional[Callable[[object], None]] = None,
@@ -141,8 +142,10 @@ class Compute:
             labels: Labels to apply to the Compute resources
             annotations: Annotations to apply to the Compute resources
             suspend: Whether to create the Compute in suspended state
+            node: Node hostname to schedule the Compute pod on
             volumes: Simplified volume definitions as list of dicts with keys:
-                     name (volume name), storage (e.g. "10Gi"), path (mount path)
+                     name (volume name), storage (e.g. "10Gi"), path (mount path),
+                     storageClass (optional), accessMode (optional, default "ReadWriteOnce")
             on_events: Optional callback to receive events for this Compute resource
             on_metrics: Optional callback to receive metrics from this Compute resource
         """
@@ -155,6 +158,7 @@ class Compute:
         self._labels = labels
         self._annotations = annotations
         self._suspend = suspend
+        self._node = node
         self._volumes = volumes
         self._on_events = on_events
         self._on_metrics = on_metrics
@@ -407,27 +411,34 @@ class Compute:
 
         # Init compute override
         override = None
+        if self._node:
+            override = {"nodeSelector": {"kubernetes.io/hostname": self._node}}
 
         # Convert volumes to PVC templates and volume mount overrides
         volume_claim_templates = None
         if self._volumes:
-            volume_claim_templates = [
-                IoK8sApiCoreV1PersistentVolumeClaimTemplate(
-                    metadata=IoK8sApimachineryPkgApisMetaV1ObjectMeta(name=v["name"]),
-                    spec=IoK8sApiCoreV1PersistentVolumeClaimSpec(
-                        access_modes=["ReadWriteOnce"],
-                        resources=IoK8sApiCoreV1VolumeResourceRequirements(
-                            requests={
-                                "storage": IoK8sApimachineryPkgApiResourceQuantity(v["storage"])
-                            }
-                        ),
+            volume_claim_templates = []
+            for v in self._volumes:
+                pvc_spec = IoK8sApiCoreV1PersistentVolumeClaimSpec(
+                    access_modes=[v.get("accessMode", "ReadWriteOnce")],
+                    resources=IoK8sApiCoreV1VolumeResourceRequirements(
+                        requests={
+                            "storage": IoK8sApimachineryPkgApiResourceQuantity(v["storage"])
+                        }
                     ),
                 )
-                for v in self._volumes
-            ]
+                if "storageClass" in v:
+                    pvc_spec.storage_class_name = v["storageClass"]
+                volume_claim_templates.append(
+                    IoK8sApiCoreV1PersistentVolumeClaimTemplate(
+                        metadata=IoK8sApimachineryPkgApisMetaV1ObjectMeta(name=v["name"]),
+                        spec=pvc_spec,
+                    )
+                )
             volume_mounts = [{"name": v["name"], "mountPath": v["path"]} for v in self._volumes]
             # Merge volume mounts into override
-            override = {}
+            if override is None:
+                override = {}
             containers = override.get("containers", [])
             # Find or create the server container entry
             server_container = None

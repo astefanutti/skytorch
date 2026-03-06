@@ -164,6 +164,16 @@ func statefulSetApplyConfiguration(compute *v1alpha1.Compute) *appsv1apply.State
 	podSpec := corev1apply.PodSpec().
 		WithContainers(container)
 
+	// Apply pod-level overrides
+	if compute.Spec.Override != nil {
+		if len(compute.Spec.Override.NodeSelector) > 0 {
+			podSpec.WithNodeSelector(compute.Spec.Override.NodeSelector)
+		}
+		if compute.Spec.Override.ServiceAccountName != nil {
+			podSpec.WithServiceAccountName(*compute.Spec.Override.ServiceAccountName)
+		}
+	}
+
 	// Add volumes from Override spec
 	if compute.Spec.Override != nil {
 		for _, v := range compute.Spec.Override.Volumes {

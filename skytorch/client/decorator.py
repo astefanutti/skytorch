@@ -28,6 +28,7 @@ def compute(
     labels: Optional[Dict[str, str]] = None,
     annotations: Optional[Dict[str, str]] = None,
     suspend: bool = False,
+    node: Optional[str] = None,
     volumes: Optional[List[Dict[str, str]]] = None,
     on_events: Optional[Callable[[CoreV1Event], None]] = None,
     on_metrics: Optional[Callable[[object], None]] = None,
@@ -49,8 +50,10 @@ def compute(
         labels: Labels to apply to the Compute resources
         annotations: Annotations to apply to the Compute resources
         suspend: Whether to create the Compute in suspended state
+        node: Node hostname to schedule the Compute pod on
         volumes: Simplified volume definitions as list of dicts with keys:
-                 name (volume name), storage (e.g. "10Gi"), path (mount path)
+                 name (volume name), storage (e.g. "10Gi"), path (mount path),
+                 storageClass (optional), accessMode (optional, default "ReadWriteOnce")
         on_events: Optional callback to receive events for this Compute resource
         on_metrics: Optional callback to receive metrics from this Compute resource
 
@@ -100,6 +103,7 @@ def compute(
                 labels=labels,
                 annotations=annotations,
                 suspend=suspend,
+                node=node,
                 volumes=volumes,
                 on_events=on_events,
                 on_metrics=on_metrics,
