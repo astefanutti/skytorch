@@ -83,6 +83,31 @@ void set_periodic_callback(py::object callback) {
 }
 
 
+// Pending fused result: stores the dispatch_cached_aten result from
+// fallback_kernel so that _sky_kernel_fallback can skip the redundant
+// _dispatch_cached_aten call. Wrapped in a 1-tuple to distinguish
+// "tried, got None" from "not tried" (which returns None).
+// GIL is held throughout fallback_kernel → call_python_fallback →
+// _sky_kernel_fallback, so no thread-safety concern.
+static PyObject* g_pending_fused = nullptr;
+
+void set_pending_fused_result(py::object result) {
+    Py_XDECREF(g_pending_fused);
+    // Wrap in (result,) tuple so Python can distinguish from "not set"
+    g_pending_fused = PyTuple_New(1);
+    Py_INCREF(result.ptr());
+    PyTuple_SET_ITEM(g_pending_fused, 0, result.ptr());
+}
+
+py::object take_pending_fused_result() {
+    if (g_pending_fused == nullptr) {
+        return py::none();  // not set
+    }
+    py::object result = py::reinterpret_steal<py::object>(g_pending_fused);
+    g_pending_fused = nullptr;
+    return result;
+}
+
 // --- Op name cache (per OperatorHandle address) ---
 
 static std::unordered_map<const void*, std::string> g_op_name_cache;
@@ -512,6 +537,8 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         }
         // Cache miss (Tuple(3)) or uncacheable (None) — no side effects,
         // safe to fall through to Python.
+        // Store the result so Python can skip the redundant _dispatch_cached_aten call.
+        set_pending_fused_result(fused);
     }
 
     // --- Python fallback: cache miss, uncacheable, or no callback yet ---

@@ -75,6 +75,11 @@ except ImportError:
     _set_periodic_callback = None
 
 try:
+    from skytorch.torch.backend._C import _take_pending_fused_result
+except ImportError:
+    _take_pending_fused_result = None
+
+try:
     from skytorch.torch.backend._C import _set_profiling_enabled
 except ImportError:
     _set_profiling_enabled = None
@@ -705,8 +710,9 @@ def _sky_kernel_fallback(
 
             _prof = ClientProfiler.get()
             _t0 = time.perf_counter_ns()
-            if _prof.last_dispatch_end > 0:
-                _prof.inter_op_gap.add(_t0 - _prof.last_dispatch_end)
+            # Inter-op gap is now measured in C++ fallback_kernel for both
+            # the fast path and Python path, avoiding redundant perf_counter_ns
+            # calls here. Only track first dispatch and total ops count.
             if _prof.first_dispatch_ns == 0:
                 _prof.first_dispatch_ns = _t0
             _prof.total_ops += 1
@@ -715,7 +721,18 @@ def _sky_kernel_fallback(
         # Only handles cache hits; misses/uncacheable fall through to existing path
         fused_cache_hash = None
         if _dispatch_cached_aten is not None:
-            fused_result = _dispatch_cached_aten(op_name, args, kwargs)
+            # Check if C++ fallback_kernel already called dispatch_cached_aten
+            # and stored the result. This avoids the redundant call when the
+            # Python fallback is invoked from FallbackKernel.cpp.
+            pending = (
+                _take_pending_fused_result() if _take_pending_fused_result is not None else None
+            )
+            if pending is not None:
+                # Unwrap from (result,) wrapper — the result is the original
+                # dispatch_cached_aten return value (None or Tuple(3))
+                fused_result = pending[0]
+            else:
+                fused_result = _dispatch_cached_aten(op_name, args, kwargs)
 
             if fused_result is not None and len(fused_result) == 1:
                 # Cache hit with C++ submit callback — already submitted
