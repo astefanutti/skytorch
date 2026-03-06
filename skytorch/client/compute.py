@@ -871,9 +871,12 @@ class Compute:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """
-        Async context manager exit: delete the Compute.
+        Async context manager exit: delete the Compute unless keep_alive is set.
         """
-        await self.delete()
+        if getattr(self, "_keep_alive", False):
+            await self._cleanup_grpc_client()
+        else:
+            await self.delete()
 
         if self._ctx_token is not None:
             compute_ctx.reset(self._ctx_token)

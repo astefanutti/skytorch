@@ -1536,6 +1536,12 @@ class TensorServicer(service_pb2_grpc.ServiceServicer):
             self.tensor_manager.clear()
             self._pending_tensors.clear()
             self._retained_models.clear()
+            self._module_cache.clear()
+            self._next_model_id = 1
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     async def _handle_fire_and_forget(
         self,

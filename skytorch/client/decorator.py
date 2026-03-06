@@ -28,6 +28,7 @@ def compute(
     labels: Optional[Dict[str, str]] = None,
     annotations: Optional[Dict[str, str]] = None,
     suspend: bool = False,
+    keep_alive: bool = False,
     node: Optional[str] = None,
     volumes: Optional[List[Dict[str, str]]] = None,
     on_events: Optional[Callable[[CoreV1Event], None]] = None,
@@ -50,6 +51,7 @@ def compute(
         labels: Labels to apply to the Compute resources
         annotations: Annotations to apply to the Compute resources
         suspend: Whether to create the Compute in suspended state
+        keep_alive: Whether to keep the Compute resource alive after the function exits
         node: Node hostname to schedule the Compute pod on
         volumes: Simplified volume definitions as list of dicts with keys:
                  name (volume name), storage (e.g. "10Gi"), path (mount path),
@@ -110,14 +112,16 @@ def compute(
             )
 
             # Enter context manager (waits for ready and initializes gRPC)
-            # Exit will cleanup (delete the Compute resource)
+            # When keep_alive is set, skip deletion on exit so the pod
+            # persists across invocations (model stays in GPU memory).
             async with compute_instance as c:
+                if keep_alive:
+                    # Prevent __aexit__ from deleting the Compute resource
+                    c._keep_alive = True
                 if compute_param_name:
-                    # Pass as keyword argument to the typed parameter
                     func_kwargs[compute_param_name] = c
                     return await func(*func_args, **func_kwargs)
                 else:
-                    # Fallback to positional argument (first position)
                     return await func(c, *func_args, **func_kwargs)
 
         return wrapper
