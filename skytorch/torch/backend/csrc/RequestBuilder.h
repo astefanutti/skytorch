@@ -361,4 +361,12 @@ void set_pending_fused_result(py::object result);
  */
 py::object take_pending_fused_result();
 
+/**
+ * Set a periodic callback called every g_gil_release_interval ops.
+ * Called on the main thread with GIL held, before the GIL release.
+ * Used to tick the main event loop (metrics, logs, compute events).
+ */
+void set_periodic_callback(py::object callback);
+
+
 }  // namespace skytorch

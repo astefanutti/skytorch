@@ -382,6 +382,11 @@ PYBIND11_MODULE(_C, m) {
     m.def("_clear_python_fallback", &skytorch::clear_python_fallback,
         "Clear the Python fallback callback");
 
+    // Periodic callback for main event loop ticking during C++ dispatch
+    m.def("_set_periodic_callback", &skytorch::set_periodic_callback,
+        "Set callback called every N ops to tick main event loop",
+        py::arg("callback"));
+
     // Pending fused result for avoiding double dispatch_cached_aten calls
     m.def("_take_pending_fused_result", &skytorch::take_pending_fused_result,
         "Take the pending fused result from the C++ boxed fallback");

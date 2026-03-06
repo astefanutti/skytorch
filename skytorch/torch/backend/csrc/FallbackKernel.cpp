@@ -20,6 +20,16 @@
 
 namespace skytorch {
 
+// Periodic callback interval: every N cache-hit ops, call back into Python
+// to tick the main event loop (metrics, logs, compute events). At ~7µs/op,
+// 64 ops ≈ 450µs between callbacks. The Python bytecodes executed by the
+// callback also give CPython a chance to switch the GIL to the backend
+// event loop thread. Set to 0 to disable.
+static const int g_periodic_interval = [] {
+    const char* env = std::getenv("SKYTORCH_PERIODIC_INTERVAL");
+    return env ? std::atoi(env) : 64;
+}();
+
 // Profiling flag and counters (defined in RequestBuilder.cpp)
 extern bool g_profiling_enabled;
 extern std::atomic<int64_t> g_prof_fast_path_count;
@@ -42,9 +52,19 @@ void clear_python_fallback() {
     g_python_fallback = nullptr;
 }
 
-// Pending fused result not needed — see fallback_kernel comments.
-void set_pending_fused_result(py::object) {}
-py::object take_pending_fused_result() { return py::none(); }
+// --- Periodic callback (ticks the main thread's event loop) ---
+// Called every g_periodic_interval cache-hit ops on the main thread.
+// Lets the main event loop process pending callbacks (metrics, logs,
+// compute events) during the forward pass.
+
+static PyObject* g_periodic_callback = nullptr;
+
+void set_periodic_callback(py::object callback) {
+    Py_XDECREF(g_periodic_callback);
+    g_periodic_callback = callback.ptr();
+    Py_INCREF(g_periodic_callback);
+}
+
 
 // --- Op name cache (per OperatorHandle address) ---
 
@@ -340,6 +360,40 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
                         std::memory_order_relaxed);
                     g_prof_fast_path_count.fetch_add(1, std::memory_order_relaxed);
                 }
+
+                // Periodic callback: every N ops, tick the main thread's
+                // event loop so it can process async callbacks (metrics,
+                // logs, compute events) that would otherwise be starved
+                // during C++ dispatch. The Python bytecodes executed by
+                // the callback also give CPython a chance to switch the
+                // GIL to the backend event loop thread.
+                {
+                    static thread_local int g_ops_since_callback = 0;
+
+                    if (g_periodic_interval > 0 &&
+                        ++g_ops_since_callback >= g_periodic_interval) {
+                        g_ops_since_callback = 0;
+                        if (g_profiling_enabled) {
+                            g_prof_gil_release_count.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        // Reentrancy guard: if a callback dispatches ATen ops,
+                        // the nested fallback_kernel won't trigger another tick.
+                        static thread_local bool in_callback = false;
+                        if (g_periodic_callback && !in_callback) {
+                            in_callback = true;
+                            PyObject* result = PyObject_CallNoArgs(
+                                g_periodic_callback);
+                            if (result == nullptr) {
+                                PyErr_Clear();
+                            } else {
+                                Py_DECREF(result);
+                            }
+                            in_callback = false;
+                        }
+                    }
+                }
+
                 return;
             }
         }
