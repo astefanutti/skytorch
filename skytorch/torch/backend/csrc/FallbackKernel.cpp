@@ -36,6 +36,23 @@ extern std::atomic<int64_t> g_prof_fast_path_count;
 extern std::atomic<int64_t> g_prof_ivalue_to_py_ns;
 extern std::atomic<int64_t> g_prof_dispatch_cached_ns;
 extern std::atomic<int64_t> g_prof_rewrite_stack_ns;
+extern std::atomic<int64_t> g_prof_python_fallback_count;
+extern std::atomic<int64_t> g_prof_python_fallback_ns;
+extern std::atomic<int64_t> g_prof_last_dispatch_end_ns;
+extern std::atomic<int64_t> g_prof_inter_op_gap_total_ns;
+extern std::atomic<int64_t> g_prof_inter_op_gap_count;
+extern std::atomic<int64_t> g_prof_gil_release_count;
+extern std::atomic<int64_t> g_prof_gil_wait_ns;
+extern std::atomic<int64_t> g_prof_autograd_overhead_ns;
+// Gap sub-decomposition: time OUTSIDE autograd (Python + outer dispatch)
+extern std::atomic<int64_t> g_prof_outside_autograd_ns;
+extern std::atomic<int64_t> g_prof_outside_autograd_count;
+// Gap histogram buckets: <1µs, 1-10µs, 10-100µs, 100µs-1ms, 1-10ms, >10ms
+extern std::atomic<int64_t> g_prof_gap_hist[6];
+// Large gap (>1ms) breakdown: GIL wait vs other
+extern std::atomic<int64_t> g_prof_large_gap_gil_ns;
+extern std::atomic<int64_t> g_prof_large_gap_other_ns;
+extern std::atomic<int64_t> g_prof_large_gap_count;
 
 // --- Python fallback callback ---
 
@@ -258,13 +275,47 @@ static void rewrite_stack_from_output(
 
 // --- Autograd Fallback Kernel ---
 
+// Thread-local timestamp of last autograd_fallback_kernel exit.
+// Used to measure "outside autograd" time: the time between returning
+// from autograd and entering the next autograd call. This captures
+// Python bytecode + PyTorch outer dispatcher overhead.
+static thread_local int64_t g_last_autograd_end_ns = 0;
+
 void autograd_fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
     // Exclude autograd + ADInplaceOrView keys and redispatch to PrivateUse1.
     // Stays entirely in C++ dispatch — no Python re-entry, no CompositeImplicitAutograd
     // decomposition. This is the pattern used by XLA and other custom backends.
     try {
+        auto ag_t0 = g_profiling_enabled
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
+
+        // Measure time OUTSIDE autograd: previous autograd exit → this autograd entry.
+        // This captures: Python model code + PyTorch outer dispatcher (Python→C++ boundary,
+        // dispatch key selection, Python binding boxing/unboxing).
+        if (g_profiling_enabled && g_last_autograd_end_ns > 0) {
+            int64_t entry_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                ag_t0.time_since_epoch()).count();
+            int64_t outside_ns = entry_ns - g_last_autograd_end_ns;
+            if (outside_ns > 0) {
+                g_prof_outside_autograd_ns.fetch_add(outside_ns, std::memory_order_relaxed);
+                g_prof_outside_autograd_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
         at::AutoDispatchBelowADInplaceOrView guard;
         op.callBoxed(stack);
+
+        if (g_profiling_enabled) {
+            auto ag_t1 = std::chrono::steady_clock::now();
+            // Total autograd time (includes fallback_kernel inside).
+            int64_t ag_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                ag_t1 - ag_t0).count();
+            g_prof_autograd_overhead_ns.fetch_add(ag_ns, std::memory_order_relaxed);
+            // Record exit timestamp for next iteration's "outside" measurement.
+            g_last_autograd_end_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                ag_t1.time_since_epoch()).count();
+        }
     } catch (py::error_already_set& e) {
         // During redispatch, device guard callbacks (e.g. exchange_device) call into
         // Python where a pending KeyboardInterrupt can raise py::error_already_set.
@@ -292,9 +343,67 @@ void autograd_fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* 
 // --- Boxed Fallback Kernel ---
 
 void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+    // Pre-GIL timestamp to measure GIL acquisition overhead
+    auto pre_gil_ts = g_profiling_enabled
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
+
     py::gil_scoped_acquire gil;
 
     try {
+
+    // --- Profiling: inter-op gap measurement ---
+    auto kernel_t0 = g_profiling_enabled
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
+    if (g_profiling_enabled) {
+        // GIL acquisition time
+        int64_t gil_wait = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            kernel_t0 - pre_gil_ts).count();
+        if (gil_wait > 0) {
+            g_prof_gil_wait_ns.fetch_add(gil_wait, std::memory_order_relaxed);
+        }
+
+        int64_t last_end = g_prof_last_dispatch_end_ns.load(std::memory_order_relaxed);
+        if (last_end > 0) {
+            int64_t pre_gil_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                pre_gil_ts.time_since_epoch()).count();
+            int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                kernel_t0.time_since_epoch()).count();
+            int64_t gap = now_ns - last_end;
+            if (gap > 0) {
+                g_prof_inter_op_gap_total_ns.fetch_add(gap, std::memory_order_relaxed);
+                g_prof_inter_op_gap_count.fetch_add(1, std::memory_order_relaxed);
+                // Gap histogram
+                int bucket;
+                if (gap < 1000) bucket = 0;           // <1µs
+                else if (gap < 10000) bucket = 1;      // 1-10µs
+                else if (gap < 100000) bucket = 2;     // 10-100µs
+                else if (gap < 1000000) bucket = 3;    // 100µs-1ms
+                else if (gap < 10000000) bucket = 4;   // 1-10ms
+                else bucket = 5;                       // >10ms
+                g_prof_gap_hist[bucket].fetch_add(1, std::memory_order_relaxed);
+
+                // For large gaps (>1ms), decompose into GIL wait vs other.
+                // GIL wait = time waiting for GIL acquisition (event loop holding it).
+                // Other = time in C++ before GIL (dispatcher, autograd, etc.)
+                //       + time after GIL but before our profiling timestamp.
+                if (gap > 1000000) {  // >1ms
+                    // pre_gil_ns is BEFORE GIL acquire, so:
+                    //   last_end → pre_gil = "not waiting for GIL" (C++ dispatch + Python)
+                    //   pre_gil → now = "GIL acquire" (may include event loop work)
+                    int64_t gap_before_gil = pre_gil_ns - last_end;
+                    int64_t gap_during_gil = now_ns - pre_gil_ns;
+                    g_prof_large_gap_other_ns.fetch_add(
+                        std::max(int64_t(0), gap_before_gil), std::memory_order_relaxed);
+                    g_prof_large_gap_gil_ns.fetch_add(
+                        std::max(int64_t(0), gap_during_gil), std::memory_order_relaxed);
+                    g_prof_large_gap_count.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
+    }
+
     // --- C++ fast path: try dispatch_cached_aten for cache hits ---
     // Only attempt when the submit callback is registered. Without the callback,
     // dispatch_cached_aten returns Tuple(5) on cache hits, which registers tensor
@@ -359,6 +468,10 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
                             t3 - t2).count(),
                         std::memory_order_relaxed);
                     g_prof_fast_path_count.fetch_add(1, std::memory_order_relaxed);
+                    g_prof_last_dispatch_end_ns.store(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            t3.time_since_epoch()).count(),
+                        std::memory_order_relaxed);
                 }
 
                 // Periodic callback: every N ops, tick the main thread's
@@ -402,7 +515,26 @@ void fallback_kernel(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
     }
 
     // --- Python fallback: cache miss, uncacheable, or no callback yet ---
-    call_python_fallback(op, stack);
+    {
+        auto py_t0 = g_profiling_enabled
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
+
+        call_python_fallback(op, stack);
+
+        if (g_profiling_enabled) {
+            auto py_t1 = std::chrono::steady_clock::now();
+            g_prof_python_fallback_ns.fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    py_t1 - py_t0).count(),
+                std::memory_order_relaxed);
+            g_prof_python_fallback_count.fetch_add(1, std::memory_order_relaxed);
+            g_prof_last_dispatch_end_ns.store(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    py_t1.time_since_epoch()).count(),
+                std::memory_order_relaxed);
+        }
+    }
 
     } catch (py::error_already_set& e) {
         if (e.matches(PyExc_KeyboardInterrupt) ||
