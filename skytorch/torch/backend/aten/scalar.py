@@ -33,6 +33,7 @@ except ImportError:
     _increment_ops_counter = None
     _reset_ops_counter = None
 
+
 # Scalar speculation: predict the next .item() result based on the last-seen value.
 # This eliminates blocking at sync points for predictable scalars (e.g., stopping criteria
 # in model.generate() where __bool__() on a bool tensor returns False every token).
@@ -44,11 +45,12 @@ except ImportError:
 #   (200+ ops/token) from gradcheck (few ops between allclose checks)
 # - Incidental syncs (0 ops between) with matching values confirm immediately,
 #   so speculation kicks in from token 1 in generate() loops
-# - Qualifying syncs always validate the previous prediction (mandatory back-pressure)
-#   to prevent the client from racing ahead of the server and overwhelming the stream
 # - Non-qualifying confirmed syncs skip get_scalar (no server round-trip) when the
 #   tensor is already registered, returning the predicted value immediately
-# - On misprediction: falls back to blocking, generates at most one extra token
+# - On misprediction: bounded validation detects it within _MAX_UNVALIDATED_PREDICTIONS
+#   tokens. The actual value is returned directly (no exception). The stopping criterion
+#   is monotonic (once True, stays True), so the validation result is always correct.
+#   generate() stops naturally (bounded overshoot, consistent state, transparent).
 _SPECULATION_ENABLED = os.environ.get("SKYTORCH_SPECULATIVE_SCALAR", "1") == "1"
 
 # Minimum fire-and-forget ops between .item() calls to consider speculation.
@@ -57,7 +59,16 @@ _SPECULATION_ENABLED = os.environ.get("SKYTORCH_SPECULATIVE_SCALAR", "1") == "1"
 # gradcheck dispatches ~10-20 ops between allclose checks. A threshold of 25
 # separates the two patterns while keeping secondary generate checks above
 # the threshold (preventing unwanted speculation reset).
-_MIN_OPS_BETWEEN_SYNCS = 25
+_MIN_OPS_BETWEEN_SYNCS = 100
+
+# Maximum consecutive tokens that can use predicted values without a validated
+# server response. Acts as a safety net when GIL release is disabled
+# (SKYTORCH_PERIODIC_INTERVAL=0) or no C++ cache hits occur — forces a
+# blocking sync every N tokens to bound overshoot. Rarely triggers in practice
+# because GIL release (default: every 64 ops) gives the event loop enough
+# time to process get_scalar responses during the forward pass.
+_MAX_UNVALIDATED_PREDICTIONS = 5
+
 
 # Counter incremented by the dispatch path for each fire-and-forget op.
 # Read and reset by _local_scalar_dense to detect the generate() pattern.
@@ -109,9 +120,7 @@ def _local_scalar_dense(self: torch.Tensor):
     global _speculation_state, _ops_since_last_sync
 
     if self.numel() != 1:
-        raise RuntimeError(
-            f"a Tensor with {self.numel()} elements cannot be converted to Scalar"
-        )
+        raise RuntimeError(f"a Tensor with {self.numel()} elements cannot be converted to Scalar")
 
     if PROFILING_ENABLED:
         _t0 = time.perf_counter_ns()
@@ -172,44 +181,74 @@ def _local_scalar_dense(self: torch.Tensor):
         if meta is not None:
             metadata_proto = tensor_metadata_to_proto(meta)
 
-        # Submit async scalar request
-        future = run_async(get_scalar(compute, tensor_id, metadata_proto))
-
-        if meta is not None:
-            _register_tensor_locally(self)
-
         if _can_speculate and _speculation_state is not None:
             state = _speculation_state
 
             if state["confirmed"]:
                 # Pattern confirmed — actively speculating
                 predicted = state["value"]
-                prev_future = state["future"]
 
-                # Mandatory validation: always block on prev_future to provide
-                # back-pressure. Without this, the client races ahead of the
-                # server, overwhelming the gRPC stream and causing deadlocks
-                # (especially on remote GPUs or cold-server first runs).
-                # On warm servers, prev_future is typically already done by this
-                # point (the server had a full forward pass to process it), so
-                # this block is essentially free.
-                if prev_future is not None:
-                    actual = prev_future.result()
-                    if actual != predicted:
-                        # Pattern broke — stop speculating, block on current
+                # Fast path: callback already fired, detected a mismatch.
+                if "mismatch_actual" in state:
+                    actual = state["mismatch_actual"]
+                    _speculation_state = None
+                    if PROFILING_ENABLED:
+                        from skytorch.torch.profiler import ClientProfiler
+
+                        ClientProfiler.get().scalar_speculative_misses += 1
+                        _t1 = time.perf_counter_ns()
+                        ClientProfiler.get().sync_total.add(_t1 - _t0)
+                    return actual
+
+                # Safety: force-block if too many unvalidated predictions.
+                # Blocks on the OLDEST future (most likely already resolved
+                # since the server had the most time to process it).
+                futures = state.get("futures")
+                unvalidated = state.get("unvalidated", 0)
+                if futures and unvalidated >= _MAX_UNVALIDATED_PREDICTIONS:
+                    futures[0].result()  # releases GIL, event loop runs
+                    # Drain all completed futures
+                    while futures and futures[0].done():
+                        futures.popleft()
+                    state["unvalidated"] = len(futures)
+                    if "mismatch_actual" in state:
+                        actual = state["mismatch_actual"]
                         _speculation_state = None
                         if PROFILING_ENABLED:
                             from skytorch.torch.profiler import ClientProfiler
 
                             ClientProfiler.get().scalar_speculative_misses += 1
-                        result = future.result()
-                        if PROFILING_ENABLED:
                             _t1 = time.perf_counter_ns()
                             ClientProfiler.get().sync_total.add(_t1 - _t0)
-                        return result
+                        return actual
 
-                # Speculate: return predicted, save future for next validation
-                state["future"] = future
+                # Submit async get_scalar with done callback.
+                # The callback sets mismatch_actual when the result differs.
+                future = run_async(
+                    get_scalar(compute, tensor_id, metadata_proto)
+                )
+
+                _p, _s = predicted, state
+
+                def _on_done(f, _p=_p, _s=_s):
+                    try:
+                        result = f.result()
+                    except Exception:
+                        return
+                    if result != _p and _speculation_state is _s:
+                        _s["mismatch_actual"] = result
+
+                future.add_done_callback(_on_done)
+                if futures is None:
+                    from collections import deque
+
+                    futures = deque()
+                    state["futures"] = futures
+                futures.append(future)
+                state["unvalidated"] = unvalidated + 1
+                if meta is not None:
+                    _register_tensor_locally(self)
+
                 if PROFILING_ENABLED:
                     from skytorch.torch.profiler import ClientProfiler
 
@@ -221,6 +260,9 @@ def _local_scalar_dense(self: torch.Tensor):
 
             else:
                 # Not confirmed yet — block and check if value repeats
+                future = run_async(get_scalar(compute, tensor_id, metadata_proto))
+                if meta is not None:
+                    _register_tensor_locally(self)
                 result = future.result()
                 if result == state["value"]:
                     # Two consecutive identical values → confirm pattern
@@ -242,6 +284,9 @@ def _local_scalar_dense(self: torch.Tensor):
         # sync for confirmation. Resetting would prevent confirmation from ever
         # succeeding when the secondary generate check doesn't qualify.
 
+        future = run_async(get_scalar(compute, tensor_id, metadata_proto))
+        if meta is not None:
+            _register_tensor_locally(self)
         result = future.result()
 
         if _can_speculate and _speculation_state is None:
