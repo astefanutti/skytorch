@@ -998,28 +998,35 @@ class StreamManager:
         if self._shutdown_event is not None:
             self._shutdown_event.set()
 
-        # Signal sender to stop
+        # Signal sender to stop — the request_generator yields no more requests,
+        # the server sees end-of-stream, runs its finally cleanup, and closes
+        # the response stream. The receiver completes when it sees the stream end.
         if self._request_queue is not None:
             self._request_queue.put_nowait(None)
 
-        # Cancel stream call
-        if self._stream_call is not None:
-            self._stream_call.cancel()
-
-        # Wait for tasks to complete
+        # Wait for sender to finish (it returns once request_generator ends)
         if self._sender_task is not None:
-            self._sender_task.cancel()
             try:
-                await self._sender_task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(self._sender_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                self._sender_task.cancel()
+                try:
+                    await self._sender_task
+                except asyncio.CancelledError:
+                    pass
 
+        # Wait for receiver to finish (server closes stream after cleanup)
         if self._receiver_task is not None:
-            self._receiver_task.cancel()
             try:
-                await self._receiver_task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(self._receiver_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                if self._stream_call is not None:
+                    self._stream_call.cancel()
+                self._receiver_task.cancel()
+                try:
+                    await self._receiver_task
+                except asyncio.CancelledError:
+                    pass
 
         # Fail any remaining pending requests
         self._fail_all_pending("Stream closed")
