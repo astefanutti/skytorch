@@ -17,7 +17,7 @@ from weakref import WeakValueDictionary
 
 import torch
 
-from skytorch.torch.backend._async import get_event_loop
+from skytorch.torch.client.loop import get_event_loop
 from skytorch.torch.client.tensor import get_storage_id, get_tensor_id
 
 if TYPE_CHECKING:

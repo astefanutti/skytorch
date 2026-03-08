@@ -31,7 +31,7 @@ from skytorch.torch.backend._storage import storage_manager
 from skytorch.torch.client.tensor import get_storage_id, get_tensor_id, get_tensor_metadata
 from skytorch.torch.client.metadata import TensorMetadata
 from skytorch.torch.client.service import TensorClient
-from skytorch.torch.backend._async import run_async
+from skytorch.torch.client.loop import run_async
 from skytorch.torch.client.request import (
     tensor_metadata_to_proto,
     build_copy_tensor_request,

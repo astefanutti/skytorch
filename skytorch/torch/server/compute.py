@@ -110,7 +110,7 @@ class Compute:
         if self._grpc_client:
             # Drain pending tensor deletions before closing the gRPC connection,
             # so GC after channel close doesn't produce warnings.
-            from skytorch.torch.backend._async import get_event_loop
+            from skytorch.torch.client.loop import get_event_loop
             from skytorch.torch.backend._client import drain_tensors
 
             loop = get_event_loop()

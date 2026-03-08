@@ -10,7 +10,7 @@ import time
 
 import torch
 
-from skytorch.torch.backend._async import run_async
+from skytorch.torch.client.loop import run_async
 from skytorch.torch.backend._client import (
     ENABLE_STREAMING,
     _get_tensor_metadata_if_new,

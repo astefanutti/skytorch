@@ -6,6 +6,7 @@ in Kubernetes and connecting to them via gRPC.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import re
 from typing import Callable, Dict, List, Optional, Self
@@ -182,16 +183,16 @@ class Compute:
         # State tracking
         self._compute_resource: Optional[ComputeV1alpha1Compute] = None
         self._grpc_client: Optional[GRPCClient] = None
-        self._event_watch_task: Optional[asyncio.Task] = None
-        self._metrics_stream_task: Optional[asyncio.Task] = None
+        self._event_watch_future: Optional[concurrent.futures.Future] = None
+        self._metrics_stream_future: Optional[concurrent.futures.Future] = None
 
-        # Enable eager task execution so tasks start immediately up to the first await,
-        # ensuring resource versions are captured before the Compute resource is applied.
-        asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)
-
-        # Start event watching if callback is provided
+        # Start event watching on the background loop if callback is provided
         if self._on_events is not None:
-            self._event_watch_task = asyncio.create_task(self._watch_events())
+            from skytorch.torch.client.loop import get_event_loop
+
+            self._event_watch_future = asyncio.run_coroutine_threadsafe(
+                self._watch_events(), get_event_loop(),
+            )
 
         # Apply the Compute resource using server-side apply
         self._apply_compute()
@@ -354,10 +355,10 @@ class Compute:
         Args:
             grace_period_seconds: Grace period for deletion
         """
-        # Cancel event watch task if running
-        if self._event_watch_task is not None:
-            self._event_watch_task.cancel()
-            await self._event_watch_task
+        # Cancel event watch future if running
+        if self._event_watch_future is not None:
+            self._event_watch_future.cancel()
+            self._event_watch_future = None
 
         # Cleanup gRPC client
         await self._cleanup_grpc_client()
@@ -615,26 +616,25 @@ class Compute:
         # Enter the async context manager
         await self._grpc_client.__aenter__()
 
-        # Start metrics streaming if callback is provided
+        # Start metrics streaming on the background loop if callback is provided
         if self._on_metrics is not None:
-            # asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)
-            self._metrics_stream_task = asyncio.create_task(self._stream_metrics())
+            from skytorch.torch.client.loop import get_event_loop
+
+            self._metrics_stream_future = asyncio.run_coroutine_threadsafe(
+                self._stream_metrics(), get_event_loop(),
+            )
 
     async def _cleanup_grpc_client(self):
         """Cleanup the gRPC client connection."""
-        # Cancel metrics stream task if running
-        if self._metrics_stream_task is not None:
-            self._metrics_stream_task.cancel()
-            try:
-                await self._metrics_stream_task
-            except asyncio.CancelledError:
-                pass
-            self._metrics_stream_task = None
+        # Cancel metrics stream future if running
+        if self._metrics_stream_future is not None:
+            self._metrics_stream_future.cancel()
+            self._metrics_stream_future = None
 
         if self._grpc_client is not None:
             # Drain pending tensor deletions before closing the gRPC connection,
             # so GC after channel close doesn't produce warnings.
-            from skytorch.torch.backend._async import get_event_loop
+            from skytorch.torch.client.loop import get_event_loop
             from skytorch.torch.backend._client import drain_tensors
 
             loop = get_event_loop()

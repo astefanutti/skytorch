@@ -70,11 +70,6 @@ except ImportError:
     _clear_python_fallback = None
 
 try:
-    from skytorch.torch.backend._C import _set_periodic_callback
-except ImportError:
-    _set_periodic_callback = None
-
-try:
     from skytorch.torch.backend._C import _take_pending_fused_result
 except ImportError:
     _take_pending_fused_result = None
@@ -895,53 +890,3 @@ def _sky_kernel_fallback(
 # This is called for cache misses and uncacheable ops from FallbackKernel.cpp.
 if _set_python_fallback is not None:
     _set_python_fallback(_sky_kernel_fallback)
-
-
-# Register periodic callback to tick the main thread's event loop during
-# C++ dispatch. Called every g_periodic_interval ops on the main thread
-# (with GIL held) so the main event loop can process pending async callbacks
-# (metrics, logs, compute events) that would otherwise be starved.
-if _set_periodic_callback is not None:
-    import asyncio
-    import time as _time
-
-    # Time-throttled: only tick every ~100ms. Called every 64 ops (~450µs)
-    # but metrics arrive every ~1s, so most calls can skip. Reducing
-    # _run_once() frequency cuts GIL contention with the backend thread.
-    _TICK_INTERVAL_S = 0.1
-    _last_tick_time = 0.0
-    _noop_handle = None
-
-    def _tick_main_event_loop():
-        global _last_tick_time, _noop_handle
-        now = _time.monotonic()
-        if now - _last_tick_time < _TICK_INTERVAL_S:
-            return
-        _last_tick_time = now
-
-        loop = asyncio._get_running_loop()
-        if loop is None:
-            return
-        # Run one full event loop iteration: polls I/O (select with timeout=0),
-        # moves expired timers to _ready, and processes ready callbacks.
-        # A no-op handle forces select(timeout=0) so the call is non-blocking.
-        #
-        # _leave_task/_enter_task: asyncio forbids entering a task while another
-        # is executing. During model.generate(), the main coroutine IS the
-        # executing task. We must temporarily leave it so _run_once() can
-        # resume background tasks (metrics streaming, compute events, etc.).
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            asyncio.tasks._leave_task(loop, current_task)
-        try:
-            if _noop_handle is None:
-                _noop_handle = asyncio.Handle(lambda: None, (), loop)
-            loop._ready.append(_noop_handle)
-            loop._run_once()
-        except Exception:
-            pass
-        finally:
-            if current_task is not None:
-                asyncio.tasks._enter_task(loop, current_task)
-
-    _set_periodic_callback(_tick_main_event_loop)

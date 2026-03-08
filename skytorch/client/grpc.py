@@ -236,7 +236,7 @@ class GRPCClient:
         Returns:
             Self
         """
-        from skytorch.torch.backend._async import get_event_loop
+        from skytorch.torch.client.loop import get_event_loop
 
         logger.debug(f"Connecting to gRPC server at {self.address}")
 
@@ -280,7 +280,7 @@ class GRPCClient:
         managed by their respective threads and will be cleaned up when
         the threads terminate.
         """
-        from skytorch.torch.backend._async import get_event_loop
+        from skytorch.torch.client.loop import get_event_loop
 
         global_loop = get_event_loop()
 
