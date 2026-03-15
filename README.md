@@ -2,10 +2,14 @@
 
 Run PyTorch with remote GPUs.
 
+An example of prompting [OSS GPT 120B](https://huggingface.co/openai/gpt-oss-120b) on a remote NVIDIA A100 80GB GPU using [demo/llm_term.py](demo/llm_term.py):
+
+<img src="docs/llm_term.svg" alt="SkyTorch LLM chat demo">
+
 SkyTorch provides:
-* A `sky` device backend in PyTorch that virtualizes remote GPUs and transparently streams tensor operations
+* A `sky` device backend that virtualizes remote GPUs and transparently streams tensor operations
 * A standalone gRPC server that runs on remote GPU hosts for PyTorch to connect to
-* A Kubernetes operator that provisions the SkyTorch server onto on-demand GPU pods / nodes
+* A Kubernetes operator that provisions the SkyTorch server onto GPU pods / nodes on-demand
 
 ## Examples
 
@@ -64,6 +68,8 @@ async def train(node, epochs: int = 10):
 
 asyncio.run(train())
 ```
+
+> See [demo/mnist.py](demo/mnist.py) for the full example.
 
 ### GPT OSS 120B Inferencing
 
@@ -136,6 +142,8 @@ except KeyboardInterrupt:
     pass
 ```
 
+> See [demo/llm_gpt.py](demo/llm_gpt.py) for the full example.
+>
 > **Note:** GPT OSS 120B requires a GPU with at least 80GB of memory.
 
 ### GRPO Training

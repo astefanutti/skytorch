@@ -53,8 +53,10 @@ test = [
 ]
 
 demo = [
-    "pip-system-certs",
+    "asciichartpy",
     "openai_harmony",
+    "pip-system-certs",
+    "textual",
     "torchvision",
     "tqdm",
     "transformers",
