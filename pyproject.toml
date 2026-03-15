@@ -54,6 +54,7 @@ test = [
 
 demo = [
     "pip-system-certs",
+    "openai_harmony",
     "torchvision",
     "tqdm",
     "transformers",

@@ -1,126 +1,27 @@
 import asyncio
 import logging
+import os
 import signal
 import sys
+import time
+
+# Enable async scalar copy before any skytorch import (read at import time)
+os.environ.setdefault("SKYTORCH_ASYNC_COPY", "1")
 
 import torch
-from openai_harmony import (
-    HarmonyEncodingName,
-    Role,
-    StreamableParser,
-    StreamState,
-    load_harmony_encoding,
-)
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, TextStreamer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from skytorch.client import Compute, compute, log_event
+from skytorch.transformers.cache import SpeculativeCache
+from skytorch.transformers.harmony import HarmonyStreamer
+from skytorch.transformers.streamer import AsyncStreamer
+from util import async_input
 
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-
-
-class HarmonyStreamer(TextStreamer):
-    """Streamer for GPT-OSS Harmony response format.
-
-    Uses openai-harmony's StreamableParser to parse the structured output with
-    <|start|>, <|channel|>, <|message|>, <|end|>, and <|return|> special tokens.
-    Displays analysis/thinking traces in grey and the final response in normal color.
-    """
-
-    _GREY = "\033[90m"
-    _RESET = "\033[0m"
-
-    def __init__(self, tokenizer, **kwargs):
-        super().__init__(tokenizer, **kwargs)
-        self._encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
-        self._start_token_id = self._encoding.encode(
-            "<|start|>", allowed_special={"<|start|>"}
-        )[0]
-        self._endoftext_token_id = self._encoding.encode(
-            "<|endoftext|>", allowed_special={"<|endoftext|>"}
-        )[0]
-        self.reset()
-
-    def reset(self):
-        """Clear state between turns."""
-        self._parser = StreamableParser(self._encoding, Role.ASSISTANT, strict=False)
-        self._prev_state = self._parser.state
-        self._prev_channel = None
-        self._final_text = []
-        self.token_cache = []
-        self.print_len = 0
-        self.next_tokens_are_prompt = True
-
-    def put(self, value):
-        if len(value.shape) > 1 and value.shape[0] > 1:
-            raise ValueError("HarmonyStreamer only supports batch size 1")
-        elif len(value.shape) > 1:
-            value = value[0]
-
-        if self.skip_prompt and self.next_tokens_are_prompt:
-            self.next_tokens_are_prompt = False
-            return
-
-        for token_id in value.tolist():
-            # <|endoftext|> is never valid content — skip it in any parser state.
-            # With strict=False the parser would pass it through as a content delta.
-            if token_id == self._endoftext_token_id:
-                return
-            # After <|end|>, the parser moves to EXPECT_START (distinct from the
-            # initial HEADER state). Only <|start|> is valid there (next message
-            # in a multi-message response) — skip everything else (<|return|>,
-            # etc.). Speculative scalar may delay the stopping criterion by one
-            # token, so the streamer must tolerate trailing tokens.
-            if self._parser.state == StreamState.EXPECT_START and token_id != self._start_token_id:
-                return
-            self._parser.process(token_id)
-            state = self._parser.state
-            channel = self._parser.current_channel
-
-            # Transition out of content: reset ANSI for analysis
-            if self._prev_state == StreamState.CONTENT and state != StreamState.CONTENT:
-                if self._prev_channel == "analysis":
-                    print(self._RESET, end="", flush=True)
-
-            # Transition into content: print channel label
-            if state == StreamState.CONTENT and self._prev_state != StreamState.CONTENT:
-                if channel == "analysis":
-                    print(f"\n{self._GREY}Thinking: ", end="", flush=True)
-                elif channel == "final":
-                    print("\n\nAssistant: ", end="", flush=True)
-
-            # Stream content deltas
-            if state == StreamState.CONTENT:
-                delta = self._parser.last_content_delta
-                if delta:
-                    print(delta, end="", flush=True)
-                    if channel == "final":
-                        self._final_text.append(delta)
-
-            self._prev_state = state
-            self._prev_channel = channel
-
-    def end(self):
-        self._parser.process_eos()
-        if self._prev_state == StreamState.CONTENT:
-            if self._prev_channel == "analysis":
-                print(self._RESET, end="", flush=True)
-        self.next_tokens_are_prompt = True
-        print()
-
-    @property
-    def eos_token_id(self):
-        """Harmony stop tokens for use as eos_token_id in model.generate()."""
-        return self._encoding.stop_tokens_for_assistant_actions()
-
-    def get_final_response(self):
-        """Return text from only the final channel."""
-        if not self._final_text:
-            return ""
-        return "".join(self._final_text).strip()
 
 
 @compute(
@@ -131,7 +32,7 @@ class HarmonyStreamer(TextStreamer):
     env={"HF_HOME": "/cache", "TRITON_HOME": "/cache"},
     on_events=log_event,
 )
-async def chat(node: Compute):
+async def chat(node: Compute, max_new_tokens: int = 512):
     device = node.device("cuda")
     model_name = "openai/gpt-oss-120b"
 
@@ -154,18 +55,22 @@ async def chat(node: Compute):
     state_dict.load_into(model, triton_modules=["model.layers.*.mlp"])
     model.eval()
 
-    streamer = HarmonyStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    streamer = AsyncStreamer(HarmonyStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True))
     history = [{"role": "system", "content": "You are a helpful assistant."}]
     print("\nChat with the model (type 'quit' or 'exit' to stop)")
 
     # Override asyncio's SIGINT handler which defers the first Ctrl-C
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
+    total_tokens = 0
+    total_time = 0.0
+    num_turns = 0
     past_key_values = None
     past_length = 0
+
     with torch.no_grad():
         while True:
-            user_input = input("\nYou: ")
+            user_input = await async_input("\nYou: ")
             if user_input.strip().lower() in ("quit", "exit"):
                 break
             if not user_input.strip():
@@ -180,22 +85,21 @@ async def chat(node: Compute):
                     return_dict=True,
                 )
                 inputs = {k: v.to(device) for k, v in inputs.items()}
+                inputs["past_key_values"] = SpeculativeCache(config=model.config)
             else:
-                # Diff approach: tokenize history without vs with the new user
-                # message to extract only the new tokens, avoiding assumptions
-                # about template format.
+                # Tokenize full history to extract new tokens via diff.
+                # Re-tokenization is needed because the chat template adds
+                # role delimiters that can't be computed without it.
                 prev_ids = tokenizer.apply_chat_template(
-                    history[:-1], add_generation_prompt=False, return_tensors="pt",
-                    return_dict=True,
+                    history[:-1], add_generation_prompt=False,
+                    return_tensors="pt", return_dict=True,
                 )["input_ids"]
                 full_ids = tokenizer.apply_chat_template(
-                    history, add_generation_prompt=True, return_tensors="pt",
-                    return_dict=True,
+                    history, add_generation_prompt=True,
+                    return_tensors="pt", return_dict=True,
                 )["input_ids"]
                 new_ids = full_ids[:, prev_ids.shape[1]:]
                 total_len = past_length + new_ids.shape[1]
-                # Pad input_ids so prepare_inputs_for_generation keeps the new tokens
-                # instead of stripping them (it strips past_length prefix, keeping K real tokens)
                 input_ids = torch.cat(
                     [torch.zeros(1, past_length, dtype=torch.long), new_ids], dim=1,
                 ).to(device)
@@ -211,14 +115,16 @@ async def chat(node: Compute):
                 }
 
             try:
+                t0 = time.perf_counter()
                 output = model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=max_new_tokens,
                     do_sample=False,
                     streamer=streamer,
                     eos_token_id=streamer.eos_token_id,
                     return_dict_in_generate=True,
                 )
+                elapsed = time.perf_counter() - t0
             except (KeyboardInterrupt, RuntimeError) as exc:
                 # KeyboardInterrupt during C++ dispatch is converted to
                 # RuntimeError("KeyboardInterrupt") by TORCH_CHECK
@@ -226,16 +132,37 @@ async def chat(node: Compute):
                     raise
                 print("\033[0m")  # Reset ANSI codes
                 streamer.reset()
+                history.pop()
                 past_key_values = None
                 past_length = 0
-                history.pop()
                 continue
 
             response = streamer.get_final_response()
             history.append({"role": "assistant", "content": response})
-            streamer.reset()
+            gen_tokens = streamer.generated_tokens
             past_key_values = output.past_key_values
             past_length = output.sequences.shape[1]
+            # Crop overshoot from KV cache. Speculation may bypass both
+            # EOS and max_new_tokens stopping criteria. The SpeculativeCache
+            # allows crop on sliding window layers (base class forbids it).
+            valid = streamer._valid_generated or max_new_tokens
+            overshoot = max(0, gen_tokens - valid)
+            if overshoot > 0:
+                past_key_values.crop_overshoot(overshoot)
+                past_length -= overshoot
+            streamer.reset()
+            tokens_per_sec = gen_tokens / elapsed if elapsed > 0 else 0
+            print(f"\n[{gen_tokens} tokens in {elapsed:.1f}s — {tokens_per_sec:.1f} token/s]")
+            total_tokens += gen_tokens
+            total_time += elapsed
+            num_turns += 1
+
+    if num_turns > 0:
+        avg_tok_s = total_tokens / total_time if total_time > 0 else 0
+        print(
+            f"\nSession: {num_turns} turns, {total_tokens} tokens, "
+            f"{total_time:.1f}s, {avg_tok_s:.1f} avg token/s"
+        )
 
 
 if __name__ == "__main__":
