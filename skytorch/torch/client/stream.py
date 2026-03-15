@@ -891,7 +891,17 @@ class StreamManager:
             _t_enqueue = time.perf_counter_ns()
 
         async def _with_error_check():
-            response = await future
+            try:
+                response = await future
+            except RuntimeError:
+                # If there's a prior deferred error (e.g., OOM from a
+                # fire-and-forget op), it's the root cause — raise it
+                # instead of the symptom (e.g., "Tensor not found").
+                # A speculative get_scalar may have consumed the server's
+                # deferred error, leaving subsequent syncs with a
+                # confusing secondary error.
+                self.check_error()
+                raise
             if PROFILING_ENABLED:
                 _t_resolved = time.perf_counter_ns()
                 _wait_ns = _t_resolved - _t_enqueue
@@ -969,7 +979,17 @@ class StreamManager:
             _t_enqueue = time.perf_counter_ns()
 
         async def _with_error_check():
-            response = await future
+            try:
+                response = await future
+            except RuntimeError:
+                # If there's a prior deferred error (e.g., OOM from a
+                # fire-and-forget op), it's the root cause — raise it
+                # instead of the symptom (e.g., "Tensor not found").
+                # A speculative get_scalar may have consumed the server's
+                # deferred error, leaving subsequent syncs with a
+                # confusing secondary error.
+                self.check_error()
+                raise
             if PROFILING_ENABLED:
                 _t_resolved = time.perf_counter_ns()
                 _wait_ns = _t_resolved - _t_enqueue
