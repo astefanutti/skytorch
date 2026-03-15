@@ -9,7 +9,9 @@ allocator, avoiding actual memory allocation on the client side.
 from __future__ import annotations
 
 import logging
+import threading
 import weakref
+import collections
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
@@ -25,11 +27,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 def _delete_tensors_after_gc(compute, tensor_ids):
     try:
         client = compute._grpc_client
         if client is not None and client.stream is not None:
-            client.stream.defer_delete_ids(tensor_ids)
+            # Route through _mt_ops for FIFO ordering with ATen ops.
+            # Pending ATen ops in _mt_ops must reach the server before
+            # the delete message; _drain_mt_ops processes them in order
+            # and _flush_deferred flushes batch buffers before sending deletes.
+            stream = client.stream
+            with stream._mt_lock:
+                stream._mt_ops.append(("ff", tensor_ids))
+                if not stream._mt_wake_pending:
+                    stream._mt_wake_pending = True
+                    stream._loop.call_soon_threadsafe(stream._drain_mt_ops)
     except Exception as e:
         logger.warning(f"Failed to defer deletion of tensor(s) {tensor_ids}: {e}")
 
@@ -63,11 +75,16 @@ class StorageManager:
     """
 
     def __init__(self):
+        self._lock = threading.RLock()
         self._storages: dict[int, StorageInfo] = {}
         self._tensor_to_storage: WeakValueDictionary[int, torch.UntypedStorage] = (
             WeakValueDictionary()
         )
         self._storage_to_tensors: dict[int, set[int]] = defaultdict(set)
+        # Iterative free queue: prevents stack overflow when gc.collect()
+        # triggers a chain of tensor deallocations, each calling free_storage.
+        self._pending_frees: collections.deque[int] = collections.deque()
+        self._processing_frees: bool = False
 
     def register_storage(
         self,
@@ -87,34 +104,64 @@ class StorageManager:
             nbytes: Size of the storage in bytes
             device_index: Device index for the storage
         """
-        if storage_id in self._storages:
-            return  # Already registered
+        with self._lock:
+            if storage_id in self._storages:
+                return  # Already registered
 
-        from skytorch.torch.backend._device import device_manager
+            from skytorch.torch.backend._device import device_manager
 
-        compute = device_manager.get_compute(device_index)
-        if compute is None:
-            raise RuntimeError(
-                f"No Compute registered for device index {device_index}. "
-                "Ensure you have called compute.device() to register the device."
-            )
+            compute = device_manager.get_compute(device_index)
+            if compute is None:
+                raise RuntimeError(
+                    f"No Compute registered for device index {device_index}. "
+                    "Ensure you have called compute.device() to register the device."
+                )
 
-        info = StorageInfo(nbytes, device_index, _compute_ref=weakref.ref(compute))
-        self._storages[storage_id] = info
+            info = StorageInfo(nbytes, device_index, _compute_ref=weakref.ref(compute))
+            self._storages[storage_id] = info
 
     def free_storage(self, storage_id: int) -> None:
         """
         Free a storage allocation.
 
-        Handles both registered and unregistered storage IDs.
-        If the storage was never used (lazy allocation), this is a no-op.
-        Schedules tensor deletion on the Compute's event loop (non-blocking).
+        Uses an iterative queue to prevent stack overflow: gc.collect()
+        can trigger a chain of tensor deallocations where each calls
+        free_storage, growing the stack until RecursionError.  By queuing
+        the storage_id and processing iteratively, the stack depth stays
+        constant regardless of how many storages are freed at once.
 
         Args:
             storage_id: ID of the storage to free
         """
-        tensor_ids = list(self._storage_to_tensors.pop(storage_id, set()))
-        info = self._storages.pop(storage_id, None)
+        self._pending_frees.append(storage_id)
+        if self._processing_frees:
+            return  # Already in the processing loop
+        self._processing_frees = True
+        # Batch deletes per Compute — one call_soon_threadsafe per Compute
+        # instead of one per freed storage.  Critical when gc.collect()
+        # frees hundreds of storages at once.
+        batched: dict[int, tuple] = {}  # id(compute) → (compute, [tensor_ids])
+        try:
+            while self._pending_frees:
+                sid = self._pending_frees.popleft()
+                self._free_storage_one(sid, batched)
+        finally:
+            self._processing_frees = False
+        if batched:
+            loop = get_event_loop()
+            for compute, tensor_ids in batched.values():
+                try:
+                    loop.call_soon_threadsafe(
+                        _delete_tensors_after_gc, compute, tensor_ids
+                    )
+                except RuntimeError:
+                    pass
+
+    def _free_storage_one(self, storage_id: int, batched: dict) -> None:
+        """Process a single storage free (called iteratively, not recursively)."""
+        with self._lock:
+            tensor_ids = list(self._storage_to_tensors.pop(storage_id, set()))
+            info = self._storages.pop(storage_id, None)
 
         # Unregister all tensor_ids from C++ tracking
         if tensor_ids:
@@ -132,34 +179,29 @@ class StorageManager:
 
         compute = info.compute
         if compute is None:
-            logger.warning(
-                f"Compute was garbage collected, skipping deletion of "
-                f"tensor(s) {tensor_ids}"
-            )
             return
 
-        loop = get_event_loop()
-        try:
-            loop.call_soon_threadsafe(_delete_tensors_after_gc, compute, tensor_ids)
-        except RuntimeError as e:
-            logger.warning(
-                f"Failed to schedule deletion for tensor(s) {tensor_ids}: {e}"
-            )
+        cid = id(compute)
+        if cid in batched:
+            batched[cid][1].extend(tensor_ids)
+        else:
+            batched[cid] = (compute, list(tensor_ids))
 
     def drain_compute(self, compute: "Compute") -> list[int]:
         """Remove all storage entries for a Compute and return their tensor IDs."""
         compute_id = id(compute)
         tensor_ids = []
 
-        storage_ids_to_remove = [
-            sid
-            for sid, info in self._storages.items()
-            if info.compute is not None and id(info.compute) == compute_id
-        ]
+        with self._lock:
+            storage_ids_to_remove = [
+                sid
+                for sid, info in self._storages.items()
+                if info.compute is not None and id(info.compute) == compute_id
+            ]
 
-        for sid in storage_ids_to_remove:
-            tensor_ids.extend(self._storage_to_tensors.pop(sid, set()))
-            self._storages.pop(sid, None)
+            for sid in storage_ids_to_remove:
+                tensor_ids.extend(self._storage_to_tensors.pop(sid, set()))
+                self._storages.pop(sid, None)
 
         return tensor_ids
 
@@ -171,8 +213,9 @@ class StorageManager:
             storage_id: ID of the storage to resize
             new_nbytes: New size in bytes
         """
-        if storage_id in self._storages:
-            self._storages[storage_id].nbytes = new_nbytes
+        with self._lock:
+            if storage_id in self._storages:
+                self._storages[storage_id].nbytes = new_nbytes
 
     def get_storage(self, storage_id: int) -> Optional[StorageInfo]:
         """
@@ -184,7 +227,8 @@ class StorageManager:
         Returns:
             StorageInfo or None if not found
         """
-        return self._storages.get(storage_id)
+        with self._lock:
+            return self._storages.get(storage_id)
 
     def register_tensor(self, tensor: torch.Tensor, skip_cpp: bool = False) -> int:
         """
@@ -201,8 +245,9 @@ class StorageManager:
         """
         tensor_id = get_tensor_id(tensor)
         storage_id = get_storage_id(tensor)
-        self._tensor_to_storage[tensor_id] = tensor.untyped_storage()
-        self._storage_to_tensors[storage_id].add(tensor_id)
+        with self._lock:
+            self._tensor_to_storage[tensor_id] = tensor.untyped_storage()
+            self._storage_to_tensors[storage_id].add(tensor_id)
         if not skip_cpp:
             # Sync to C++ registration set for fast path lookup
             try:
@@ -227,13 +272,14 @@ class StorageManager:
             tensor ID sharing the same storage, otherwise None
         """
         tensor_id = get_tensor_id(tensor)
-        if tensor_id in self._tensor_to_storage:
-            return tensor_id
+        with self._lock:
+            if tensor_id in self._tensor_to_storage:
+                return tensor_id
 
-        storage_id = get_storage_id(tensor)
-        tensor_ids = self._storage_to_tensors.get(storage_id)
-        if tensor_ids:
-            return next(iter(tensor_ids))
+            storage_id = get_storage_id(tensor)
+            tensor_ids = self._storage_to_tensors.get(storage_id)
+            if tensor_ids:
+                return next(iter(tensor_ids))
 
         return None
 

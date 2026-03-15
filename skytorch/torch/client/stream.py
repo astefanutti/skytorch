@@ -146,7 +146,7 @@ class StreamManager:
         #   ("req", StreamRequest) — non-batched request (copy, update, register)
         #   ("ff", list[int])      — deferred delete tensor IDs
         self._mt_ops: list[tuple] = []
-        self._mt_lock = threading.Lock()
+        self._mt_lock = threading.RLock()
         self._mt_wake_pending: bool = False
 
         # Deferred delete tensor IDs: accumulated from fire-and-forget delete

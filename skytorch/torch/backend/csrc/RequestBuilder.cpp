@@ -50,40 +50,50 @@ std::atomic<int64_t> g_prof_large_gap_count{0};
 
 // Set of tensor IDs already registered with the server.
 // Checked in C++ to avoid Python dict lookups per tensor.
+// Protected by g_reg_mutex — accessed from worker threads (register,
+// dispatch_cached_aten) and GC threads (unregister via free_storage).
 static std::unordered_set<uint64_t> g_registered_tensor_ids;
 // Map from storage_id to the first tensor_id registered for that storage.
 // Used to detect views (tensors sharing storage with a registered base tensor).
 static std::unordered_map<int64_t, uint64_t> g_storage_to_tensor_id;
+static std::mutex g_reg_mutex;
 
 void register_tensor_id(uint64_t tensor_id) {
+    std::lock_guard<std::mutex> lock(g_reg_mutex);
     g_registered_tensor_ids.insert(tensor_id);
 }
 
 void unregister_tensor_id(uint64_t tensor_id) {
+    std::lock_guard<std::mutex> lock(g_reg_mutex);
     g_registered_tensor_ids.erase(tensor_id);
 }
 
 void clear_registered_tensor_ids() {
+    std::lock_guard<std::mutex> lock(g_reg_mutex);
     g_registered_tensor_ids.clear();
     g_storage_to_tensor_id.clear();
 }
 
 void register_storage_tensor_mapping(int64_t storage_id, uint64_t tensor_id) {
+    std::lock_guard<std::mutex> lock(g_reg_mutex);
     if (g_storage_to_tensor_id.find(storage_id) == g_storage_to_tensor_id.end()) {
         g_storage_to_tensor_id[storage_id] = tensor_id;
     }
 }
 
 void unregister_storage_tensor_mapping(int64_t storage_id) {
+    std::lock_guard<std::mutex> lock(g_reg_mutex);
     g_storage_to_tensor_id.erase(storage_id);
 }
 
 bool is_tensor_id_registered(uint64_t tensor_id) {
+    std::lock_guard<std::mutex> lock(g_reg_mutex);
     return g_registered_tensor_ids.count(tensor_id) > 0;
 }
 
 // Register a tensor ID and its storage mapping
 static void register_tensor_with_storage(uint64_t tensor_id, int64_t storage_id) {
+    std::lock_guard<std::mutex> lock(g_reg_mutex);
     g_registered_tensor_ids.insert(tensor_id);
     if (g_storage_to_tensor_id.find(storage_id) == g_storage_to_tensor_id.end()) {
         g_storage_to_tensor_id[storage_id] = tensor_id;
@@ -96,6 +106,7 @@ static void register_tensor_with_storage(uint64_t tensor_id, int64_t storage_id)
 // - is_registered=false, tensor_ref>0: tensor is new but shares storage with tensor_ref
 // - is_registered=false, tensor_ref=0: tensor is completely new
 static std::pair<bool, uint64_t> check_registration(uint64_t tensor_id, int64_t storage_id) {
+    std::lock_guard<std::mutex> lock(g_reg_mutex);
     if (g_registered_tensor_ids.count(tensor_id)) {
         return {true, 0};
     }

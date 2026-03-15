@@ -597,7 +597,8 @@ def _submit_and_register(
             nbytes=0,
             device_index=dev_idx,
         )
-        storage_manager._storage_to_tensors[storage_id].add(tensor_id)
+        with storage_manager._lock:
+            storage_manager._storage_to_tensors[storage_id].add(tensor_id)
         if _register_tensor_id is not None:
             _register_tensor_id(tensor_id)
         if _register_storage_tensor_mapping is not None:

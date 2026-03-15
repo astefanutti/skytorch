@@ -482,7 +482,8 @@ def _execute_aten_cpp_fast_path(
             nbytes=0,  # Actual nbytes tracked by server
             device_index=sky_device.index or 0,
         )
-        storage_manager._storage_to_tensors[storage_id].add(tensor_id)
+        with storage_manager._lock:
+            storage_manager._storage_to_tensors[storage_id].add(tensor_id)
         _register_tensor_id(tensor_id)
         _register_storage_tensor_mapping(storage_id, tensor_id)
 
