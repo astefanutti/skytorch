@@ -10,6 +10,20 @@ import sys
 
 PROFILING_ENABLED = os.environ.get("SKYTORCH_PROFILE", "0") == "1"
 
+# When set, profiler also writes to this file (useful when stderr is captured
+# by a TUI alternate screen buffer, e.g. Textual).
+_PROFILE_FILE = os.environ.get("SKYTORCH_PROFILE_FILE", "")
+
+
+def _profile_output(text: str) -> None:
+    """Write profiler output to stderr and optionally to a file."""
+    sys.stderr.write(text)
+    sys.stderr.flush()
+    if _PROFILE_FILE:
+        with open(_PROFILE_FILE, "a") as f:
+            f.write(text)
+            f.flush()
+
 
 class Counter:
     """Accumulates timing and count data."""
@@ -347,8 +361,7 @@ class ClientProfiler:
                 "",
             ]
         )
-        sys.stderr.write("\n".join(lines))
-        sys.stderr.flush()
+        _profile_output("\n".join(lines))
 
 
 class ServerProfiler:
@@ -636,5 +649,4 @@ class ServerProfiler:
                 "",
             ]
         )
-        sys.stderr.write("\n".join(lines))
-        sys.stderr.flush()
+        _profile_output("\n".join(lines))
