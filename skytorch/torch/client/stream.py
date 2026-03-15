@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import gc
 import logging
 import os
 import struct
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -164,6 +166,19 @@ class StreamManager:
         # C++ raw submit buffer integration
         self._cpp_submit_available: bool = False
 
+        # Free-threaded Python uses biased reference counting: decrefs on
+        # non-owning threads are deferred and only reconciled during GC.
+        # When deletes accumulate, we call gc.collect(0) to reconcile
+        # biased refcounts — this may free additional objects whose
+        # decrefs were deferred by non-owning threads (e.g., the
+        # AsyncStreamer worker thread).  Triggered when live GPU storage
+        # (allocated - freed) grows by the threshold since the last GC,
+        # indicating biased-refcount tensors are accumulating.
+        _is_ft_build = hasattr(sys, "_is_gil_enabled")
+        self._gc_on_delete = _is_ft_build
+        self._gc_live_bytes_at_last_gc: int = 0
+        self._gc_idle_handle = None
+
     async def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """
         Start the bidirectional stream.
@@ -216,6 +231,14 @@ class StreamManager:
     # preventing unbounded GPU memory retention during large GC events.
     # Override with SKYTORCH_DELETE_THRESHOLD env var.
     _DELETE_FLUSH_THRESHOLD = int(os.environ.get("SKYTORCH_DELETE_THRESHOLD", "256"))
+
+    # GC reconciliation threshold: run gc.collect(0) when live GPU storage
+    # (allocated - freed) grows by this many bytes since the last GC.
+    # This directly measures biased-refcount tensor accumulation — tensors
+    # allocated but not freed because deferred decrefs haven't been reconciled.
+    # Default 1 GiB.  Only active on the free-threaded build.
+    # Override with SKYTORCH_GC_DELETE_BYTES env var.
+    _GC_DELETE_BYTES_THRESHOLD = int(os.environ.get("SKYTORCH_GC_DELETE_BYTES", str(1024 ** 3)))
 
     def _enqueue_execute_aten(self, request: service_pb2.ExecuteAtenRequest) -> None:
         """Buffer a protobuf execute_aten request for batching. Must run on the event loop thread."""
@@ -416,6 +439,22 @@ class StreamManager:
             self._mt_wake_pending = False
         self._process_mt_ops(batch)
 
+        # Schedule an idle-GC: if no new ops arrive within 100ms, run
+        # gc.collect(0) to reconcile any remaining biased refcounts.
+        # This handles the gap between the last token of a turn and the
+        # next user prompt, where no allocations trigger automatic GC.
+        # Cancelled and rescheduled on every _drain_mt_ops call, so it
+        # only fires during genuine idle periods.
+        if self._gc_on_delete:
+            if self._gc_idle_handle is not None:
+                self._gc_idle_handle.cancel()
+            self._gc_idle_handle = self._loop.call_later(0.1, self._run_idle_gc)
+
+    def _run_idle_gc(self) -> None:
+        """Reconcile biased refcounts during idle periods."""
+        self._gc_idle_handle = None
+        gc.collect(0)
+
     def _setup_cpp_submit(self) -> None:
         """Set up the C++ raw submit buffer for bypassing Python on the fast path.
 
@@ -515,6 +554,9 @@ class StreamManager:
         scenario where a freed tensor ID gets re-registered is impossible.
         All deferred IDs are sent directly without filtering.
 
+        On the free-threaded build, periodically runs gc.collect(0) before
+        sending to reconcile biased refcounts from non-owning threads.
+
         Must run on the event loop thread.
         """
         self._deferred_flush_scheduled = False
@@ -522,6 +564,18 @@ class StreamManager:
             self._deferred_flush_timer.cancel()
             self._deferred_flush_timer = None
         if self._deferred_delete_ids:
+            # On the free-threaded build, reconcile biased refcounts when live
+            # GPU storage grows significantly — indicating biased-refcount
+            # tensors are accumulating (allocated but not freed because their
+            # deferred decrefs haven't been reconciled).
+            if self._gc_on_delete:
+                from skytorch.torch.backend._storage import storage_manager
+
+                live = storage_manager.live_storage_bytes
+                if live - self._gc_live_bytes_at_last_gc >= self._GC_DELETE_BYTES_THRESHOLD:
+                    gc.collect(0)
+                    self._gc_live_bytes_at_last_gc = storage_manager.live_storage_bytes
+
             # Flush pending ATen ops first: ops that reference these tensors
             # must reach the server before the delete message.
             self._flush_batch()

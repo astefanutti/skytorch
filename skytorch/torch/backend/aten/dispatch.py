@@ -575,6 +575,7 @@ def _submit_and_register(
     raw_bytes: bytes,
     new_tensor_ids: list,
     new_storage_ids: list,
+    new_storage_nbytes: list,
     dev_idx: int,
 ) -> None:
     """Submit serialized request and register new tensors locally."""
@@ -591,10 +592,12 @@ def _submit_and_register(
     stream_manager.submit_execute_aten_bytes(raw_bytes)
 
     # Register new tensors locally and in C++ tracking set after successful submission
-    for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids, strict=True):
+    for tensor_id, storage_id, nb in zip(
+        new_tensor_ids, new_storage_ids, new_storage_nbytes, strict=True
+    ):
         storage_manager.register_storage(
             storage_id=storage_id,
-            nbytes=0,
+            nbytes=nb,
             device_index=dev_idx,
         )
         with storage_manager._lock:
@@ -744,16 +747,25 @@ def _sky_kernel_fallback(
 
                 return fused_result[0]
 
-            if fused_result is not None and len(fused_result) == 5:
+            if fused_result is not None and len(fused_result) == 6:
                 # Cache hit without callback — Python-side submission
-                unpacked_output, raw_bytes, new_tensor_ids, new_storage_ids, dev_idx = fused_result
+                (
+                    unpacked_output,
+                    raw_bytes,
+                    new_tensor_ids,
+                    new_storage_ids,
+                    new_storage_nbytes,
+                    dev_idx,
+                ) = fused_result
 
                 if PROFILING_ENABLED:
                     _t1 = time.perf_counter_ns()
                     _prof.cache_key_build.add(_t1 - _t0)
                     _prof.cache_hits += 1
 
-                _submit_and_register(raw_bytes, new_tensor_ids, new_storage_ids, dev_idx)
+                _submit_and_register(
+                    raw_bytes, new_tensor_ids, new_storage_ids, new_storage_nbytes, dev_idx
+                )
 
                 if PROFILING_ENABLED:
                     _t3 = time.perf_counter_ns()

@@ -597,15 +597,18 @@ py::tuple build_execute_aten_request(
     // C++ registration deferred to Python caller after successful submission
     py::list new_tensor_ids;
     py::list new_storage_ids;
+    py::list new_storage_nbytes;
     for (const auto& info : new_tensors) {
         new_tensor_ids.append(py::int_(info.tensor_id));
         new_storage_ids.append(py::int_(info.storage_id));
+        new_storage_nbytes.append(py::int_(info.nbytes));
     }
 
     return py::make_tuple(
         py::bytes(reinterpret_cast<const char*>(buffer.data()), buffer.size()),
         new_tensor_ids,
-        new_storage_ids
+        new_storage_ids,
+        new_storage_nbytes
     );
 }
 
@@ -1712,19 +1715,22 @@ py::object dispatch_cached_aten(
 
         py::list new_tensor_ids;
         py::list new_storage_ids;
+        py::list new_storage_nbytes;
         for (const auto& info : new_tensors) {
             new_tensor_ids.append(py::int_(info.tensor_id));
             new_storage_ids.append(py::int_(info.storage_id));
+            new_storage_nbytes.append(py::int_(info.nbytes));
         }
 
         PyObject* raw = PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(buffer.data()),
             static_cast<Py_ssize_t>(buffer.size()));
-        PyObject* cb_args = PyTuple_New(4);
+        PyObject* cb_args = PyTuple_New(5);
         PyTuple_SET_ITEM(cb_args, 0, raw);
         PyTuple_SET_ITEM(cb_args, 1, new_tensor_ids.release().ptr());
         PyTuple_SET_ITEM(cb_args, 2, new_storage_ids.release().ptr());
-        PyTuple_SET_ITEM(cb_args, 3, PyLong_FromLongLong(sky_device_index));
+        PyTuple_SET_ITEM(cb_args, 3, new_storage_nbytes.release().ptr());
+        PyTuple_SET_ITEM(cb_args, 4, PyLong_FromLongLong(sky_device_index));
         PyObject* cb_result = PyObject_Call(g_submit_callback, cb_args, nullptr);
         Py_DECREF(cb_args);
         if (cb_result == nullptr) {
@@ -1740,12 +1746,14 @@ py::object dispatch_cached_aten(
                 std::memory_order_relaxed);
         }
     } else {
-        // Fallback: no submit mechanism, return 5-tuple for Python-side submission
+        // Fallback: no submit mechanism, return 6-tuple for Python-side submission
         py::list new_tensor_ids;
         py::list new_storage_ids;
+        py::list new_storage_nbytes;
         for (const auto& info : new_tensors) {
             new_tensor_ids.append(py::int_(info.tensor_id));
             new_storage_ids.append(py::int_(info.storage_id));
+            new_storage_nbytes.append(py::int_(info.nbytes));
         }
 
         PyObject* unpacked_output;
@@ -1765,7 +1773,7 @@ py::object dispatch_cached_aten(
             Py_INCREF(unpacked_output);
         }
 
-        PyObject* result = PyTuple_New(5);
+        PyObject* result = PyTuple_New(6);
         PyTuple_SET_ITEM(result, 0, unpacked_output);
         PyTuple_SET_ITEM(result, 1,
             PyBytes_FromStringAndSize(
@@ -1773,7 +1781,8 @@ py::object dispatch_cached_aten(
                 static_cast<Py_ssize_t>(buffer.size())));
         PyTuple_SET_ITEM(result, 2, new_tensor_ids.release().ptr());
         PyTuple_SET_ITEM(result, 3, new_storage_ids.release().ptr());
-        PyTuple_SET_ITEM(result, 4, PyLong_FromLongLong(sky_device_index));
+        PyTuple_SET_ITEM(result, 4, new_storage_nbytes.release().ptr());
+        PyTuple_SET_ITEM(result, 5, PyLong_FromLongLong(sky_device_index));
         return py::reinterpret_steal<py::object>(result);
     }
 

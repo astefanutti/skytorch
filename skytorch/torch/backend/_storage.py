@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _delete_tensors_after_gc(compute, tensor_ids):
+def _delete_tensors_after_gc(compute, tensor_ids, nbytes=0):
     try:
         client = compute._grpc_client
         if client is not None and client.stream is not None:
@@ -85,6 +85,13 @@ class StorageManager:
         # triggers a chain of tensor deallocations, each calling free_storage.
         self._pending_frees: collections.deque[int] = collections.deque()
         self._processing_frees: bool = False
+        # Monotonic byte counters for memory-pressure GC trigger
+        self._bytes_registered: int = 0
+        self._bytes_freed: int = 0
+
+    @property
+    def live_storage_bytes(self) -> int:
+        return self._bytes_registered - self._bytes_freed
 
     def register_storage(
         self,
@@ -119,6 +126,7 @@ class StorageManager:
 
             info = StorageInfo(nbytes, device_index, _compute_ref=weakref.ref(compute))
             self._storages[storage_id] = info
+            self._bytes_registered += nbytes
 
     def free_storage(self, storage_id: int) -> None:
         """
@@ -162,6 +170,8 @@ class StorageManager:
         with self._lock:
             tensor_ids = list(self._storage_to_tensors.pop(storage_id, set()))
             info = self._storages.pop(storage_id, None)
+            if info is not None:
+                self._bytes_freed += info.nbytes
 
         # Unregister all tensor_ids from C++ tracking
         if tensor_ids:
@@ -215,7 +225,9 @@ class StorageManager:
         """
         with self._lock:
             if storage_id in self._storages:
+                old_nbytes = self._storages[storage_id].nbytes
                 self._storages[storage_id].nbytes = new_nbytes
+                self._bytes_registered += new_nbytes - old_nbytes
 
     def get_storage(self, storage_id: int) -> Optional[StorageInfo]:
         """

@@ -443,7 +443,7 @@ def _execute_aten_cpp_fast_path(
         _t0 = time.perf_counter_ns()
 
     # C++ builds binary request + identifies new tensors
-    raw_bytes, new_tensor_ids, new_storage_ids = _build_execute_aten_request(
+    raw_bytes, new_tensor_ids, new_storage_ids, new_storage_nbytes = _build_execute_aten_request(
         op_name,
         args,
         kwargs,
@@ -476,10 +476,10 @@ def _execute_aten_cpp_fast_path(
         _prof.event_loop_submit.add(_t2 - _t1)
 
     # Register new tensors locally and in C++ tracking set after successful submission
-    for tensor_id, storage_id in zip(new_tensor_ids, new_storage_ids):
+    for tensor_id, storage_id, nb in zip(new_tensor_ids, new_storage_ids, new_storage_nbytes):
         storage_manager.register_storage(
             storage_id=storage_id,
-            nbytes=0,  # Actual nbytes tracked by server
+            nbytes=nb,
             device_index=sky_device.index or 0,
         )
         with storage_manager._lock:
