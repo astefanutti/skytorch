@@ -284,7 +284,7 @@ class StreamManager:
         self._batch_buffer = []
         self._request_queue.put_nowait(stream_request)
 
-    def _flush_raw_batch(self) -> None:
+    def _flush_raw_batch(self, piggyback_deletes: bool = True) -> None:
         """Flush buffered raw binary execute_aten requests. Must run on the event loop thread."""
         self._raw_flush_scheduled = False
         if self._raw_flush_timer is not None:
@@ -323,6 +323,14 @@ class StreamManager:
 
         self._raw_batch_buffer = []
         self._request_queue.put_nowait(stream_request)
+
+        # Piggyback deferred deletes: the batch (which may reference these
+        # tensors) was just sent, so it's safe to send deletes now.  This
+        # avoids a separate flush that would fragment future batches.
+        # Suppressed during sync flushes (get_scalar/get_tensor) where
+        # deletes must go AFTER the sync request to avoid races.
+        if piggyback_deletes:
+            self._send_deferred_deletes()
 
     async def _sender_loop(self) -> None:
         """Send requests from queue to the stream."""
@@ -514,21 +522,16 @@ class StreamManager:
                 self._enqueue_with_flush(data)
             elif op_type == "ff":
                 self._deferred_delete_ids.extend(data)
-        # If deferred deletes accumulated but no ATen batch is pending, schedule
-        # a coalesce timer instead of flushing immediately. This lets deletes from
-        # multiple GC waves accumulate into one message.
-        if (
-            self._deferred_delete_ids
-            and not self._raw_batch_buffer
-            and not self._raw_flush_scheduled
-        ):
-            if len(self._deferred_delete_ids) >= self._DELETE_FLUSH_THRESHOLD:
-                self._flush_deferred()
-            elif not self._deferred_flush_scheduled:
-                self._deferred_flush_scheduled = True
-                self._deferred_flush_timer = self._loop.call_later(
-                    self._DELETE_COALESCE_DELAY, self._flush_deferred
-                )
+        # Deferred deletes piggyback on the next natural batch flush:
+        # _flush_raw_batch calls _send_deferred_deletes after sending the
+        # batch, so deletes ride with ATen ops without fragmenting batches.
+        # This timer is a safety net for when no ATen ops are pending
+        # (e.g., the turn just ended and only deletes remain).
+        if self._deferred_delete_ids and not self._deferred_flush_scheduled:
+            self._deferred_flush_scheduled = True
+            self._deferred_flush_timer = self._loop.call_later(
+                self._BATCH_COALESCE_DELAY, self._flush_deferred
+            )
 
     def _flush_mt_ops(self) -> None:
         """Drain main-thread ops buffer at sync points. Must run on the event loop thread."""
@@ -547,15 +550,17 @@ class StreamManager:
             self._mt_wake_pending = False
         self._process_mt_ops(batch)
 
-    def _flush_deferred(self) -> None:
-        """Flush deferred delete tensor IDs as a single batched message.
+    def _send_deferred_deletes(self) -> None:
+        """Send accumulated deferred delete IDs without flushing batch buffers.
 
-        Since storage IDs come from an atomic counter (no reuse), the ABA
-        scenario where a freed tensor ID gets re-registered is impossible.
-        All deferred IDs are sent directly without filtering.
+        Caller must ensure that any ATen ops referencing the deleted tensors
+        have already been sent (either via batch flush or because they were
+        enqueued before this call).
 
         On the free-threaded build, periodically runs gc.collect(0) before
-        sending to reconcile biased refcounts from non-owning threads.
+        sending to reconcile biased refcounts from non-owning threads
+        (e.g., AsyncStreamer worker).  This is driven by actual delete
+        volume, not arbitrary time intervals.
 
         Must run on the event loop thread.
         """
@@ -563,30 +568,66 @@ class StreamManager:
         if self._deferred_flush_timer is not None:
             self._deferred_flush_timer.cancel()
             self._deferred_flush_timer = None
-        if self._deferred_delete_ids:
-            # On the free-threaded build, reconcile biased refcounts when live
-            # GPU storage grows significantly — indicating biased-refcount
-            # tensors are accumulating (allocated but not freed because their
-            # deferred decrefs haven't been reconciled).
-            if self._gc_on_delete:
-                from skytorch.torch.backend._storage import storage_manager
+        if not self._deferred_delete_ids:
+            return
 
-                live = storage_manager.live_storage_bytes
-                if live - self._gc_live_bytes_at_last_gc >= self._GC_DELETE_BYTES_THRESHOLD:
-                    gc.collect(0)
-                    self._gc_live_bytes_at_last_gc = storage_manager.live_storage_bytes
+        # On the free-threaded build, reconcile biased refcounts when live
+        # GPU storage grows significantly — indicating biased-refcount
+        # tensors are accumulating (allocated but not freed because their
+        # deferred decrefs haven't been reconciled).
+        if self._gc_on_delete:
+            from skytorch.torch.backend._storage import storage_manager
 
-            # Flush pending ATen ops first: ops that reference these tensors
-            # must reach the server before the delete message.
-            self._flush_batch()
-            self._flush_raw_batch()
-            ids = self._deferred_delete_ids
-            self._deferred_delete_ids = []
-            request = service_pb2.DeleteTensorsRequest(tensor_ids=ids)
-            stream_request = service_pb2.StreamRequest(delete_tensors=request)
-            self._request_queue.put_nowait(stream_request)
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"Flushed {len(ids)} deferred deletes")
+            live = storage_manager.live_storage_bytes
+            if live - self._gc_live_bytes_at_last_gc >= self._GC_DELETE_BYTES_THRESHOLD:
+                gc.collect(0)
+                self._gc_live_bytes_at_last_gc = storage_manager.live_storage_bytes
+
+        ids = self._deferred_delete_ids
+        self._deferred_delete_ids = []
+        request = service_pb2.DeleteTensorsRequest(tensor_ids=ids)
+        stream_request = service_pb2.StreamRequest(delete_tensors=request)
+        self._request_queue.put_nowait(stream_request)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Flushed {len(ids)} deferred deletes")
+
+    def _flush_deferred(self) -> None:
+        """Flush deferred delete tensor IDs, ensuring batch buffers go first.
+
+        Flushes any pending ATen ops before sending deletes so that ops
+        referencing these tensors reach the server first (FIFO ordering).
+        This includes draining the C++ raw submit buffer — ops submitted
+        before the tensor was freed may still be in the buffer when the
+        deferred delete timer fires.
+
+        Must run on the event loop thread.
+        """
+        # Drain C++ raw submit buffer directly into the request queue.
+        # This avoids _drain_mt_ops (which causes re-entrancy through
+        # _process_mt_ops → _enqueue_with_flush → _flush_deferred).
+        # FIFO ordering between C++ and Python ops is not critical here —
+        # the ops referencing deleted tensors are in the C++ buffer, and
+        # they must reach the server before the delete message.
+        if self._cpp_submit_available:
+            try:
+                from skytorch.torch.backend._C import _flush_raw_batches
+
+                with self._mt_lock:
+                    batches = _flush_raw_batches(self._BATCH_FLUSH_THRESHOLD)
+                for batch_bytes, count in batches:
+                    if count == 1:
+                        req = service_pb2.StreamRequest(raw_execute_aten=batch_bytes)
+                    else:
+                        req = service_pb2.StreamRequest(
+                            raw_batched_execute_aten=batch_bytes
+                        )
+                    self._request_queue.put_nowait(req)
+            except (ImportError, AttributeError):
+                pass
+        # Flush remaining batch buffers (Python fallback path ops).
+        self._flush_batch()
+        self._flush_raw_batch()
+        self._send_deferred_deletes()
 
     def defer_delete_ids(self, tensor_ids: list[int]) -> None:
         """Append tensor IDs for deferred batch deletion. Must run on event loop thread.
@@ -812,11 +853,12 @@ class StreamManager:
             _t_flush_start = time.perf_counter_ns()
             _mt_ops_count = len(self._mt_ops)
 
-        # Flush any pending batches before sync operation
+        # Flush any pending batches before sync operation.
+        # Suppress deferred delete piggyback — deletes must go AFTER
+        # the sync request to avoid "Tensor not found" races.
         self._flush_mt_ops()
         self._flush_batch()
-        self._flush_raw_batch()
-        self._flush_deferred()
+        self._flush_raw_batch(piggyback_deletes=False)
 
         if PROFILING_ENABLED:
             from skytorch.torch.profiler import ClientProfiler
@@ -840,6 +882,10 @@ class StreamManager:
             )
         )
         self._request_queue.put_nowait(stream_request)
+
+        # Flush deferred deletes AFTER the sync request so the server
+        # processes the query before any deletions.
+        self._flush_deferred()
 
         if PROFILING_ENABLED:
             _t_enqueue = time.perf_counter_ns()
@@ -885,11 +931,12 @@ class StreamManager:
             _t_flush_start = time.perf_counter_ns()
             _mt_ops_count = len(self._mt_ops)
 
-        # Flush any pending batches before sync operation
+        # Flush any pending batches before sync operation.
+        # Suppress deferred delete piggyback — deletes must go AFTER
+        # the sync request to avoid "Tensor not found" races.
         self._flush_mt_ops()
         self._flush_batch()
-        self._flush_raw_batch()
-        self._flush_deferred()
+        self._flush_raw_batch(piggyback_deletes=False)
 
         if PROFILING_ENABLED:
             from skytorch.torch.profiler import ClientProfiler
@@ -913,6 +960,10 @@ class StreamManager:
             )
         )
         self._request_queue.put_nowait(stream_request)
+
+        # Flush deferred deletes AFTER the sync request so the server
+        # processes the query before any deletions.
+        self._flush_deferred()
 
         if PROFILING_ENABLED:
             _t_enqueue = time.perf_counter_ns()
@@ -959,11 +1010,12 @@ class StreamManager:
                 f"module={request.module_path} inputs={list(request.input_tensor_ids)}"
             )
 
-        # Flush any pending batches before sync operation
+        # Flush any pending batches before sync operation.
+        # Suppress deferred delete piggyback — deletes must go AFTER
+        # the sync request to avoid "Tensor not found" races.
         self._flush_mt_ops()
         self._flush_batch()
-        self._flush_raw_batch()
-        self._flush_deferred()
+        self._flush_raw_batch(piggyback_deletes=False)
 
         future = self._loop.create_future()
         stream_request = service_pb2.StreamRequest(execute_module_forward=request)
@@ -975,6 +1027,9 @@ class StreamManager:
             )
         )
         self._request_queue.put_nowait(stream_request)
+
+        # Flush deferred deletes AFTER the sync request.
+        self._flush_deferred()
 
         async def _with_error_check():
             response = await future
