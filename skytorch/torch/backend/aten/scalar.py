@@ -6,6 +6,7 @@ values from sky tensors to the local host.
 """
 
 import os
+import sys
 import time
 
 import torch
@@ -62,11 +63,15 @@ _SPECULATION_ENABLED = os.environ.get("SKYTORCH_SPECULATIVE_SCALAR", "1") == "1"
 _MIN_OPS_BETWEEN_SYNCS = 100
 
 # Maximum consecutive tokens that can use predicted values without a validated
-# server response. Acts as a safety net when GIL release is disabled
-# (SKYTORCH_PERIODIC_INTERVAL=0) or no C++ cache hits occur — forces a
-# blocking sync every N tokens to bound overshoot. Rarely triggers in practice
-# because GIL release (default: every 64 ops) gives the event loop enough
-# time to process get_scalar responses during the forward pass.
+# server response. Forces a blocking sync every N tokens to bound overshoot
+# on misprediction. The blocking call resolves instantly when the oldest
+# future is old enough (N tokens × ~83ms/token >> server RTT ~150-300ms).
+# Mispredictions are independently detected by the _on_done callback within
+# ~2-3 tokens of the server response, so the max only affects how often
+# completed futures are drained — not misprediction latency.
+#
+# Higher values improve gRPC pipelining (queue depth ~N vs ~5) at the cost
+# of more accumulated futures in memory (negligible for scalar tensors).
 _MAX_UNVALIDATED_PREDICTIONS = 5
 
 
@@ -81,6 +86,12 @@ _ops_since_last_sync: int = 0
 #     confirmed=True:  pattern confirmed, actively speculating
 _speculation_state: dict | None = None
 
+# Monotonic generation counter — incremented on every speculation reset.
+# Used by _on_done callbacks to detect stale callbacks without capturing
+# the state dict (which would create a reference cycle:
+# future → closure → state → futures deque → future).
+_speculation_generation: int = 0
+
 # Flag to bypass speculation for specific call sites. Set by _equal to avoid
 # returning speculated values for equality checks — the result depends on
 # the specific tensors being compared, not on a repeating pattern.
@@ -89,8 +100,9 @@ _bypass_speculation: bool = False
 
 def _reset_speculation() -> None:
     """Reset speculation state. Called on device reset / stream close."""
-    global _speculation_state, _ops_since_last_sync
+    global _speculation_state, _ops_since_last_sync, _speculation_generation
     _speculation_state = None
+    _speculation_generation += 1
     _ops_since_last_sync = 0
     if _reset_ops_counter is not None:
         _reset_ops_counter()
@@ -117,7 +129,7 @@ def _local_scalar_dense(self: torch.Tensor):
     Raises:
         RuntimeError: If tensor has more than one element
     """
-    global _speculation_state, _ops_since_last_sync
+    global _speculation_state, _ops_since_last_sync, _speculation_generation
 
     if self.numel() != 1:
         raise RuntimeError(f"a Tensor with {self.numel()} elements cannot be converted to Scalar")
@@ -192,6 +204,7 @@ def _local_scalar_dense(self: torch.Tensor):
                 if "mismatch_actual" in state:
                     actual = state["mismatch_actual"]
                     _speculation_state = None
+                    _speculation_generation += 1
                     if PROFILING_ENABLED:
                         from skytorch.torch.profiler import ClientProfiler
 
@@ -206,57 +219,76 @@ def _local_scalar_dense(self: torch.Tensor):
                 futures = state.get("futures")
                 unvalidated = state.get("unvalidated", 0)
                 if futures and unvalidated >= _MAX_UNVALIDATED_PREDICTIONS:
-                    futures[0].result()  # releases GIL, event loop runs
-                    # Drain all completed futures
-                    while futures and futures[0].done():
-                        futures.popleft()
-                    state["unvalidated"] = len(futures)
-                    if "mismatch_actual" in state:
-                        actual = state["mismatch_actual"]
-                        _speculation_state = None
-                        if PROFILING_ENABLED:
-                            from skytorch.torch.profiler import ClientProfiler
-
-                            ClientProfiler.get().scalar_speculative_misses += 1
-                            _t1 = time.perf_counter_ns()
-                            ClientProfiler.get().sync_total.add(_t1 - _t0)
-                        return actual
-
-                # Submit async get_scalar with done callback.
-                # The callback sets mismatch_actual when the result differs.
-                future = run_async(
-                    get_scalar(compute, tensor_id, metadata_proto)
-                )
-
-                _p, _s = predicted, state
-
-                def _on_done(f, _p=_p, _s=_s):
                     try:
-                        result = f.result()
+                        futures[0][0].result()  # releases GIL, event loop runs
                     except Exception:
-                        return
-                    if result != _p and _speculation_state is _s:
-                        _s["mismatch_actual"] = result
+                        # Server error (e.g. deferred error from prior op).
+                        # The error consumed the server's deferred_error, so
+                        # abandon speculation and fall through to the blocking
+                        # synchronous path which will get a fresh response.
+                        _speculation_state = None
+                        _speculation_generation += 1
+                        futures.clear()
+                    else:
+                        # Drain all completed futures
+                        while futures and futures[0][0].done():
+                            futures.popleft()
+                        state["unvalidated"] = len(futures)
+                        if "mismatch_actual" in state:
+                            actual = state["mismatch_actual"]
+                            _speculation_state = None
+                            _speculation_generation += 1
+                            if PROFILING_ENABLED:
+                                from skytorch.torch.profiler import ClientProfiler
 
-                future.add_done_callback(_on_done)
-                if futures is None:
-                    from collections import deque
+                                ClientProfiler.get().scalar_speculative_misses += 1
+                                _t1 = time.perf_counter_ns()
+                                ClientProfiler.get().sync_total.add(_t1 - _t0)
+                            return actual
 
-                    futures = deque()
-                    state["futures"] = futures
-                futures.append(future)
-                state["unvalidated"] = unvalidated + 1
-                if meta is not None:
-                    _register_tensor_locally(self)
+                if _speculation_state is not None:
+                    # Submit async get_scalar with done callback.
+                    # The callback sets mismatch_actual when the result differs.
+                    # Capture the generation counter (int) instead of the state
+                    # dict to avoid a reference cycle:
+                    #   future → closure → state → futures deque → future
+                    # which would let the cyclic GC collect speculation tensors
+                    # while get_scalar requests are still pending.
+                    future = run_async(get_scalar(compute, tensor_id, metadata_proto))
 
-                if PROFILING_ENABLED:
-                    from skytorch.torch.profiler import ClientProfiler
+                    _p, _gen = predicted, _speculation_generation
 
-                    _prof = ClientProfiler.get()
-                    _prof.scalar_speculative_hits += 1
-                    _t1 = time.perf_counter_ns()
-                    _prof.sync_total.add(_t1 - _t0)
-                return predicted
+                    def _on_done(f, _p=_p, _gen=_gen):
+                        try:
+                            result = f.result()
+                        except Exception:
+                            return
+                        if result != _p and _speculation_generation == _gen:
+                            s = _speculation_state
+                            if s is not None:
+                                s["mismatch_actual"] = result
+
+                    future.add_done_callback(_on_done)
+                    if futures is None:
+                        from collections import deque
+
+                        futures = deque()
+                        state["futures"] = futures
+                    futures.append((future, self))
+                    state["unvalidated"] = unvalidated + 1
+                    if meta is not None:
+                        _register_tensor_locally(self)
+
+                    if PROFILING_ENABLED:
+                        from skytorch.torch.profiler import ClientProfiler
+
+                        _prof = ClientProfiler.get()
+                        _prof.scalar_speculative_hits += 1
+                        _t1 = time.perf_counter_ns()
+                        _prof.sync_total.add(_t1 - _t0)
+                    return predicted
+                # else: speculation was reset by error — fall through
+                # to the synchronous path below.
 
             else:
                 # Not confirmed yet — block and check if value repeats
